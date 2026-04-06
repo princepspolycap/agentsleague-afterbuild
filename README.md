@@ -12,9 +12,11 @@
 
 ---
 
-**A 2-week AI developer challenge running between February 16 - 27 with live coding battles, community building, and competition.**
+**A 2-week AI developer challenge running between February 16 - March 1, 2026 with live coding battles, community building, and competition.**
 
-Build innovative AI agents using GitHub Copilot, Microsoft Foundry, or M365 Agents Toolkit. Compete for recognition, network with developers globally, and get feedback from Microsoft product teams.
+Build innovative AI agents using GitHub Copilot, Copilot CLI or Copilot CLI SDK for Microsoft Foundry, or M365 Agents Toolkit. Compete for recognition, network with developers globally, and get feedback from Microsoft product teams.
+
+⚠️ **Important**: Before submitting, read our [Disclaimer](./DISCLAIMER.md) - do not upload confidential information.
 
 ## What's Agents League?
 
@@ -26,6 +28,8 @@ A **2-week developer competition** combining:
 - **🏆 Recognition** - Winners earn amazing prizes
 
 **Open to everyone** - all skill levels welcome! Watch the battles for inspiration, then build one project or compete in all three tracks.
+
+Use AI assisted development with tools like [GitHub Copilot in VS Code](https://code.visualstudio.com/docs/copilot/overview), the [GitHub Copilot CLI](https://github.com/features/copilot/cli/), or the [GitHub Copilot CLI SDK](https://github.com/github/copilot-sdk).
 
 ## Challenge Tracks
 
@@ -67,9 +71,9 @@ Browse [`starter-kits/`](./starter-kits/) for setup guides and examples
 
 **Week 2: AMAs & Show & Tell** - Ask questions, get help, see community progress on [Discord](https://aka.ms/agentsleague/discord)
 
-- **Tue Feb 24, 9 AM PT** - 🎨 Creative Apps [Join on Discord →](https://aka.ms/agentsleague/discord)
-- **Wed Feb 25, 9 AM PT** - 🧠 Reasoning Agents [Join on Discord →](https://aka.ms/agentsleague/discord)
-- **Thu Feb 26, 9 AM PT** - 💼 Enterprise Agents [Join on Discord →](https://aka.ms/agentsleague/discord)
+- **Tue Feb 24, 9 AM PT** - 🎨 Creative Apps [Join on Discord →](https://aka.ms/agentsleague/discord/ama1)
+- **Wed Feb 25, 9 AM PT** - 🧠 Reasoning Agents [Join on Discord →](https://aka.ms/agentsleague/discord/ama2)
+- **Thu Feb 26, 9 AM PT** - 💼 Enterprise Agents [Join on Discord →](https://aka.ms/agentsleague/discord/ama3)
 
 ### 4. Build Your Project
 
@@ -79,25 +83,28 @@ Browse [`starter-kits/`](./starter-kits/) for setup guides and examples
 
 ### 5. Submit Your Project
 
+**Submission Deadline**: March 1, 2026 (11:59 PM PT)
+
 Open a new issue in this repo using the [project submission template](https://github.com/microsoft/agentsleague/issues/new?template=project.yml)
+
+⚠️ **Before submitting**: 
+- Read the [Disclaimer](./DISCLAIMER.md) - No confidential information allowed
+- Review the [Code of Conduct](./CODE_OF_CONDUCT.md)
+- Ensure your repository is public and includes a README
 
 ### 6. Join the Community
 
-**[Discord](https://aka.ms/agentsleague/discord)** - Get help, share progress, vote for favorites
+Get help, share progress, vote for favorites
 
-## Judging
+[![Agents League Discord](https://img.shields.io/badge/Discord-Agents_League_Discord_Channel-yellow?style=for-the-badge&logo=github&color=00001&logoColor=fff)](https://aka.ms/agentsleague/discord)
 
-Projects are evaluated by experts and product teams using this rubric:
+Community and Guidance 
 
-- **Accuracy & Relevance (25%)** — Meets challenge requirements
-- **Reasoning & Multi-step Thinking (25%)** — Clear problem-solving approach
-- **Creativity & Originality (15%)** — Novel ideas or unexpected execution
-- **User Experience & Presentation (15%)** — Clear, polished, demoable
-- **Reliability & Safety (20%)** — Solid patterns, avoids obvious pitfalls
+[![Microsoft Foundry Discord](https://dcbadge.limes.pink/api/server/nTYy5BXMWG)](https://discord.gg/nTYy5BXMWG)
 
-**Bonus Points:**
-- **+10 Fan Favorite** — Community vote via Discord poll
-- **+10 Product Team Pick** — Selected by Microsoft product teams
+If you have product feedback or errors while building visit:
+
+[![Microsoft Foundry Developer Forum](https://img.shields.io/badge/GitHub-Microsoft_Foundry_Developer_Forum-blue?style=for-the-badge&logo=github&color=000000&logoColor=fff)](https://aka.ms/foundry/forum)
 
 ## Prizes & Recognition
 
@@ -118,6 +125,17 @@ Projects are evaluated by experts and product teams using this rubric:
   - Community Favorite (voted by community)
   - Product Team Picks (selected by Microsoft product teams)
 
+## Judging
+
+Projects are evaluated by experts and product teams using this rubric:
+
+- **Accuracy & Relevance (20%)** — Meets challenge requirements
+- **Reasoning & Multi-step Thinking (20%)** — Clear problem-solving approach
+- **Creativity & Originality (15%)** — Novel ideas or unexpected execution
+- **User Experience & Presentation (15%)** — Clear, polished, demoable
+- **Reliability & Safety (20%)** — Solid patterns, avoids obvious pitfalls
+- **Community vote (10%)** via the Discord poll available at https://aka.ms/agentsleague/discord
+
 ## Resources
 
 ### 📦 Starter Kits (with setup guides & examples)
@@ -131,6 +149,13 @@ Projects are evaluated by experts and product teams using this rubric:
 - **Discord**: [Join Agents League Arena](https://aka.ms/agentsleague/discord) - Get help, share progress, vote
 - **YouTube**: [Microsoft Reactor](https://aka.ms/reactor) - Watch live battles and replays
 - **Issues**: [Report bugs](https://github.com/microsoft/agentsleague/issues) - Found a problem? Let us know
+
+### 📋 Important Policies
+
+- **[Disclaimer](./DISCLAIMER.md)** - Security and confidential information protection
+- **[Code of Conduct](./CODE_OF_CONDUCT.md)** - Community standards and expectations
+- **[Contributing Guidelines](./CONTRIBUTING.md)** - How to contribute to the project
+- **[Security Policy](./SECURITY.md)** - How to report security issues
 
 <div align="center">
 
