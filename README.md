@@ -2,7 +2,7 @@
 
 # Agents League Contest
 
-<!-- TODO: Add new banner image -->
+<img width="1200" height="400" alt="image" src="https://github.com/user-attachments/assets/d3e1f5a7-52d3-4e7b-a142-aa55496b4f82" />
 
 ## Register now and start building!
 
