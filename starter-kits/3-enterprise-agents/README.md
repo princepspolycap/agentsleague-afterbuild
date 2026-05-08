@@ -4,6 +4,13 @@
 
 Welcome to the Enterprise Agents track! In this challenge, you will build intelligent agents that extend **Microsoft 365 Copilot** to address real-world enterprise scenarios. Your goal is to create agents that seamlessly integrate with Microsoft 365 workloads, leveraging the power of AI to automate tasks, enhance productivity, and deliver exceptional user experiences within the enterprise ecosystem.
 
+### 📑 Page Navigation
+
+| | | |
+|---|---|---|
+| [💡 Project Ideas](#-project-ideas) | [🚀 Quick Start](#-quick-start) | [🛡️ Security & Disclaimer](#%EF%B8%8F-security--disclaimer) |
+| [📋 Requirements & Evaluation](#-requirements--evaluation) | [📚 Resources](#-resources) | [❓ FAQ](#-faq) |
+
 ---
 
 > [!IMPORTANT]
@@ -19,16 +26,20 @@ Welcome to the Enterprise Agents track! In this challenge, you will build intell
 ## 💡 Project Ideas
 
 > [!TIP]
-> ### Explore Example Enterprise Scenarios
-> Need inspiration before you build? Browse solution directions, development approaches, and real-world enterprise use cases on the dedicated [Project Ideas](./project-ideas.md) page.
+> ### 👉 Explore Example Enterprise Scenarios
+> Need inspiration before you build? Browse solution directions, development approaches, and real-world enterprise use cases.
+>
+> **[Open Project Ideas →](./project-ideas.md)**
 
 ---
 
 ## 🚀 Quick Start
 
 > [!IMPORTANT]
-> ### Start Here
-> Ready to build? Open the dedicated [Quick Start](./quick-start.md) guide for setup steps, learning resources, and step-by-step paths for Declarative Agents, Custom Engine Agents, and Copilot Studio.
+> ### 👉 Start Here
+> Ready to build? The Quick Start guide covers setup steps, learning resources, and step-by-step paths for Declarative Agents, Custom Engine Agents, and Copilot Studio.
+>
+> **[Open Quick Start Guide →](./quick-start.md)**
 
 ---
 
@@ -41,8 +52,10 @@ Welcome to the Enterprise Agents track! In this challenge, you will build intell
 ⚠️ **Before submitting your project, please read our [Disclaimer](../../../DISCLAIMER.md).** This is a public repository accessible worldwide.
 
 > [!WARNING]
-> ### Security Requirements and Best Practices
-> Review the dedicated [Enterprise Security Best Practices](./security-best-practices.md) guide before implementing or submitting your project. This includes required authentication expectations, secret management, data protection, secure development practices, and legal/licensing checks.
+> ### 🔒 Security Requirements and Best Practices
+> Review the dedicated security guide before implementing or submitting your project. This includes required authentication expectations, secret management, data protection, secure development practices, and legal/licensing checks.
+>
+> **[Open Security Best Practices →](./security-best-practices.md)**
 
 #### What You Must NOT Include:
 
@@ -59,21 +72,17 @@ Welcome to the Enterprise Agents track! In this challenge, you will build intell
 
 Your solution will be evaluated based on the following requirements and criteria. Meeting these requirements will position your project for success in the competition:
 
-### Core Requirements
+### ✅ Core Requirements
 
 Here you can find the fundamental requirements to be satisfied by your agent.
 
-#### 1. Microsoft 365 Copilot Chat Agent (Required)
+#### 1. 💬 Microsoft 365 Copilot Chat Agent (Required)
 
 Your agent **must** be hosted in **Microsoft 365 Copilot Chat**. This means your solution should be designed to run within the Copilot Chat experience, providing users with a seamless conversational interface integrated into the Microsoft 365 ecosystem.
 
 **Important**: Your agent can target **Copilot Free** and does **not** necessarily require a Microsoft 365 Copilot license. This makes your solution accessible to a broader audience, including organizations that have not yet adopted paid Copilot licenses.
 
-### Bonus Criteria (not mandatory)
-
-If you want to get **extra points**, you can also support one or more of the following requirements.
-
-#### 2. Microsoft IQ Integration (Required)
+#### 2. 🧠 Microsoft IQ Integration (Required)
 
 Your agent **must** integrate at least one **Microsoft IQ** intelligence layer. Choose whichever fits your project best:
 
@@ -83,7 +92,11 @@ Your agent **must** integrate at least one **Microsoft IQ** intelligence layer. 
 
 📖 **Learn more**: [Microsoft IQ Series](https://aka.ms/iq-series)
 
-#### 3. MCP Apps (Higher Rating)
+### 🌟 Bonus Criteria (not mandatory)
+
+These items are **optional** but earn extra points and can significantly boost your score.
+
+#### 3. 📦 MCP Apps (Higher Rating)
 
 A solution that implements **MCP Apps** will be **rated higher**. This demonstrates that your agent can package MCP capabilities into a more complete Microsoft 365 Copilot extensibility experience, enabling richer enterprise integrations and more reusable agent functionality.
 
@@ -91,7 +104,7 @@ Use this lab as the primary reference when building this capability:
 
 - **MCP Apps Lab**: [Self-paced lab](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/11-mcp-app/)
 
-#### 4. External MCP Server Integration (Optional)
+#### 4. 🔌 External MCP Server Integration (Optional)
 
 Integrating your agent with an external **Model Context Protocol (MCP) server** to read and write specific content is **optional but highly encouraged**. The MCP server acts as a bridge between your agent and external data sources or services, enabling your agent to:
 
@@ -100,7 +113,7 @@ Integrating your agent with an external **Model Context Protocol (MCP) server** 
 
 This demonstrates real-world integration capabilities and shows how your agent can interact with enterprise systems beyond the Microsoft 365 ecosystem.
 
-#### 5. OAuth Security for MCP Server (Optional)
+#### 5. 🔐 OAuth Security for MCP Server (Optional)
 
 Implementing **OAuth-based authentication and authorization** when consuming the MCP server will be **highly appreciated** and will positively impact your evaluation score. Secure MCP server integration should include:
 
@@ -132,13 +145,21 @@ Overall scoring formula:
 
 #### Judge Checklist
 
+<details>
+<summary><strong>Expand: Step-by-step judging workflow</strong></summary>
+
 1. Verify the two required technical items first.
 2. Score the technical checklist out of 33 points.
 3. Score each non-technical dimension from 0-10 using the rubric descriptions below.
 4. Convert each category to its weighted score.
 5. Sum the weighted scores for the final result.
 
+</details>
+
 #### Technical Checklist
+
+<details>
+<summary><strong>Expand: Full technical scoring table</strong></summary>
 
 | Technical Criterion | Type | Max Points | AI Judging Guidance |
 |---------------------|------|------------|---------------------|
@@ -149,7 +170,12 @@ Overall scoring formula:
 | **OAuth Security for MCP Server** | Optional | 5 | Award points when OAuth is implemented correctly for MCP access, including secure auth flow, token handling, and clear protection of credentials. |
 | **TOTAL TECHNICAL POINTS** |  | **33** |  |
 
+</details>
+
 #### Non-Technical Rubric
+
+<details>
+<summary><strong>Expand: Non-technical scoring descriptions</strong></summary>
 
 | Criterion | Raw Score Range | What a High Score Looks Like |
 |-----------|-----------------|------------------------------|
@@ -157,6 +183,8 @@ Overall scoring formula:
 | **Creativity & Originality** | 0-10 | The solution shows a distinctive idea, strong problem framing, or a novel use of Microsoft 365 Copilot, IQ, or MCP capabilities. |
 | **User Experience & Presentation** | 0-10 | The submission is easy to understand, easy to try, and clearly presented through documentation, demo flow, and interaction design. |
 | **Reliability & Safety** | 0-10 | The solution demonstrates robust behaviour, safe tool usage, strong data handling hygiene, clear guardrails, and reasonable failure handling. |
+
+</details>
 
 
 
@@ -170,67 +198,88 @@ Explore the following resources to deepen your knowledge and accelerate your dev
 
 | Criterion | Copilot Studio | Declarative Agents (DA) with ATK | Custom Engine Agents (CEA) with ATK |
 |-----------|----------------|----------------------------------|--------------------------------------|
-| **Microsoft 365 Copilot Chat Agent** | [https://microsoft.github.io/copilot-camp/pages/make/copilot-studio/04-extending-m365-copilot/](https://microsoft.github.io/copilot-camp/pages/make/copilot-studio/04-extending-m365-copilot/) | [https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/01a-geolocator/](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/01a-geolocator/) | [https://microsoft.github.io/copilot-camp/pages/custom-engine/agents-sdk/02-agent-with-agents-sdk/](https://microsoft.github.io/copilot-camp/pages/custom-engine/agents-sdk/02-agent-with-agents-sdk/) |
-| **Microsoft IQ Integration** | [https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview](https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview) | [https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview](https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview) | [https://learn.microsoft.com/azure/foundry/agents/concepts/what-is-foundry-iq](https://learn.microsoft.com/azure/foundry/agents/concepts/what-is-foundry-iq) |
-| **MCP Apps** |  | [https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/11-mcp-app/](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/11-mcp-app/) |  |
-| **External MCP Server Integration (Read/Write)** | [https://microsoft.github.io/copilot-camp/pages/make/copilot-studio/06-mcp/](https://microsoft.github.io/copilot-camp/pages/make/copilot-studio/06-mcp/) | [https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/08-mcp-server/](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/08-mcp-server/) | [https://microsoft.github.io/copilot-camp/pages/custom-engine/agent-framework/07-add-mcp-tools/](https://microsoft.github.io/copilot-camp/pages/custom-engine/agent-framework/07-add-mcp-tools/) |
-| **OAuth Security for MCP Server** | [https://microsoft.github.io/agent-academy/operative/10-mcp/](https://microsoft.github.io/agent-academy/operative/10-mcp/) | [https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/10-mcp-auth/](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/10-mcp-auth/) |  |
+| **Microsoft 365 Copilot Chat Agent** | [Copilot Studio lab](https://microsoft.github.io/copilot-camp/pages/make/copilot-studio/04-extending-m365-copilot/) | [DA lab](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/01a-geolocator/) | [CEA lab](https://microsoft.github.io/copilot-camp/pages/custom-engine/agents-sdk/02-agent-with-agents-sdk/) |
+| **Microsoft IQ Integration** | [Work IQ overview](https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview) | [Work IQ overview](https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview) | [Foundry IQ overview](https://learn.microsoft.com/azure/foundry/agents/concepts/what-is-foundry-iq) |
+| **MCP Apps** |  | [MCP Apps lab](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/11-mcp-app/) |  |
+| **External MCP Server Integration (Read/Write)** | [Copilot Studio MCP](https://microsoft.github.io/copilot-camp/pages/make/copilot-studio/06-mcp/) | [DA MCP Server](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/08-mcp-server/) | [CEA MCP Tools](https://microsoft.github.io/copilot-camp/pages/custom-engine/agent-framework/07-add-mcp-tools/) |
+| **OAuth Security for MCP Server** | [Agent Academy MCP](https://microsoft.github.io/agent-academy/operative/10-mcp/) | [DA MCP Auth](https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/10-mcp-auth/) |  |
 
 
 ### Copilot Dev Camp
 
 Your comprehensive learning destination for building agents that extend Microsoft 365 Copilot:
 
-🔗 [https://aka.ms/copilotdevcamp](https://aka.ms/copilotdevcamp)
+🔗 [aka.ms/copilotdevcamp](https://aka.ms/copilotdevcamp)
 
 ### Agent Academy
 
 Structured learning paths and expert-led training for mastering agent development with Microsoft Copilot Studio:
 
-🔗 [https://aka.ms/agentacademy](https://aka.ms/agentacademy)
+🔗 [aka.ms/agentacademy](https://aka.ms/agentacademy)
 
 ### Microsoft Learn
 
 Access official Microsoft documentation, tutorials, and learning paths:
 
-- **Microsoft 365 Copilot Documentation**: [https://learn.microsoft.com/microsoft-365-copilot/](https://learn.microsoft.com/microsoft-365-copilot/)
-- **Copilot Studio Documentation**: [https://learn.microsoft.com/microsoft-copilot-studio/](https://learn.microsoft.com/microsoft-copilot-studio/)
-- **Declarative Agents**: [https://aka.ms/declarative-agents-docs](https://aka.ms/declarative-agents-docs)
-- **Microsoft 365 Agents Toolkit**: [https://aka.ms/m365-agents-toolkit](https://aka.ms/m365-agents-toolkit)
-- **Microsoft Entra ID Documentation**: [https://learn.microsoft.com/entra/identity/](https://learn.microsoft.com/entra/identity/)
-- **MCP Apps gallery** :[https://github.com/microsoft/mcp-interactiveUI-samples](https://github.com/microsoft/mcp-interactiveUI-samples)
+| Topic | Link |
+|-------|------|
+| Microsoft 365 Copilot | [learn.microsoft.com/microsoft-365-copilot](https://learn.microsoft.com/microsoft-365-copilot/) |
+| Copilot Studio | [learn.microsoft.com/microsoft-copilot-studio](https://learn.microsoft.com/microsoft-copilot-studio/) |
+| Declarative Agents | [aka.ms/declarative-agents-docs](https://aka.ms/declarative-agents-docs) |
+| Microsoft 365 Agents Toolkit | [aka.ms/m365-agents-toolkit](https://aka.ms/m365-agents-toolkit) |
+| Microsoft Entra ID | [learn.microsoft.com/entra/identity](https://learn.microsoft.com/entra/identity/) |
+| MCP Apps gallery | [github.com/microsoft/mcp-interactiveUI-samples](https://github.com/microsoft/mcp-interactiveUI-samples) |
 
 
 
 ### Additional Resources
 
-- **Microsoft Graph API**: [https://learn.microsoft.com/graph/](https://learn.microsoft.com/graph/)
-- **Microsoft 365 Developer Program**: [https://developer.microsoft.com/microsoft-365/dev-program](https://developer.microsoft.com/microsoft-365/dev-program)
+| Topic | Link |
+|-------|------|
+| Microsoft Graph API | [learn.microsoft.com/graph](https://learn.microsoft.com/graph/) |
+| Microsoft 365 Developer Program | [developer.microsoft.com/microsoft-365/dev-program](https://developer.microsoft.com/microsoft-365/dev-program) |
 
 ---
 
 ## ❓ FAQ
 
-### Can I use vibe-coding?
+<details>
+<summary><strong>Can I use vibe-coding?</strong></summary>
 
 **Yes!** You are welcome to use vibe-coding approaches and AI-assisted development tools to build your solution. Leveraging AI coding assistants like GitHub Copilot to accelerate your development is encouraged.
 
-### Can I use community and open source libraries/SDKs?
+</details>
+
+<details>
+<summary><strong>Can I use community and open source libraries/SDKs?</strong></summary>
 
 **Yes!** You can use community-contributed and open source libraries, SDKs, and frameworks in your solution. Open source tools are a great way to accelerate development and leverage the collective work of the developer community.
 
-### Can I use commercial/proprietary libraries/SDKs?
+</details>
+
+<details>
+<summary><strong>Can I use commercial/proprietary libraries/SDKs?</strong></summary>
 
 **No.** The use of commercial or proprietary libraries and SDKs that require paid licenses or are not freely available is not permitted. Your solution should be built using open source or freely available tools to ensure accessibility and reproducibility.
 
-### Can I share a real project that I've been working on for my company or for a customer?
+</details>
+
+<details>
+<summary><strong>Can I share a real project that I've been working on for my company or for a customer?</strong></summary>
 
 **No.** You cannot submit existing projects that were developed for your company or for customers. All submissions must be original work created specifically for this hackathon. This ensures a fair competition and protects any confidential or proprietary information.
 
-### Do I need to use my own tenant?
+</details>
+
+<details>
+<summary><strong>Do I need to use my own tenant?</strong></summary>
 
 **Yes.** Candidates are expected to use their own Microsoft 365 tenant for development and testing. We recommend using a dedicated developer tenant to avoid impacting production environments. For detailed information on setting up a Copilot development environment, please refer to the [Microsoft 365 Copilot extensibility prerequisites](https://aka.ms/extend-Copilot-sandbox).
 
+</details>
+
 ---
 
-Questions? Join [Discord](https://aka.ms/agentsleague/discord) #agentsleague channel
+> [!NOTE]
+> ### 💬 Need Help?
+> Questions? Join the [Discord](https://aka.ms/agentsleague/discord) **#agentsleague** channel for support and collaboration.
