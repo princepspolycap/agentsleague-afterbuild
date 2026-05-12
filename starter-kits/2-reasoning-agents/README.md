@@ -4,8 +4,6 @@
 
 Welcome to the Reasoning Agents track. In this challenge, you will build a multi-agent system using **Microsoft Foundry** that demonstrates reasoning, orchestration, grounded knowledge, semantic business understanding, and production-ready deployment patterns.
 
-This version combines the original starter kit scenario with an expanded enterprise scenario that explicitly incorporates **Work IQ**, **Foundry IQ**, **Fabric IQ**, and guidance for deploying the final solution with **Hosted Agents in Foundry Agent Service**.
-
 ---
 
 ## Prerequisites
@@ -51,10 +49,18 @@ Before starting this challenge, ensure you have the following:
 
 ## 🛠️ Environment Setup Guidance
 
-### Step 1: Clone the Repository
+### Step 1: Initiate your Project Repository
 ```bash
-git clone https://github.com/YOUR-USERNAME/agentsleague.git
-cd agentsleague/starter-kits/2-reasoning-agents
+# Create a new directory for your project
+mkdir <your-unique-project-name>            
+cd <your-unique-project-name>
+# Initialize a new Git repository
+git init
+# Create a README file
+echo "# Reasoning Agents Challenge" > README.md
+# Create a .gitignore file
+echo ".venv/" > .gitignore
+echo ".env" >> .gitignore
 ```
 
 ### Step 2: Create a Python Virtual Environment
@@ -70,14 +76,13 @@ source .venv/bin/activate
 
 ### Step 3: Set Up Azure Credentials
 1. Go to [Microsoft Foundry Portal](https://ai.azure.com)
-2. Create or select your **AI Project**
-3. In your project, go to **Project settings** → **Project properties**
-4. Copy the **Project connection string**
-5. Create a `.env` file in this directory:
+2. Create or select your **Foundry Project**
+3. Copy the **Project endpoint**
+4. Create a `.env` file in this directory:
 
 ```env
-# Option 1: Use Project Connection String (Recommended)
-AZURE_AI_PROJECT_CONNECTION_STRING=your-connection-string-here
+# Option 1: Use Project Endpoint (Recommended)
+AZURE_AI_PROJECT_ENDPOINT=your-project-endpoint-here
 
 # Option 2: Use Individual Settings
 # AZURE_SUBSCRIPTION_ID=your-subscription-id
@@ -112,55 +117,45 @@ Whatever approach you choose, you are encouraged to:
 
 ## 🌍 Core Challenge Scenario
 
-The original challenge scenario is to build a multi-agent system that helps learners prepare for Microsoft certification exams. The system should be able to:
-- Understand the exam syllabus
-- Generate study plans
-- Provide practice questions
-- Offer feedback on performance
-- Loop the learner back into preparation when they are not yet ready
+The challenge scenario is to build a multi-agent **enterprise learning system** that helps organisations manage internal team certification programmes. The system should be able to:
+- Understand certification requirements mapped to organisational roles
+- Generate team-level and role-based study plans
+- Provide grounded practice questions from approved knowledge sources
+- Offer feedback on team and individual progress
+- Adapt learning schedules to real work context and team capacity
+- Surface manager-level insights across team readiness and risk
 
 ### Baseline Flow
 1. The learner provides the topics they want to study.
-2. A **Learning Path Curator** suggests relevant content.
-3. A **Study Plan Generator** converts that content into a practical study plan.
-4. An **Engagement Agent** keeps the learner on track through reminders or nudges.
-5. Once the learner is ready, an **Assessment Agent** evaluates readiness.
-6. If the learner passes, the system suggests the relevant certification and next step. Otherwise, it returns to the preparation workflow.
+2. A **Learning Path Curator** suggests relevant content, based on the learner's goals and role.
+3. A **Study Plan Generator** converts that content into a practical study schedule, accounting for the learner's workload.
+4. An **Engagement Agent** keeps the learner on track, adapting reminders to work patterns and focus windows.
+5. Once the learner is ready, an **Assessment Agent** evaluates readiness using grounded, cited questions.
+6. If the assessment passes, the system recommends the next certification or advancement step. Otherwise, it loops back into the preparation workflow.
+7. A **Manager Insights Agent** provides visibility into team progress, risk areas, and completion patterns.
 
 > [!TIP]
 > Some of these capabilities can be extended with the [Microsoft Learn MCP server](https://github.com/microsoftdocs/mcp) and the [Microsoft Learn MCP documentation](https://learn.microsoft.com/training/support/mcp).
 
----
-
-## 🧠 Expanded Enterprise Scenario with Microsoft IQ
-
-To make the challenge more realistic and enterprise-oriented, extend the student certification assistant into an **enterprise learning and workforce optimisation system**.
-
-In this expanded scenario, your multi-agent solution can support both individual learners and internal team learning programmes by combining:
-- **Work IQ** for work context and activity understanding
-- **Foundry IQ** for grounded knowledge retrieval
-- **Fabric IQ** for semantic and analytical business reasoning
-- **Hosted Agents** for managed deployment of the final agent solution
-
-### Example Expanded Use Cases
-- A learner requests a certification study plan that adapts to their workload
-- A manager wants visibility into team learning progress and risk areas
-- An assessment agent generates grounded, cited questions from approved knowledge sources
+### Example Use Cases
+- An employee requests a a certification study plan that adapts to their workload
+- A manager wants visibility into team learning progress and exam readiness risk areas
+- An assessment agent generates grounded, cited questions from approved organisational knowledge sources
 - A planner agent uses historical study patterns and work signals to recommend realistic study windows
 
 ---
 
 ## 🧠 Microsoft IQ Integration (Core Requirement)
 
-Your project **must** integrate at least one Microsoft IQ intelligence layer. You can choose one, or combine all three.
+Your project **must** integrate at least one Microsoft IQ intelligence layer to ground the enterprise learning scenario in real organisational signals. You can choose one, or combine all three.
 
 ### Work IQ
 **Work IQ** is the intelligence layer that personalises Microsoft 365 Copilot for users and organisations. Microsoft describes it as combining **data**, **context**, and **skills/tools** so Copilot and agents can respond using organisational signals rather than connector-only approaches. It draws from Microsoft 365 tenant data, metadata and activity patterns, and can also incorporate Dynamics 365, Power Apps, and connected business systems through extensibility. Use it when your agent needs to understand work context, collaboration patterns, or where a task fits into the flow of work.
 
 **Good fit for this challenge**
-- Adapt study reminders around meetings and focus time
-- Personalise communication based on user work patterns
-- Ground engagement decisions in work context
+- Adapt study reminders around around meetings and focus time
+- Personalise engagement based on each learner's work patterns
+- Ground scheduling and capacity decisions in organisational work context
 
 **Reference**
 - [Work IQ overview](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq)
@@ -180,18 +175,18 @@ Your project **must** integrate at least one Microsoft IQ intelligence layer. Yo
 **Fabric IQ** is presented by Microsoft as a semantic foundation within Microsoft Fabric. Microsoft describes it as bringing together **data, meaning, and actions** into a single semantic layer, with **Ontology** at the core. That ontology connects people, processes, systems, actions, rules, and data into unified business entities and relationships so people and AI can reason and act with more confidence.
 
 **Good fit for this challenge**
-- Model the relationship between learner, role, certification, skill gap, pass threshold, and study plan
-- Analyse completion rates and pass likelihoods
-- Reuse semantic meaning across analytics and agent experiences
+- Model the relationship between employee, role, certification, skill gap, pass threshold, and study plan
+- Analyse completion rates, pass likelihoods, and workforce readiness gaps
+- Reuse semantic meaning across analytics, planning, and agent experiences
 
 **Reference**
 - [Fabric IQ: The Semantic Foundation for Enterprise AI](https://blog.fabric.microsoft.com/en-in/blog/introducing-fabric-iq-the-semantic-foundation-for-enterprise-ai)
 
 ---
 
-## 🏗️ Updated Multi-Agent Architecture
+## 🏗️ Multi-Agent Architecture
 
-Below is a suggested architecture that combines the original starter kit with the Microsoft IQ layers.
+Below is a suggested architecture for the enterprise learning and workforce optimisation system, combining multi-agent orchestration with the Microsoft IQ layers.
 
 ![Reasoning Agents Architecture](reasoning-agents-architecture.png)
 ``
@@ -202,7 +197,7 @@ Below is a suggested architecture that combines the original starter kit with th
 
 **Recommended grounding:**
 - **Foundry IQ** knowledge base connected to approved learning content
-- Optional integration with Microsoft Learn or MCP tools
+- Optional integration with Microsoft Learn MCP server tools
 
 **What it should do:**
 - Map a certification target to relevant skills and resources
@@ -216,9 +211,9 @@ Below is a suggested architecture that combines the original starter kit with th
 - Optional use of synthetic historical learner outcomes
 
 **What it should do:**
-- Recommend milestones
-- Allocate study hours
-- Adjust sequencing based on difficulty or prerequisites
+- Recommend milestones at role level
+- Allocate study hours accounting for workload and schedule
+- Adjust sequencing based on difficulty, prerequisites
 
 ### 3. Engagement Agent
 **Primary role:** Keep the learner progressing.
@@ -227,9 +222,9 @@ Below is a suggested architecture that combines the original starter kit with th
 - **Work IQ** to understand work context, communication patterns, and preferred timing
 
 **What it should do:**
-- Suggest appropriate times for reminders
-- Adapt engagement to workload and focus windows
-- Avoid one-size-fits-all reminder behaviour
+- Suggest appropriate times for reminders based on work rhythm
+- Adapt engagement to individual workload and focus windows
+- Avoid one-size-fits-all reminder behaviour across a diverse team
 
 ### 4. Assessment Agent
 **Primary role:** Evaluate learner readiness.
@@ -239,20 +234,20 @@ Below is a suggested architecture that combines the original starter kit with th
 - **Fabric IQ** for interpreting patterns and scoring thresholds
 
 **What it should do:**
-- Generate credible questions from approved content
-- Score or interpret readiness based on known criteria
-- Feed results back into the planning loop
+- Generate credible, cited questions from approved content
+- Score or interpret readiness based on known certification criteria
+- Feed results back into the planning loop and surface aggregate team readiness signals
 
-### 5. Manager Insights Agent (Optional but Recommended)
-**Primary role:** Provide team-level visibility.
+### 5. Manager Insights Agent
+**Primary role:** Provide team-level visibility into certification readiness and workforce development.
 
 **Recommended grounding:**
-- **Work IQ** for organisational context
-- **Fabric IQ** for semantic analysis of learning metrics
+- **Work IQ** for organisational context and team capacity signals
+- **Fabric IQ** for semantic analysis of learning metrics and workforce skill gaps
 
 **What it should do:**
-- Summarise learning progress by team or role
-- Highlight patterns such as overloaded learners or likely exam risk
+- Summarise learning progress by team, role, or certification track
+- Highlight patterns such as capacity-constrained teams or likely exam risk areas
 - Present insights without exposing sensitive personal data
 
 ---
@@ -261,13 +256,14 @@ Below is a suggested architecture that combines the original starter kit with th
 
 ![Reasoning Agents](reasoning-agents-challenge-architecture.png)
 1. A learner asks for help preparing for a certification.
-2. **Foundry IQ** retrieves grounded learning materials from an approved knowledge base.
-3. **Fabric IQ** interprets structured data such as required skills, recommended hours, and prior synthetic study outcomes.
-4. **Work IQ** helps identify when learning activity fits best into the learner’s work rhythm.
-5. The **Study Plan Generator** produces a practical schedule.
-6. The **Engagement Agent** uses work context to keep the learner on track.
-7. The **Assessment Agent** creates grounded questions and evaluates progress.
-8. The system either recommends the next certification step or loops back into study preparation.
+2. **Foundry IQ** retrieves grounded learning materials and certification guidance from the approved organisational knowledge base.
+3. **Fabric IQ** interprets structured data such as required skills by role, recommended study hours, and prior synthetic team study outcomes.
+4. **Work IQ** helps identify realistic study windows for each team member based on their meeting load and focus patterns.
+5. The **Study Plan Generator** produces a practical, capacity-aware schedule for the team.
+6. The **Engagement Agent** uses work context to keep team members on track without disrupting peak work periods.
+7. The **Assessment Agent** creates grounded questions and evaluates each team member's readiness.
+8. The **Manager Insights Agent** surfaces team-level progress, risk areas, and readiness summaries.
+9. The system either recommends the next certification step for ready employees or loops back into the study preparation workflow for those who need more time.
 
 ---
 
@@ -276,7 +272,7 @@ Below is a suggested architecture that combines the original starter kit with th
 > [!IMPORTANT]
 > Use **synthetic data only**. Do not use real customer data, real employee data, or any PII.
 
-The original starter kit already requires demo data only and explicitly prohibits customer data, PII, credentials, and confidential information in submissions. In addition, Microsoft’s Foundry synthetic data guidance says to avoid including PII or other sensitive data in the source material used for generation, and to validate outputs before production use.
+This starter kit requires demo data only and explicitly prohibits customer data, PII, credentials, and confidential information in submissions. In addition, Microsoft’s Foundry synthetic data guidance says to avoid including PII or other sensitive data in the source material used for generation, and to validate outputs before production use.
 
 ### Synthetic Data Guidance for This Challenge
 Use these practical guardrails:
@@ -415,7 +411,7 @@ Use Foundry IQ as the grounded knowledge layer for the **Learning Path Curator**
 - Require the agent to cite source content when answering questions or generating assessments
 
 ### Suggested Fabric IQ Implementation
-Use Fabric IQ as the semantic layer for business meaning and structured decision support.
+Use Fabric IQ as the semantic layer for business meaning and structured decision support across the enterprise learning system.
 
 **Suggested pattern**
 - Model entities such as learner, certification, role, skill gap, readiness score, and recommended hours
@@ -448,7 +444,7 @@ Based on Microsoft’s concept documentation:
 ### Why Hosted Agents Fit This Challenge
 Hosted Agents are suitable for the final solution if you want to:
 - Deploy the full multi-agent implementation rather than only a playground prototype
-- Use **Microsoft Agent Framework**, **LangGraph**, **Semantic Kernel**, or your own codebase
+- Use **Microsoft Agent Framework** or your own codebase
 - Separate orchestration logic from model hosting concerns
 - Keep secrets and permissions managed through platform identity rather than embedding them in app code
 
@@ -459,7 +455,7 @@ This is a **suggested architecture pattern** for your submission:
    A top-level hosted agent receives the user request and coordinates the workflow.
 
 2. **Task-specific sub-agents**  
-   The hosted solution dispatches work to specialised agents, such as the learning planner, engagement agent, and assessment agent.
+   The hosted solution dispatches work to specialised agents, such as the learning planner, engagement agent, assessment agent, and manager insights agent.
 
 3. **Foundry IQ as the grounding layer**  
    Approved content and synthetic knowledge documents are connected to a knowledge base.
@@ -661,7 +657,7 @@ This challenge is designed to help you demonstrate:
 - Safe demo construction using **synthetic data**
 - Production-minded deployment through **Hosted Agents**
 
-A strong submission will show not just that agents can answer questions, but that they can reason across knowledge, context, and structured meaning in a way that is safe, explainable, and demoable.
+A strong submission will show not just that agents can answer questions, but that they can reason across organisational knowledge, work context, and structured business meaning in a way that is safe, explainable, and demoable at enterprise scale.
 
 
 ---
