@@ -1,0 +1,22 @@
+campaign: "Your Company Is the Dungeon"
+description: "A business-building adventure where you craft a company from a single raw pitch."
+starting_location: "The Pitching Chamber"
+lore_sources:
+  - "Lean Startup Principles"
+  - "Pricing under Uncertainty Playbook"
+  - "High-conversion landing architectures"
+quests:
+  - id: "first_landing_page"
+    title: "Forge Your First Landing Page"
+    description: "Decompose your initial idea, formulate market positioning, create a landing page structure, and draft a high-converting launch email campaign to validate it."
+    reward_xp: 60
+    stages:
+      - id: "positioning"
+        agent: "strategist"
+        prompt: "Help formulate the standard target definition and key positioning pillars."
+      - id: "landing_page"
+        agent: "designer"
+        prompt: "Draft hero headings, wireframe details, and CTA text."
+      - id: "launch_email"
+        agent: "marketer"
+        prompt: "Convert core pillars and landing metrics into an engaging teaser/launch outreach."
