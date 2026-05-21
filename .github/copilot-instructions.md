@@ -61,6 +61,7 @@ agentsleague-afterbuild/
 These exist on the maintainer's machine. Reference them when wiring features but do **not** hardcode absolute paths in committed code.
 
 ### Azure / Foundry models — reuse Poly env
+
 - **Source**: `/Users/princeps/Projects/Poly186/Poly/.env`
 - Contains live keys for Foundry base URL, GPT-5 family deployments, embedding deployments, image gen, plus a dedicated `POLY_FOUNDRY_KEY` / `POLY_FOUNDRY_BASE_URL`.
 - **Usage**: Copy the keys you need into `submission/.env` (gitignored). Map them onto our `AZURE_AI_PROJECT_ENDPOINT` / `AZURE_AI_MODEL_DEPLOYMENT` variables in [`.env.example`](../submission/.env.example).
@@ -70,9 +71,11 @@ These exist on the maintainer's machine. Reference them when wiring features but
 - **Constraint**: The runtime code path must still target a Microsoft Foundry deployment (the rule above). Poly env just supplies the credentials/endpoint — don't introduce non-Foundry model routes into the reasoning core.
 
 ### Azure CLI
+
 - `az` is installed (`az --version` confirmed 2.67.0). Use it for any quota checks, deployment listings, or resource provisioning before writing new infra.
 
 ### Game assets — reuse Polyverse
+
 - **Asset catalog**: `/Users/princeps/Projects/Poly186/Polyverse/docs/asset_catalog.md`
 - **Asset sources**:
   - `Modern Interiors RPG Tileset.zip` and `Modern Office Revamped v1.2.zip` (in `Polyverse/docs/`)
@@ -108,6 +111,7 @@ cp submission/.env.example submission/.env
 ## Demo flow (what we're optimizing for)
 
 20-min live demo on June 10:
+
 1. **0–3 min** — Hook: side-scroller title screen, tour the UI.
 2. **3–10 min** — Live play: type pitch → Narrator decomposes → 3 character agents execute → verification gates → XP.
 3. **10–15 min** — Code walkthrough: agent defs, IQ config, tool wrappers, state, replay log.
@@ -118,14 +122,14 @@ Full script: [submission/docs/demo_script.md](../submission/docs/demo_script.md)
 
 ## Rubric — what every change should help with
 
-| Criterion | Weight | What helps |
-|---|---:|---|
-| Accuracy & Relevance | 20% | Tighter mapping to `live_battle_challenge.md` primitives |
-| Reasoning & Multi-step | 20% | Visible decomposition, tool calls in replay log, multi-hop chains |
-| Reliability & Safety | 20% | Verification gates, simulation fallbacks, deterministic validators |
-| Creativity & Originality | 15% | Side-scroller game-feel, business-dungeon framing |
-| UX & Presentation | 15% | Phaser polish, NPC dialogue, XP/level-up animations |
-| Community Vote | 10% | Pending confirmation from Carlotta |
+| Criterion                | Weight | What helps                                                         |
+| ------------------------ | -----: | ------------------------------------------------------------------ |
+| Accuracy & Relevance     |    20% | Tighter mapping to `live_battle_challenge.md` primitives           |
+| Reasoning & Multi-step   |    20% | Visible decomposition, tool calls in replay log, multi-hop chains  |
+| Reliability & Safety     |    20% | Verification gates, simulation fallbacks, deterministic validators |
+| Creativity & Originality |    15% | Side-scroller game-feel, business-dungeon framing                  |
+| UX & Presentation        |    15% | Phaser polish, NPC dialogue, XP/level-up animations                |
+| Community Vote           |    10% | Pending confirmation from Carlotta                                 |
 
 Full breakdown: [submission/docs/rubric_mapping.md](../submission/docs/rubric_mapping.md).
 
