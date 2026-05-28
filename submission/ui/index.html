@@ -106,26 +106,58 @@
 <body class="min-h-screen flex flex-col">
 
     <!-- ============================== TOP STRIP ============================== -->
-    <header class="border-b border-[#10182b] bg-[#070c18]/85 backdrop-blur px-5 py-3 flex items-center gap-4 flex-wrap">
+    <header class="border-b border-[#10182b] bg-gradient-to-r from-[#070c18] via-[#0a1226] to-[#070c18] backdrop-blur px-5 py-3 flex items-center gap-4 flex-wrap">
+        <!-- Microsoft Agents League brand cluster -->
         <div class="flex items-center gap-3 min-w-0">
-            <div class="w-9 h-9 rounded-md panel-soft glow-teal flex items-center justify-center text-teal-300 pixel text-xs">YC</div>
+            <!-- Crest: shield with sword + bracket -->
+            <div class="relative w-11 h-11 rounded-md panel-soft glow-teal flex items-center justify-center shrink-0">
+                <svg viewBox="0 0 32 32" class="w-7 h-7" aria-hidden="true">
+                    <defs>
+                        <linearGradient id="crestGrad" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stop-color="#5eead4"/>
+                            <stop offset="100%" stop-color="#0d9488"/>
+                        </linearGradient>
+                    </defs>
+                    <!-- shield -->
+                    <path d="M16 2 L28 6 V16 C28 23 22 28 16 30 C10 28 4 23 4 16 V6 Z"
+                          fill="url(#crestGrad)" stroke="#0f172a" stroke-width="1"/>
+                    <!-- sword -->
+                    <rect x="15" y="7" width="2" height="14" fill="#0f172a"/>
+                    <rect x="12" y="10" width="8" height="1.6" fill="#0f172a"/>
+                    <circle cx="16" cy="22" r="1.6" fill="#fbbf24"/>
+                    <!-- code brackets -->
+                    <text x="8.5" y="26" font-family="monospace" font-size="6" font-weight="700" fill="#0f172a">&lt;/&gt;</text>
+                </svg>
+            </div>
             <div class="min-w-0">
-                <h1 class="pixel text-[12px] text-teal-300 leading-tight">YOUR COMPANY IS THE DUNGEON</h1>
-                <p class="text-[10px] text-slate-500 tracking-wider mt-0.5">REASONING AGENTS - MICROSOFT AGENTS LEAGUE</p>
+                <div class="flex items-center gap-2 mb-0.5">
+                    <!-- Microsoft 4-square mark -->
+                    <svg viewBox="0 0 23 23" class="w-3 h-3" aria-hidden="true">
+                        <rect x="1"  y="1"  width="10" height="10" fill="#f25022"/>
+                        <rect x="12" y="1"  width="10" height="10" fill="#7fba00"/>
+                        <rect x="1"  y="12" width="10" height="10" fill="#00a4ef"/>
+                        <rect x="12" y="12" width="10" height="10" fill="#ffb900"/>
+                    </svg>
+                    <span class="text-[10px] text-slate-300 tracking-[0.18em] font-semibold">MICROSOFT AGENTS LEAGUE</span>
+                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-300 border border-teal-500/30 pixel">BATTLE 02</span>
+                </div>
+                <h1 class="pixel text-[13px] sm:text-[14px] text-white leading-tight drop-shadow-[0_0_8px_rgba(94,234,212,0.35)]">
+                    YOUR COMPANY <span class="text-teal-300">IS</span> THE DUNGEON
+                </h1>
             </div>
         </div>
 
         <!-- Live pitch banner -->
         <div class="flex-1 min-w-[220px] max-w-2xl panel-soft px-3 py-1.5 flex items-center gap-2">
-            <span class="text-[10px] text-teal-400 pixel">PITCH</span>
-            <span id="pitch-banner" class="text-xs text-slate-300 italic truncate">No business pitch initialized. Forge one to enter the dungeon.</span>
+            <span class="text-[10px] text-teal-300 pixel">PITCH</span>
+            <span id="pitch-banner" class="text-xs text-slate-200 italic truncate">No business pitch initialized. Forge one to enter the dungeon.</span>
         </div>
 
         <div class="flex items-center gap-2">
-            <button id="autoplay-btn" class="hidden px-3 py-1.5 panel-soft text-xs text-indigo-200 hover:text-indigo-100 hover:border-indigo-400/50 transition-colors">
+            <button id="autoplay-btn" class="hidden px-3 py-1.5 panel-soft text-xs text-indigo-100 hover:text-white hover:border-indigo-400/60 transition-colors">
                 Autoplay Demo
             </button>
-            <button id="reset-btn" class="hidden px-3 py-1.5 panel-soft text-xs text-rose-300 hover:text-rose-200 hover:border-rose-400/50 transition-colors">
+            <button id="reset-btn" class="hidden px-3 py-1.5 panel-soft text-xs text-rose-200 hover:text-white hover:border-rose-400/60 transition-colors">
                 Reset
             </button>
         </div>
