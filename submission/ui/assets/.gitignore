@@ -1,0 +1,12 @@
+local/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.aseprite
+*.tsx
+*.tmx
+*.json
+!asset_manifest.example.json
+!README.md

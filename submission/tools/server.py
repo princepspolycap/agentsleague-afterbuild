@@ -165,6 +165,15 @@ def execute_current_step():
         
     return {"state": state.model_dump(), "current_step": step.model_dump()}
 
+def _compute_artifact_tier(score: int) -> Dict[str, Any]:
+    """Score -> quality tier with XP multiplier. Bronze does not extend streaks."""
+    if score >= 95:
+        return {"tier": "gold", "label": "GOLD", "multiplier": 2.0, "extends_streak": True}
+    if score >= 80:
+        return {"tier": "silver", "label": "SILVER", "multiplier": 1.5, "extends_streak": True}
+    return {"tier": "bronze", "label": "BRONZE", "multiplier": 1.0, "extends_streak": False}
+
+
 @app.post("/api/step/approve")
 def approve_current_step():
     """Approves the currently active step, awards XP, and advances step index."""
@@ -179,13 +188,40 @@ def approve_current_step():
         
     step = quest.steps[idx]
     
-    # Award reward and advance
+    # Award reward and advance.
     step.status = "completed"
-    state.xp += step.xp_reward
-    
-    store.log_event("STEP_APPROVED", "human_verifier", f"Approved step {step.id}. XP reward added.", {
-        "xp_added": step.xp_reward,
-        "total_xp": state.xp
+    score = int((step.validation_results or {}).get("score", 0))
+    tier_info = _compute_artifact_tier(score)
+    base_xp = int(step.xp_reward * tier_info["multiplier"])
+
+    # Streak: gold/silver extend, bronze resets.
+    if tier_info["extends_streak"]:
+        state.streak += 1
+    else:
+        state.streak = 0
+
+    # Streak bonus kicks in at 3.
+    streak_bonus = 5 * max(0, state.streak - 2)
+    total_xp = base_xp + streak_bonus
+    state.xp += total_xp
+
+    # Stamp the verdict onto the step so the UI can render tier + earnings.
+    step.validation_results = {
+        **(step.validation_results or {}),
+        "tier": tier_info["tier"],
+        "tier_label": tier_info["label"],
+        "xp_base": base_xp,
+        "xp_streak_bonus": streak_bonus,
+        "xp_earned": total_xp,
+    }
+
+    store.log_event("STEP_APPROVED", "human_verifier", f"Approved step {step.id}. {tier_info['label']} tier (+{total_xp} XP).", {
+        "xp_added": total_xp,
+        "xp_base": base_xp,
+        "xp_streak_bonus": streak_bonus,
+        "tier": tier_info["tier"],
+        "streak": state.streak,
+        "total_xp": state.xp,
     })
     
     # Check leveling up
@@ -221,6 +257,7 @@ def reject_current_step(feedback: Optional[str] = Body(default=None, embed=True)
         
     step = quest.steps[idx]
     step.status = "not-started"
+    state.streak = 0
     
     store.log_event("STEP_REJECTED", "human_verifier", f"Rejected artifact for {step.id}. Strategic feedback recorded.", {
         "human_feedback": feedback or "No comments detailed."
@@ -251,3 +288,9 @@ app.mount("/game", StaticFiles(directory=UI_DIRECTORY, html=True), name="ui")
 def read_root():
     """Redirects to the UI page."""
     return FileResponse(os.path.join(UI_DIRECTORY, "index.html"))
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="127.0.0.1", port=port)

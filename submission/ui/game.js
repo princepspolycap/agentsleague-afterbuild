@@ -2,9 +2,22 @@
 
 let phaserGame = null;
 let currentGameState = null;
+let isPlayerNearActiveAgent = false;
+let isReasoningBusy = false;
 
 // Core API endpoints
 const API_BASE = "/api";
+const AGENT_DISPLAY = {
+    strategist: { name: "Soren", room: "Blueprint Room" },
+    designer: { name: "Dahlia", room: "UX Lab" },
+    marketer: { name: "Maddox", room: "Outreach Core" }
+};
+
+const AGENT_DIALOGUE = {
+    strategist: "I have the positioning room primed. Press E to run the strategy turn.",
+    designer: "The layout board is ready. Press E to turn positioning into a page.",
+    marketer: "Campaign channels are open. Press E to draft the launch copy."
+};
 
 // DOM elements
 const launcherView = document.getElementById("launcher-view");
@@ -26,6 +39,7 @@ const questBoard = document.getElementById("quest-board");
 const activeAgentBadge = document.getElementById("active-agent-badge");
 const triggerPanel = document.getElementById("trigger-panel");
 const runStepBtn = document.getElementById("run-step-btn");
+const roomAccessStatus = document.getElementById("room-access-status");
 const reasoningLoader = document.getElementById("reasoning-loader");
 
 const valScoreBox = document.getElementById("validation-score-box");
@@ -37,6 +51,17 @@ const gatePanel = document.getElementById("gate-panel");
 const approveBtn = document.getElementById("approve-btn");
 const rejectBtn = document.getElementById("reject-btn");
 const terminalLogs = document.getElementById("terminal-logs");
+const streakBadge = document.getElementById("streak-badge");
+const tierBadge = document.getElementById("tier-badge");
+const autoplayBtn = document.getElementById("autoplay-btn");
+
+let isAutoplayActive = false;
+const AUTOPLAY_DELAY_MS = 700;
+const TIER_STYLES = {
+    gold:   { color: "#fde047", border: "border-yellow-400/60", text: "text-yellow-300", label: "GOLD x2.0" },
+    silver: { color: "#cbd5f5", border: "border-slate-300/60", text: "text-slate-100", label: "SILVER x1.5" },
+    bronze: { color: "#fb923c", border: "border-orange-500/60", text: "text-orange-300", label: "BRONZE x1.0" }
+};
 
 // Launch the Game
 async function initClient() {
@@ -62,6 +87,7 @@ function showLauncherScreen() {
     sidebarView.classList.add("hidden");
     statusPanel.classList.add("hidden");
     resetBtn.classList.add("hidden");
+    if (autoplayBtn) autoplayBtn.classList.add("hidden");
 }
 
 function showGameScreen() {
@@ -70,7 +96,8 @@ function showGameScreen() {
     sidebarView.classList.remove("hidden");
     statusPanel.classList.remove("hidden");
     resetBtn.classList.remove("hidden");
-    
+    if (autoplayBtn) autoplayBtn.classList.remove("hidden");
+
     // Initialize Phaser if not already done
     if (!phaserGame) {
         phaserGame = initPhaser();
@@ -107,6 +134,15 @@ function updateUIWithState() {
         xpLabel.innerText = `${baseXP} / 50 XP`;
     }
     xpBar.style.width = `${Math.min(100, Math.max(0, computedWidth))}%`;
+
+    // Streak indicator
+    if (streakBadge) {
+        const streak = currentGameState.streak || 0;
+        streakBadge.innerText = streak;
+        streakBadge.className = streak >= 3
+            ? "pixel-font-title text-base text-orange-300 animate-pulse"
+            : "pixel-font-title text-base text-orange-300";
+    }
     
     // Render logs
     terminalLogs.innerHTML = "";
@@ -191,6 +227,19 @@ function updateUIWithState() {
                 } else {
                     checkingScore.className = "pixel-font-title text-sm text-rose-400";
                 }
+
+                // Tier preview: derived from score even before approval.
+                if (tierBadge) {
+                    let previewTier = "bronze";
+                    if (score >= 95) previewTier = "gold";
+                    else if (score >= 80) previewTier = "silver";
+                    const approvedTier = currentActiveStep.validation_results?.tier;
+                    const tierKey = approvedTier || previewTier;
+                    const style = TIER_STYLES[tierKey] || TIER_STYLES.bronze;
+                    tierBadge.classList.remove("hidden");
+                    tierBadge.innerText = approvedTier ? style.label : `${style.label} (preview)`;
+                    tierBadge.className = `text-[10px] px-2 py-0.5 rounded font-bold border ${style.border} ${style.text} bg-slate-950`;
+                }
                 
                 failsList.innerHTML = "";
                 const checks = currentActiveStep.validation_results?.checks || {};
@@ -217,10 +266,11 @@ function updateUIWithState() {
                 triggerPanel.classList.remove("hidden");
                 gatePanel.classList.add("hidden");
                 valScoreBox.classList.add("hidden");
+                if (tierBadge) tierBadge.classList.add("hidden");
                 artifactContentArea.innerHTML = `
                     <div class="h-full flex flex-col items-center justify-center text-slate-500">
                         <span>No artifact generated yet.</span>
-                        <span class="text-[10px] mt-1 text-slate-600">Run the reasoning loop above to deploy Soren, Dahlia or Maddox!</span>
+                        <span class="text-[10px] mt-1 text-slate-600">Walk to the active agent room, then run the turn from the canvas or side panel.</span>
                     </div>
                 `;
             }
@@ -229,6 +279,7 @@ function updateUIWithState() {
             triggerPanel.classList.add("hidden");
             gatePanel.classList.add("hidden");
             valScoreBox.classList.add("hidden");
+            if (tierBadge) tierBadge.classList.add("hidden");
             artifactContentArea.innerHTML = `
                 <div class="h-full flex flex-col items-center justify-center text-teal-400 text-center p-4">
                     <span class="text-3xl mb-2">🏆</span>
@@ -237,6 +288,84 @@ function updateUIWithState() {
                 </div>
             `;
         }
+    }
+
+    refreshActiveAgentProximity();
+    syncPhaserQuestState();
+    syncRunButtonState();
+}
+
+function getCurrentActiveStep() {
+    const quest = currentGameState?.active_quest;
+    if (!quest || quest.current_step_index >= quest.steps.length) return null;
+    return quest.steps[quest.current_step_index];
+}
+
+function getCurrentAgentKey() {
+    return getCurrentActiveStep()?.assigned_to || null;
+}
+
+function getCurrentNpc() {
+    const agentKey = getCurrentAgentKey();
+    return agentKey ? npcs[agentKey] : null;
+}
+
+function refreshActiveAgentProximity() {
+    if (!player || !currentGameState) {
+        isPlayerNearActiveAgent = false;
+        return;
+    }
+
+    const activeNpc = getCurrentNpc();
+    if (!activeNpc) {
+        isPlayerNearActiveAgent = false;
+        return;
+    }
+
+    const dist = Phaser.Math.Distance.Between(player.x, player.y, activeNpc.x, activeNpc.y);
+    isPlayerNearActiveAgent = dist < 72;
+}
+
+function syncRunButtonState() {
+    const currentStep = getCurrentActiveStep();
+    if (!runStepBtn || !roomAccessStatus) return;
+
+    if (!currentStep) {
+        runStepBtn.disabled = true;
+        runStepBtn.innerText = "QUEST COMPLETE";
+        roomAccessStatus.className = "w-full mb-3 rounded border border-emerald-500/30 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-300 font-mono";
+        roomAccessStatus.innerText = "All rooms cleared. The company stage has advanced.";
+        return;
+    }
+
+    const agentMeta = AGENT_DISPLAY[currentStep.assigned_to] || { name: currentStep.assigned_to, room: "Agent Room" };
+
+    if (currentStep.artifact_data) {
+        runStepBtn.disabled = true;
+        runStepBtn.innerText = "AWAITING VERIFICATION";
+        roomAccessStatus.className = "w-full mb-3 rounded border border-yellow-500/30 bg-yellow-950/20 px-3 py-2 text-[11px] text-yellow-300 font-mono";
+        roomAccessStatus.innerText = `${agentMeta.name}'s artifact is ready. Review it to approve or reject.`;
+        return;
+    }
+
+    if (isReasoningBusy) {
+        runStepBtn.disabled = true;
+        runStepBtn.innerText = "AGENT TURN RUNNING";
+        roomAccessStatus.className = "w-full mb-3 rounded border border-teal-500/30 bg-teal-950/20 px-3 py-2 text-[11px] text-teal-300 font-mono";
+        roomAccessStatus.innerText = `${agentMeta.name} is reasoning through ${currentStep.title}.`;
+        return;
+    }
+
+    if (isPlayerNearActiveAgent) {
+        runStepBtn.disabled = false;
+        runStepBtn.innerText = `RUN ${agentMeta.name.toUpperCase()} TURN (E)`;
+        roomAccessStatus.className = "w-full mb-3 rounded border border-emerald-500/30 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-300 font-mono";
+        roomAccessStatus.innerText = `${agentMeta.room} unlocked. Press E or use the button to run this agent turn.`;
+    } else {
+        runStepBtn.disabled = true;
+        runStepBtn.innerText = `APPROACH ${agentMeta.name.toUpperCase()}`;
+        roomAccessStatus.className = "w-full mb-3 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px] text-slate-400 font-mono";
+        roomAccessStatus.innerText = `Move next to ${agentMeta.name} in the ${agentMeta.room} to unlock the turn.`;
     }
 }
 
@@ -268,9 +397,25 @@ launchBtn.addEventListener("click", async () => {
 });
 
 // Run Step Reasoning loops
-runStepBtn.addEventListener("click", async () => {
+runStepBtn.addEventListener("click", attemptRunCurrentStep);
+
+async function attemptRunCurrentStep() {
+    const currentStep = getCurrentActiveStep();
+    if (!currentStep || currentStep.artifact_data || isReasoningBusy) return;
+
+    if (!isPlayerNearActiveAgent) {
+        const agentMeta = AGENT_DISPLAY[currentStep.assigned_to] || { name: currentStep.assigned_to, room: "Agent Room" };
+        logTerminal(`[game] Approach ${agentMeta.name} in the ${agentMeta.room} before running the turn.`, "text-yellow-300");
+        const npc = getCurrentNpc();
+        if (npc && phaserSceneRef) showSpeechBubble(npc.x, npc.y - 65, "Come closer to start this room's agent turn.");
+        syncRunButtonState();
+        return;
+    }
+
+    isReasoningBusy = true;
     runStepBtn.disabled = true;
     reasoningLoader.classList.remove("hidden");
+    syncRunButtonState();
     
     // Animate Phaser NPC focusing attention
     notifyPhaserAgentActive();
@@ -290,19 +435,26 @@ runStepBtn.addEventListener("click", async () => {
         logTerminal(`[system] Reasoning connection failure. Agent exhausted spell slots. Retry.`, "text-rose-400");
         notifyPhaserAgentComplete(false);
     } finally {
-        runStepBtn.disabled = false;
+        isReasoningBusy = false;
         reasoningLoader.classList.add("hidden");
+        syncRunButtonState();
     }
-});
+}
 
 // Approve step
 approveBtn.addEventListener("click", async () => {
     try {
+        const approvedStep = getCurrentActiveStep();
         const res = await fetch(`${API_BASE}/step/approve`, { method: "POST" });
         const data = await res.json();
-        
-        // Spawn XP popping effect in Phaser!
-        spawnPhaserXPEffect();
+
+        // Pull authoritative earned XP from the now-finalized step.
+        const finalizedStep = (data.state?.active_quest?.steps || [])
+            .find(s => s.id === approvedStep?.id) || approvedStep;
+        const earnedXp = finalizedStep?.validation_results?.xp_earned
+            ?? approvedStep?.xp_reward
+            ?? 0;
+        spawnPhaserXPEffect(earnedXp);
         
         currentGameState = data.state;
         updateUIWithState();
@@ -339,6 +491,115 @@ resetBtn.addEventListener("click", async () => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// Autoplay / Demo mode
+// ---------------------------------------------------------------------------
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function setAutoplayButtonState(active) {
+    if (!autoplayBtn) return;
+    if (active) {
+        autoplayBtn.innerText = "Stop Autoplay";
+        autoplayBtn.classList.remove("bg-indigo-950", "hover:bg-indigo-900", "border-indigo-500/40", "text-indigo-200");
+        autoplayBtn.classList.add("bg-rose-950", "hover:bg-rose-900", "border-rose-500/40", "text-rose-200");
+    } else {
+        autoplayBtn.innerText = "Autoplay Demo";
+        autoplayBtn.classList.add("bg-indigo-950", "hover:bg-indigo-900", "border-indigo-500/40", "text-indigo-200");
+        autoplayBtn.classList.remove("bg-rose-950", "hover:bg-rose-900", "border-rose-500/40", "text-rose-200");
+    }
+}
+
+function tweenPlayerTo(targetX, targetY) {
+    return new Promise(resolve => {
+        if (!phaserSceneRef || !player) return resolve();
+        const dx = targetX - player.x;
+        const dy = targetY - player.y;
+        const distance = Math.hypot(dx, dy);
+        const duration = Math.max(250, Math.min(1400, distance * 6));
+        // Pick walk direction by dominant axis so the right animation plays.
+        let dir = null;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+            if (dx < -2) dir = 'left';
+            else if (dx > 2) dir = 'right';
+        } else {
+            if (dy < -2) dir = 'up';
+            else if (dy > 2) dir = 'down';
+        }
+        if (dir && typeof player.face === 'function') {
+            player.face(dir, true);
+            player.setData('facing', dir);
+        }
+        phaserSceneRef.tweens.add({
+            targets: player,
+            x: targetX,
+            y: targetY,
+            duration,
+            ease: "Sine.easeInOut",
+            onComplete: () => {
+                // Return to a held idle pose facing the same way.
+                if (dir && typeof player.face === 'function') player.face(dir, false);
+                resolve();
+            },
+        });
+    });
+}
+
+async function runAutoplayLoop() {
+    if (!currentGameState || !currentGameState.active_quest) return;
+    logTerminal("[autoplay] Demo mode engaged. The party will run itself.", "text-indigo-300");
+
+    let safety = 12;
+    while (isAutoplayActive && safety-- > 0) {
+        const step = getCurrentActiveStep();
+        if (!step) {
+            logTerminal("[autoplay] Quest line complete. Standing down.", "text-emerald-400");
+            break;
+        }
+
+        // 1. Walk to the active NPC.
+        const npc = getCurrentNpc();
+        if (npc) {
+            await tweenPlayerTo(npc.x - 36, npc.y + 18);
+            refreshActiveAgentProximity();
+            await sleep(AUTOPLAY_DELAY_MS / 2);
+        }
+        if (!isAutoplayActive) break;
+
+        // 2. Run the turn if the artifact is not already on the table.
+        if (!getCurrentActiveStep()?.artifact_data) {
+            await attemptRunCurrentStep();
+            // Wait out the reasoning loader.
+            let guard = 30;
+            while (isReasoningBusy && guard-- > 0) await sleep(200);
+        }
+        if (!isAutoplayActive) break;
+
+        // 3. Auto-approve via the same DOM path the human uses.
+        await sleep(AUTOPLAY_DELAY_MS);
+        approveBtn.click();
+        await sleep(AUTOPLAY_DELAY_MS);
+    }
+
+    isAutoplayActive = false;
+    setAutoplayButtonState(false);
+}
+
+if (autoplayBtn) {
+    autoplayBtn.addEventListener("click", () => {
+        if (isAutoplayActive) {
+            isAutoplayActive = false;
+            setAutoplayButtonState(false);
+            logTerminal("[autoplay] Stop requested. Handing control back to the human.", "text-indigo-300");
+            return;
+        }
+        isAutoplayActive = true;
+        setAutoplayButtonState(true);
+        runAutoplayLoop();
+    });
+}
+
 // PHASER CANVAS WORLD INTEGRATION
 let phaserSceneRef = null;
 
@@ -357,6 +618,7 @@ function initPhaser() {
             }
         },
         scene: {
+            preload: phaserPreload,
             create: phaserCreate,
             update: phaserUpdate
         }
@@ -364,12 +626,99 @@ function initPhaser() {
     return new Phaser.Game(config);
 }
 
+// Optional pixel-art sprite keys. Files live under submission/ui/assets/local/characters/
+// and are gitignored. When missing (default after `git clone`), the procedural drawings
+// below take over - the game still runs without the Polyverse pack.
+const SPRITE_KEYS = {
+    player: 'player_sheet',
+    strategist: 'npc_strategist',
+    designer: 'npc_designer',
+    marketer: 'npc_marketer',
+};
+
+function phaserPreload() {
+    const base = '/game/assets/local/characters/';
+    const sheets = [
+        [SPRITE_KEYS.player, 'player.png'],
+        [SPRITE_KEYS.strategist, 'strategist.png'],
+        [SPRITE_KEYS.designer, 'designer.png'],
+        [SPRITE_KEYS.marketer, 'marketer.png'],
+    ];
+    sheets.forEach(([key, file]) => {
+        this.load.spritesheet(key, base + file, { frameWidth: 32, frameHeight: 64 });
+    });
+    // Swallow missing-file errors - procedural fallback handles them.
+    this.load.on('loaderror', (file) => {
+        console.info(`[sprites] '${file.key}' not present at ${file.src} - using procedural fallback.`);
+    });
+}
+
+// Limezu Modern Interiors Revamped premade atlas layout (per character PNG):
+//   Row 0 (frames 0-3): 4-direction idle  - 0=left, 1=up, 2=right, 3=down
+//   Row 1 walk cycles (6 frames each):
+//     56-61=walk-left, 62-67=walk-up, 68-73=walk-right, 74-79=walk-down
+// We expose these as 8 named anims per spritesheet key, plus a `face()` helper.
+const DIR_FRAMES = {
+    idle: { left: 0, up: 1, right: 2, down: 3 },
+    walk: {
+        left:  [56, 57, 58, 59, 60, 61],
+        up:    [62, 63, 64, 65, 66, 67],
+        right: [68, 69, 70, 71, 72, 73],
+        down:  [74, 75, 76, 77, 78, 79],
+    },
+};
+
+function ensureCharacterAnims(scene, key) {
+    if (!scene.textures.exists(key)) return false;
+    const tex = scene.textures.get(key);
+    const total = tex.frameTotal;
+    const dirs = ['left', 'up', 'right', 'down'];
+    dirs.forEach((dir) => {
+        const idleKey = `${key}_idle_${dir}`;
+        if (!scene.anims.exists(idleKey)) {
+            const f = DIR_FRAMES.idle[dir];
+            const frame = f < total ? f : 0;
+            scene.anims.create({
+                key: idleKey,
+                frames: [{ key, frame }, { key, frame }],
+                frameRate: 2,
+                repeat: -1,
+            });
+        }
+        const walkKey = `${key}_walk_${dir}`;
+        if (!scene.anims.exists(walkKey)) {
+            const wf = DIR_FRAMES.walk[dir].filter((n) => n < total);
+            // If walk frames aren't available, the anim degenerates to a held idle frame.
+            const frames = wf.length > 0
+                ? wf.map((n) => ({ key, frame: n }))
+                : [{ key, frame: DIR_FRAMES.idle[dir] < total ? DIR_FRAMES.idle[dir] : 0 }];
+            scene.anims.create({
+                key: walkKey,
+                frames,
+                frameRate: 8,
+                repeat: -1,
+            });
+        }
+    });
+    return true;
+}
+
+// Backwards-compatible idle helper (callers that just want a calm idle pose).
+function ensureIdleAnim(scene, key) {
+    if (!ensureCharacterAnims(scene, key)) return null;
+    return `${key}_idle_down`;
+}
+
 let player = null;
 let nameplates = {};
 let npcs = {};
+let npcStatusBadges = {};
 let cursors = null;
+let wasdKeys = null;
 let activeNpcBubble = null;
 let bubbleTimer = null;
+let activeRoomBeacon = null;
+let lastNearAgentKey = null;
 
 function phaserCreate() {
     phaserSceneRef = this;
@@ -405,18 +754,38 @@ function phaserCreate() {
     drawOfficeDesk(this, 560, 100, 0xeab308);
 
     // 3. Create NPCs
-    npcs.strategist = createProceduralNPC(this, 180, 120, "Soren", 0x38bdf8);
-    npcs.designer = createProceduralNPC(this, 400, 120, "Dahlia", 0xc084fc);
-    npcs.marketer = createProceduralNPC(this, 620, 120, "Maddox", 0xfde047);
+    npcs.strategist = createProceduralNPC(this, 180, 130, "Soren", 0x38bdf8, SPRITE_KEYS.strategist);
+    npcs.designer = createProceduralNPC(this, 400, 130, "Dahlia", 0xc084fc, SPRITE_KEYS.designer);
+    npcs.marketer = createProceduralNPC(this, 620, 130, "Maddox", 0xfde047, SPRITE_KEYS.marketer);
+    npcs.strategist.setDepth(5);
+    npcs.designer.setDepth(5);
+    npcs.marketer.setDepth(5);
+
+    npcStatusBadges.strategist = createStatusBadge(this, 180, 175, "LOCKED", "#94a3b8");
+    npcStatusBadges.designer = createStatusBadge(this, 400, 175, "LOCKED", "#94a3b8");
+    npcStatusBadges.marketer = createStatusBadge(this, 620, 175, "LOCKED", "#94a3b8");
 
     // 4. Create Player
-    player = createProceduralPlayer(this, 100, 200);
+    player = createProceduralPlayer(this, 100, 210, SPRITE_KEYS.player);
+    if (player.setDepth) player.setDepth(6);
 
     // Controls setup
     cursors = this.input.keyboard.createCursorKeys();
+    wasdKeys = this.input.keyboard.addKeys({
+        up: Phaser.Input.Keyboard.KeyCodes.W,
+        left: Phaser.Input.Keyboard.KeyCodes.A,
+        down: Phaser.Input.Keyboard.KeyCodes.S,
+        right: Phaser.Input.Keyboard.KeyCodes.D,
+        interact: Phaser.Input.Keyboard.KeyCodes.E,
+        space: Phaser.Input.Keyboard.KeyCodes.SPACE
+    });
+    this.input.keyboard.on("keydown-E", attemptRunCurrentStep);
+    this.input.keyboard.on("keydown-SPACE", attemptRunCurrentStep);
     
     // Create floating tech particle generators for a high-intelligence feel!
     createDungeonParticles(this);
+    syncPhaserQuestState();
+    syncRunButtonState();
 }
 
 function phaserUpdate() {
@@ -426,35 +795,56 @@ function phaserUpdate() {
     player.body.setVelocity(0);
     const speed = 160;
     
-    if (cursors.left.isDown) {
+    let dx = 0, dy = 0;
+    if (cursors.left.isDown || wasdKeys.left.isDown) {
         player.body.setVelocityX(-speed);
-        player.setData("facing", "left");
-    } else if (cursors.right.isDown) {
+        dx = -1;
+    } else if (cursors.right.isDown || wasdKeys.right.isDown) {
         player.body.setVelocityX(speed);
-        player.setData("facing", "right");
+        dx = 1;
     }
     
-    if (cursors.up.isDown) {
+    if (cursors.up.isDown || wasdKeys.up.isDown) {
         player.body.setVelocityY(-speed);
-    } else if (cursors.down.isDown) {
+        dy = -1;
+    } else if (cursors.down.isDown || wasdKeys.down.isDown) {
         player.body.setVelocityY(speed);
+        dy = 1;
     }
     
     // Collide edges
     player.x = Phaser.Math.Clamp(player.x, 30, 770);
     player.y = Phaser.Math.Clamp(player.y, 30, 330);
     
-    // Walk animation (small scale/rotation oscillation)
-    if (player.body.velocity.x !== 0 || player.body.velocity.y !== 0) {
-        player.setScale(1 + Math.sin(this.time.now * 0.015) * 0.05);
-        player.angle = Math.sin(this.time.now * 0.01) * 3;
+    // Directional animation: prefer horizontal when both axes are pressed.
+    const moving = dx !== 0 || dy !== 0;
+    if (moving) {
+        const dir = dx !== 0
+            ? (dx < 0 ? 'left' : 'right')
+            : (dy < 0 ? 'up' : 'down');
+        player.setData('facing', dir);
+        if (typeof player.face === 'function') player.face(dir, true);
     } else {
-        player.setScale(1);
-        player.angle = 0;
+        const lastDir = player.getData('facing') || 'down';
+        if (typeof player.face === 'function') player.face(lastDir, false);
+    }
+
+    // Walk feedback for the procedural fallback only - the real spritesheet uses
+    // its own per-direction walk cycle, so we skip the container bounce there.
+    const usingSprite = this.textures.exists(SPRITE_KEYS.player);
+    if (!usingSprite) {
+        if (moving) {
+            player.setScale(1 + Math.sin(this.time.now * 0.015) * 0.05);
+            player.angle = Math.sin(this.time.now * 0.01) * 3;
+        } else {
+            player.setScale(1);
+            player.angle = 0;
+        }
     }
     
     // Proximity dialogues
-    checkProximitydialogues(this);
+    checkProximityDialogues(this);
+    syncRunButtonState();
 }
 
 // Draw a beautiful tech carpet under each department
@@ -503,17 +893,41 @@ function drawOfficeDesk(scene, x, y, themeColor) {
     table.fillRect(x + 18, y + 20, 18, 6);
 }
 
-function createProceduralNPC(scene, x, y, name, colorVal) {
+function createProceduralNPC(scene, x, y, name, colorVal, spriteKey) {
     const container = scene.add.container(x, y);
-    
-    // Body (isometric round look)
+
+    if (spriteKey && scene.textures.exists(spriteKey)) {
+        // Real pixel-art sprite (Polyverse pack, local-only). Frames are 32x64.
+        const sprite = scene.add.sprite(0, 0, spriteKey, 0).setScale(1.5);
+        const hasAnims = ensureCharacterAnims(scene, spriteKey);
+        // face() picks the right anim per direction + idle/walk state.
+        container.face = (dir, moving = false) => {
+            if (!hasAnims) return;
+            const key = `${spriteKey}_${moving ? 'walk' : 'idle'}_${dir}`;
+            if (scene.anims.exists(key) && sprite.anims.currentAnim?.key !== key) {
+                sprite.play(key);
+            }
+        };
+        container.face('down', false);
+        const label = scene.add.text(0, -56, name, {
+            fontFamily: 'Share Tech Mono, monospace',
+            fontSize: '11px',
+            color: '#e2e8f0',
+            backgroundColor: '#0a0f1daa',
+            padding: { x: 4, y: 1 }
+        }).setOrigin(0.5);
+        container.add([sprite, label]);
+        return container;
+    }
+
+    // Procedural fallback (default - works after `git clone`).
+    container.face = () => {}; // no-op for graphics fallback
     const body = scene.add.graphics();
     body.fillStyle(0x1e293b, 1);
     body.fillCircle(0, 0, 18);
     body.lineStyle(2.5, colorVal, 1);
     body.strokeCircle(0, 0, 18);
     
-    // Face details / glowing spectacles or visor the wizard/agent has
     const visor = scene.add.graphics();
     visor.fillStyle(colorVal, 1);
     visor.fillRect(-10, -5, 20, 6);
@@ -530,10 +944,47 @@ function createProceduralNPC(scene, x, y, name, colorVal) {
     return container;
 }
 
-function createProceduralPlayer(scene, x, y) {
+function createStatusBadge(scene, x, y, text, color) {
+    return scene.add.text(x, y, text, {
+        fontFamily: 'Share Tech Mono, monospace',
+        fontSize: '10px',
+        color,
+        backgroundColor: '#0a0f1dcc',
+        padding: { x: 6, y: 2 }
+    }).setOrigin(0.5);
+}
+
+function createProceduralPlayer(scene, x, y, spriteKey) {
     const container = scene.add.container(x, y);
-    
-    // Astronaut Helmet / Golden Shield
+
+    if (spriteKey && scene.textures.exists(spriteKey)) {
+        const sprite = scene.add.sprite(0, 0, spriteKey, 0).setScale(1.5);
+        const hasAnims = ensureCharacterAnims(scene, spriteKey);
+        container.face = (dir, moving = false) => {
+            if (!hasAnims) return;
+            const key = `${spriteKey}_${moving ? 'walk' : 'idle'}_${dir}`;
+            if (scene.anims.exists(key) && sprite.anims.currentAnim?.key !== key) {
+                sprite.play(key);
+            }
+        };
+        container.face('down', false);
+        // Keep setFlipX exposed for any leftover callers (no-op against real anims).
+        container.setFlipX = () => {};
+        const nameplate = scene.add.text(0, -56, "Foundry Player", {
+            fontFamily: 'Press Start 2P, Arial',
+            fontSize: '7px',
+            color: '#2dd4bf',
+            backgroundColor: '#0f172aaa',
+            padding: { x: 3, y: 2 }
+        }).setOrigin(0.5);
+        container.add([sprite, nameplate]);
+        scene.physics.world.enable(container);
+        return container;
+    }
+
+    // Procedural fallback.
+    container.face = () => {};
+    container.setFlipX = () => {};
     const head = scene.add.graphics();
     head.fillStyle(0x0f172a, 1);
     head.fillCircle(0, 0, 16);
@@ -541,7 +992,7 @@ function createProceduralPlayer(scene, x, y) {
     head.strokeCircle(0, 0, 16);
     
     const visor = scene.add.graphics();
-    visor.fillStyle(0xffcc00, 1); // Yellow-gold shiny visor
+    visor.fillStyle(0xffcc00, 1);
     visor.fillEllipse(0, -2, 10, 6);
 
     const nameplate = scene.add.text(0, -30, "Foundry Player", {
@@ -594,7 +1045,7 @@ function notifyPhaserAgentActive() {
     phaserSceneRef.cameras.main.zoomTo(1.15, 800, 'Sine.easeInOut', true);
     
     // Spawn speech bubble
-    showSpeechBubble(npc.x, npc.y - 65, "Orchestrating raw logic... Calculating parameters!");
+    showSpeechBubble(npc.x, npc.y - 65, "Agent turn running. Watch the trace panel for handoffs and checks.");
 }
 
 function notifyPhaserAgentComplete(isSuccess) {
@@ -611,7 +1062,7 @@ function notifyPhaserAgentComplete(isSuccess) {
     phaserSceneRef.cameras.main.zoomTo(1, 600, 'Sine.easeInOut', true);
     
     if (isSuccess) {
-        showSpeechBubble(npc.x, npc.y - 65, "Artifact complete! Ready for Review ⚡");
+        showSpeechBubble(npc.x, npc.y - 65, "Artifact complete. Review it at the verification gate.");
     } else {
         showSpeechBubble(npc.x, npc.y - 65, "Logical exception detected. Recalibrating...");
     }
@@ -627,14 +1078,14 @@ function notifyPhaserAgentReject() {
     const npc = npcs[npcKey];
     if (!npc) return;
     
-    showSpeechBubble(npc.x, npc.y - 65, "Feedback noted! Restructuring copy copy.");
+    showSpeechBubble(npc.x, npc.y - 65, "Feedback noted. I will rework the artifact.");
 }
 
-function spawnPhaserXPEffect() {
+function spawnPhaserXPEffect(xpAmount = 0) {
     if (!player || !phaserSceneRef) return;
     
     // Level Up / XP golden text
-    const text = phaserSceneRef.add.text(player.x, player.y - 45, "+20 XP ✨", {
+    const text = phaserSceneRef.add.text(player.x, player.y - 45, `+${xpAmount} XP`, {
         fontFamily: 'Press Start 2P, Arial',
         fontSize: '12px',
         color: '#fbbf24',
@@ -651,6 +1102,45 @@ function spawnPhaserXPEffect() {
         duration: 2000,
         onComplete: () => text.destroy()
     });
+}
+
+function syncPhaserQuestState() {
+    if (!currentGameState || !phaserSceneRef) return;
+
+    const quest = currentGameState.active_quest;
+    if (!quest || !quest.steps) return;
+
+    const activeIdx = quest.current_step_index;
+    const statusByAgent = {};
+    quest.steps.forEach((step, idx) => {
+        if (idx < activeIdx) statusByAgent[step.assigned_to] = { text: "CLEARED", color: "#34d399", alpha: 0.85 };
+        else if (idx === activeIdx) statusByAgent[step.assigned_to] = { text: "ACTIVE", color: "#fbbf24", alpha: 1 };
+        else statusByAgent[step.assigned_to] = { text: "LOCKED", color: "#94a3b8", alpha: 0.45 };
+    });
+
+    Object.entries(npcStatusBadges).forEach(([agentKey, badge]) => {
+        const status = statusByAgent[agentKey] || { text: "LOCKED", color: "#94a3b8", alpha: 0.45 };
+        badge.setText(status.text);
+        badge.setColor(status.color);
+        badge.setAlpha(status.alpha);
+        if (npcs[agentKey]) npcs[agentKey].setAlpha(status.alpha === 0.45 ? 0.55 : 1);
+    });
+
+    if (activeRoomBeacon) activeRoomBeacon.destroy();
+    const activeNpc = getCurrentNpc();
+    if (activeNpc) {
+        activeRoomBeacon = phaserSceneRef.add.graphics();
+        activeRoomBeacon.lineStyle(2, 0xfbbf24, 0.85);
+        activeRoomBeacon.strokeCircle(activeNpc.x, activeNpc.y, 30);
+        activeRoomBeacon.setDepth(5);
+        phaserSceneRef.tweens.add({
+            targets: activeRoomBeacon,
+            alpha: 0.25,
+            duration: 750,
+            yoyo: true,
+            repeat: -1
+        });
+    }
 }
 
 function showSpeechBubble(x, y, text) {
@@ -709,25 +1199,28 @@ function showSpeechBubble(x, y, text) {
     });
 }
 
-// Local collision checks if character gets near the corporate wizard desks
-function checkProximitydialogues(scene) {
+// Local collision checks if the player gets near the active agent desk.
+function checkProximityDialogues(scene) {
     if (!currentGameState || !player) return;
-    const activeIdx = currentGameState.active_quest?.current_step_index;
-    const step = currentGameState.active_quest?.steps[activeIdx];
+    const step = getCurrentActiveStep();
     if (!step) return;
     
     const activeNpcKey = step.assigned_to;
     const npc = npcs[activeNpcKey];
     if (!npc) return;
     
-    const dist = Phaser.Math.Distance.Between(player.x, player.y, npc.x, npc.y);
-    // If player stands near current active agent desk and speech balloon is dormant
-    if (dist < 55 && !activeNpcBubble) {
-        let msg = "Hello! Click the side-panel button to formulate our company strategy!";
-        if (activeNpcKey === "designer") msg = "Hey look, I'm analyzing wireframes to build a conversion layout!";
-        if (activeNpcKey === "marketer") msg = "Drafting conversion email loops ground in product benefits.";
-        
+    refreshActiveAgentProximity();
+    const isNearNow = isPlayerNearActiveAgent;
+
+    // If player stands near current active agent desk and speech balloon is dormant.
+    if (isNearNow && !activeNpcBubble && lastNearAgentKey !== activeNpcKey) {
+        const msg = AGENT_DIALOGUE[activeNpcKey] || "Press E to run this agent turn.";
         showSpeechBubble(npc.x, npc.y - 65, msg);
+        lastNearAgentKey = activeNpcKey;
+    }
+
+    if (!isNearNow && lastNearAgentKey === activeNpcKey) {
+        lastNearAgentKey = null;
     }
 }
 

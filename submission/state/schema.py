@@ -38,6 +38,7 @@ class CompanyState(BaseModel):
     active_quest: Optional[QuestState] = None
     agents: Dict[str, CharacterState] = Field(default_factory=dict)
     business_flags: Dict[str, bool] = Field(default_factory=dict)
+    streak: int = 0
     replay_log: List[Dict[str, Any]] = Field(default_factory=list)
 
 class StateStore:

@@ -9,6 +9,8 @@ This project turns the live battle RPG prompt into a business-building quest gam
 - Concept narrative is captured in [../PROJECT_NARRATIVE.md](../PROJECT_NARRATIVE.md).
 - Official challenge references remain untouched under [../starter-kits/2-reasoning-agents](../starter-kits/2-reasoning-agents).
 - This `submission/` folder is reserved for our build, docs, agent code, tools, state, knowledge, quests, UI, and replay logs.
+- The current playable shell uses FastAPI plus Phaser: pitch entry, quest state, three NPC rooms, room-gated agent turns, verification gates, XP, streak bonuses, autoplay, and sprite/procedural rendering fallback.
+- The next design step is mapped in [docs/game_loop.md](docs/game_loop.md): split the prototype UI code into smaller browser modules, move room metadata into data, and grow the experience into a proper game foundation.
 
 ## Phase 1 Demo Scope
 
@@ -48,13 +50,15 @@ submission/
 ## Setup Checklist
 
 - [ ] Confirm Azure Foundry project endpoint and model deployment.
-- [ ] Decide UI stack: Phaser is the current recommendation.
+- [x] Decide UI stack: Phaser for the side-scroller, served by FastAPI for the current demo shell.
 - [ ] Confirm Polyverse assets are safe to include in a public MIT-licensed fork.
 - [ ] Choose the project codename for package naming and branding.
 - [ ] Ask Carlotta whether community voting applies to the invitational live battle.
-- [ ] Create the first working quest definition.
-- [ ] Implement Foundry agent stubs and simulation mode.
-- [ ] Build the side-scroller shell and verification gate.
+- [x] Create the first working quest definition.
+- [x] Implement Foundry agent stubs and simulation mode.
+- [x] Build the first side-scroller shell and verification gate.
+- [ ] Refactor the prototype UI into smaller game modules.
+- [ ] Wire real Foundry-backed calls behind the existing simulation fallback.
 
 ## Local Environment
 
