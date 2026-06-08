@@ -92,3 +92,21 @@ def model_for(role: str) -> Optional[str]:
     """Deployment name for an agent role, or None if not configured."""
     m = AGENT_MODELS.get(role)
     return m.deployment if m and m.deployment else None
+
+
+# A designed digital worker carries a `deployment_hint` (reasoning | fast |
+# creative). Map that hint onto one of the configured Foundry deployments so the
+# worker the Org Designer created runs on a model class that fits its job.
+_HINT_TO_ROLE = {
+    "reasoning": "strategist",
+    "creative": "designer",
+    "fast": "npc",
+}
+
+
+def model_for_hint(hint: str) -> Optional[str]:
+    """Deployment for a worker's deployment_hint, or None if not configured."""
+    role = _HINT_TO_ROLE.get((hint or "").strip().lower())
+    if not role:
+        return None
+    return model_for(role) or model_for("narrator")

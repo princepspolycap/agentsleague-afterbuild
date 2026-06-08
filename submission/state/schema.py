@@ -58,20 +58,27 @@ class Chapter(BaseModel):
     id: str
     title: str
     goal: str
-    owner_role: str  # strategist | designer | marketer | ops
+    owner_role: str  # strategist | designer | marketer | ops (artifact archetype)
     success_metric: str = ""
     depends_on: List[str] = Field(default_factory=list)  # chapter IDs
     suggested_tools: List[str] = Field(default_factory=list)
     status: str = "not-started"  # not-started, in-progress, completed, failed
     artifact: Optional[Dict[str, Any]] = None
     validation_score: Optional[int] = None
+    # Binding to the dynamically designed digital worker (OrgBlueprint role) that
+    # owns this chapter. Set by the Worker Factory's scheduler; closes the seam
+    # between the org the LLM designs and the agents that do the work.
+    assigned_worker_id: Optional[str] = None
+    assigned_worker_title: Optional[str] = None
 
 
 class WorkerInvocation(BaseModel):
     """Record of a worker being spawned by the factory."""
     id: str
     chapter_id: str
-    role: str
+    role: str                 # archetype that drives prompt + validators
+    worker_id: str = ""       # designed OrgRole id this invocation embodies
+    worker_title: str = ""    # designed OrgRole title (shown in the story)
     deployment: str = ""
     started_at: float = 0.0
     completed_at: float = 0.0

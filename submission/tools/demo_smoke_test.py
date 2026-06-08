@@ -97,10 +97,12 @@ def check_world_path(base: str, pitch: str) -> None:
     for ch in chapters:
         artifact = ch.get("artifact") or {}
         score = ch.get("validation_score")
+        worker = ch.get("assigned_worker_title")
         _require(ch["status"] == "completed", f"chapter {ch['id']} status={ch['status']} (not completed)")
         _require(bool(artifact), f"chapter {ch['id']} produced an empty artifact")
         _require(isinstance(score, (int, float)), f"chapter {ch['id']} score is {score!r}, not a number")
-        print(f"  {ch['id']:<18} {ch['owner_role']:<11} score={score} keys={list(artifact)[:3]}")
+        _require(bool(worker), f"chapter {ch['id']} has no assigned digital worker (org binding missing)")
+        print(f"  {ch['id']:<18} {ch['owner_role']:<11} -> {worker:<22} score={score} keys={list(artifact)[:2]}")
 
     _require(world.get("status") == "completed", f"world status={world.get('status')} (not completed)")
     _require(state["stage"] == "launched", f"world did not reach 'launched' (stage={state['stage']})")

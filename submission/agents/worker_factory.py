@@ -10,9 +10,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from agents.model_config import get_foundry_client, is_live, model_for
+from agents.model_config import get_foundry_client, is_live, model_for, model_for_hint
 from agents.retrieval import retrieve
-from state.schema import Chapter, WorkerInvocation, WorldGraph
+from state.schema import Chapter, OrgBlueprint, OrgRole, WorkerInvocation, WorldGraph
 from tools.code_interpreter_wrappers import (
     validate_financial_plan,
     validate_landing_page,
@@ -65,6 +65,99 @@ ROLE_PROMPTS: Dict[str, Dict[str, str]] = {
         "user": "Company brief: {brief}\n\nChapter goal: {goal}\nSuccess metric: {metric}\n\nProduce JSON.",
     },
 }
+
+# Human-readable fallback titles when no designed worker is bound to a chapter.
+ROLE_TITLES: Dict[str, str] = {
+    "strategist": "Strategist",
+    "designer": "Designer",
+    "marketer": "Marketer",
+    "ops": "Operations",
+}
+
+
+# ---------------------------------------------------------------------------
+# Org binding: resolve each chapter's owner to one of the dynamically designed
+# digital workers (CompanyState.org). This closes the seam between the org the
+# LLM designs and the agents that actually do the chapter work.
+# ---------------------------------------------------------------------------
+
+# Lifecycle stages in venture order. A chapter is matched to the org role whose
+# `lifecycle_stage` fits; archetype owner_role is the fallback signal.
+_STAGE_ORDER = ["discovery", "positioning", "mvp", "gtm", "retention", "ops"]
+
+# Archetype owner_role -> the lifecycle stage it most naturally covers.
+_ROLE_STAGE = {
+    "strategist": "positioning",
+    "designer": "mvp",
+    "marketer": "gtm",
+    "ops": "retention",
+}
+
+
+def stage_for_chapter(chapter: Chapter) -> str:
+    """Infer a chapter's lifecycle stage from its id/title/goal, then its role."""
+    hay = f"{chapter.id} {chapter.title} {chapter.goal}".lower()
+    if "go-to-market" in hay or "go to market" in hay:
+        return "gtm"
+    for stage in _STAGE_ORDER:
+        if stage in hay:
+            return stage
+    return _ROLE_STAGE.get(chapter.owner_role, "ops")
+
+
+def _worker_by_id(org: Optional[OrgBlueprint], worker_id: Optional[str]) -> Optional[OrgRole]:
+    if not org or not worker_id:
+        return None
+    for role in org.roles:
+        if role.id == worker_id:
+            return role
+    return None
+
+
+def resolve_worker_for_chapter(chapter: Chapter, org: Optional[OrgBlueprint]) -> Optional[OrgRole]:
+    """Pick the designed digital worker that should own this chapter.
+
+    Prefers an exact lifecycle_stage match among non-human workers; falls back
+    to the closest stage by venture order. Returns None when there is no org to
+    bind against (callers then use the fixed archetype cast).
+    """
+    if not org or not getattr(org, "roles", None):
+        return None
+    workers = [r for r in org.roles if r.kind != "human"]
+    if not workers:
+        return None
+
+    stage = stage_for_chapter(chapter)
+    exact = [r for r in workers if (r.lifecycle_stage or "").lower() == stage]
+    if exact:
+        return exact[0]
+
+    # No exact stage: choose the worker whose stage is closest in venture order.
+    target = _STAGE_ORDER.index(stage) if stage in _STAGE_ORDER else len(_STAGE_ORDER)
+    scored = []
+    for r in workers:
+        rs = (r.lifecycle_stage or "").lower()
+        pos = _STAGE_ORDER.index(rs) if rs in _STAGE_ORDER else len(_STAGE_ORDER) + 1
+        scored.append((abs(pos - target), r))
+    scored.sort(key=lambda item: item[0])
+    return scored[0][1] if scored else None
+
+
+def bind_world_to_org(world: WorldGraph, org: Optional[OrgBlueprint]) -> Dict[str, str]:
+    """Stamp each chapter with its owning digital worker. Returns id->title map.
+
+    Idempotent (re-running rebinds) and a safe no-op when there is no org.
+    """
+    bindings: Dict[str, str] = {}
+    if not org:
+        return bindings
+    for chapter in world.chapters:
+        worker = resolve_worker_for_chapter(chapter, org)
+        if worker:
+            chapter.assigned_worker_id = worker.id
+            chapter.assigned_worker_title = worker.title
+            bindings[chapter.id] = worker.title
+    return bindings
 
 
 def _extract_json(content: str) -> Optional[Dict]:
@@ -280,25 +373,52 @@ def execute_chapter(
     chapter: Chapter,
     brief: str,
     previous_artifacts: Optional[List[Dict]] = None,
+    org: Optional[OrgBlueprint] = None,
 ) -> Tuple[WorkerInvocation, Optional[Dict], int]:
     """Execute a single chapter's worker and return (invocation, artifact, score).
 
-    Returns a deterministic mock if live mode is off.
+    When an `org` is supplied, the chapter is executed by the dynamically designed
+    digital worker that owns it: the worker drives identity, deployment (via its
+    `deployment_hint`) and reasoning grounding, while the archetype `role` still
+    drives the prompt contract + deterministic validators. Returns a deterministic
+    mock if live mode is off.
     """
     role = chapter.owner_role if chapter.owner_role in ROLE_PROMPTS else "strategist"
-    deployment = model_for(role) or model_for("narrator") or ""
+
+    # Resolve the designed digital worker that owns this chapter (pre-bound id
+    # first, else match on lifecycle stage). None == no org -> fixed archetype.
+    worker = _worker_by_id(org, chapter.assigned_worker_id) or resolve_worker_for_chapter(chapter, org)
+    hint = (worker.deployment_hint if worker else "") or ""
+    worker_id = worker.id if worker else ""
+    worker_title = worker.title if worker else ROLE_TITLES.get(role, role.title())
+
+    deployment = (model_for_hint(hint) if hint and hint != "n/a" else None) or model_for(role) or model_for("narrator") or ""
     client = get_foundry_client()
-    deployment_label = f"foundry-{role}" if client and deployment and is_live() else "simulation"
+    live = bool(client and deployment and is_live())
+    if live:
+        deployment_label = f"foundry-{hint}" if (worker and hint and hint != "n/a") else f"foundry-{role}"
+    else:
+        deployment_label = "simulation"
+
     invocation = WorkerInvocation(
         id=f"inv_{chapter.id}_{int(time.time())}",
         chapter_id=chapter.id,
         role=role,
+        worker_id=worker_id,
+        worker_title=worker_title,
         deployment=deployment_label,
         started_at=time.time(),
     )
 
     prompts = ROLE_PROMPTS[role]
     system = prompts["system"]
+    if worker:
+        system += (
+            f"\n\nYou are operating as the company's '{worker.title}', a "
+            f"{hint or 'reasoning'} digital worker the Org Designer created for this "
+            f"venture. Your mandate: {worker.mandate or 'deliver this chapter.'} "
+            "Stay true to this role."
+        )
     user = prompts["user"].format(
         brief=brief,
         goal=chapter.goal,
@@ -379,8 +499,13 @@ def execute_chapter(
     return invocation, artifact, score
 
 
-def run_world(world: WorldGraph, brief: str, auto_approve_threshold: int = 80):
-    """Execute all chapters in sequence. Yields (chapter, invocation, artifact, score)."""
+def run_world(world: WorldGraph, brief: str, auto_approve_threshold: int = 80,
+              org: Optional[OrgBlueprint] = None):
+    """Execute all chapters in sequence. Yields (chapter, invocation, artifact, score).
+
+    When `org` is provided, each chapter is executed by its designed digital
+    worker (see `execute_chapter`).
+    """
     previous_artifacts: List[Dict] = []
     for i, chapter in enumerate(world.chapters):
         # Skip already-completed chapters.
@@ -392,7 +517,7 @@ def run_world(world: WorldGraph, brief: str, auto_approve_threshold: int = 80):
         chapter.status = "in-progress"
         world.current_chapter_index = i
 
-        invocation, artifact, score = execute_chapter(chapter, brief, previous_artifacts)
+        invocation, artifact, score = execute_chapter(chapter, brief, previous_artifacts, org=org)
         world.invocations.append(invocation)
 
         if artifact:
