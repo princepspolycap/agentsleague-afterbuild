@@ -183,6 +183,99 @@ def _score_artifact(role: str, artifact: Optional[Dict[str, Any]]) -> int:
     return max(scores)
 
 
+def _short_brief(brief: str, words: int = 6) -> str:
+    """Compact a brief into a short product label for mock diagrams."""
+    cleaned = re.sub(r"[^A-Za-z0-9 ]", " ", brief or "Venture").strip()
+    parts = [w for w in cleaned.split() if w]
+    return " ".join(parts[:words]) if parts else "Venture"
+
+
+def _mock_artifact(role: str, chapter: Chapter, brief: str) -> Dict[str, Any]:
+    """Deterministic, diagram-ready artifacts for simulation (no Foundry).
+
+    These mirror the shape of live worker output so the story renderer can
+    draw org charts, integration maps, OKR trees and financial plans after a
+    fresh `git clone` with zero Azure credentials.
+    """
+    label = _short_brief(brief)
+    if role == "strategist":
+        return {
+            "target_audience": f"Founders and small teams shipping {label}",
+            "core_problem": "Manual, fragmented workflows slow the path to first revenue.",
+            "value_proposition": f"Turn {label} into traction with an opinionated, guided workflow.",
+            "primary_benefit": "Go from idea to validated launch in days, not months.",
+            "org_chart": {
+                "Founder / CEO": ["Head of Product", "Head of Growth"],
+                "Head of Product": ["Product Designer", "Founding Engineer"],
+                "Head of Growth": ["Content Marketer", "Partnerships Lead"],
+            },
+            "okrs_q1": [
+                {
+                    "objective": "Validate the wedge with real users",
+                    "key_results": [
+                        "25 customer interviews completed",
+                        "10+ users express clear willingness to pay",
+                        "1 sharp ICP documented",
+                    ],
+                },
+                {
+                    "objective": "Stand up a working MVP",
+                    "key_results": [
+                        "Core flow shipped to 5 pilot users",
+                        "Activation rate above 40%",
+                    ],
+                },
+            ],
+        }
+    if role == "designer":
+        return {
+            "hero_headline": f"Ship {label} without the busywork",
+            "cta_text": "Start free",
+            "features": ["Guided setup", "One-click publish", "Built-in analytics"],
+            "url": "https://example.com/preview",
+            "landing_page": {
+                "hero": {"headline": f"Ship {label} without the busywork", "cta": {"text": "Start free", "link": "https://example.com/start"}},
+                "sections": ["Problem", "Solution", "Social proof", "Pricing"],
+            },
+            "integrations": {
+                "Product App": ["Auth", "Billing", "Analytics"],
+                "Billing": ["Stripe"],
+                "Analytics": ["PostHog", "Data Warehouse"],
+                "Auth": ["Email", "Google OAuth"],
+            },
+            "wireframe_notes": "Single-column hero, three feature cards, pricing table, footer CTA.",
+        }
+    if role == "marketer":
+        return {
+            "subject": f"Launch day: {label} is live",
+            "body": "Hey there - we just opened the doors. Here's what you can do in the first five minutes...",
+            "gtm_channels": [
+                {"channel": "Content / SEO", "expected_cac_usd": 18, "weekly_hours": 8},
+                {"channel": "Community (Reddit, Slack)", "expected_cac_usd": 9, "weekly_hours": 6},
+                {"channel": "Founder-led outbound", "expected_cac_usd": 25, "weekly_hours": 5},
+            ],
+            "financial_plan": {
+                "target_mrr_usd_m1_to_m6": [500, 1400, 3200, 5800, 9100, 13500],
+                "burn_usd_per_month": 6000,
+                "breakeven_month": 6,
+                "churn_target_pct": 4.5,
+            },
+        }
+    # ops / default
+    return {
+        "retention_loops": ["Onboarding checklist", "Weekly value email", "In-app milestones"],
+        "churn_drivers": ["Unclear first value", "No habit trigger", "Billing surprise"],
+        "nps_plan": "Survey at day 14 and day 45; route detractors to founder.",
+        "support_workflow": ["Shared inbox", "24h SLA", "Weekly bug triage"],
+        "financial_plan": {
+            "target_mrr_usd_m1_to_m6": [500, 1400, 3200, 5800, 9100, 13500],
+            "burn_usd_per_month": 6000,
+            "breakeven_month": 6,
+            "churn_target_pct": 4.5,
+        },
+    }
+
+
 def execute_chapter(
     chapter: Chapter,
     brief: str,
@@ -226,12 +319,13 @@ def execute_chapter(
             user += f"- Source: {hit['source']} | {hit['content'][:500]}\n"
 
     if not client or not deployment:
-        # Simulation fallback
-        artifact = {"note": f"Mock artifact for {chapter.title}", "status": "simulated"}
+        # Simulation fallback: rich, diagram-ready artifacts so the story
+        # renders org charts / integration maps / financials offline.
+        artifact = _mock_artifact(role, chapter, brief)
         invocation.status = "completed"
         invocation.completed_at = time.time()
         invocation.latency_s = 0.1
-        return invocation, artifact, 80
+        return invocation, artifact, _score_artifact(role, artifact)
 
     t0 = time.perf_counter()
     try:

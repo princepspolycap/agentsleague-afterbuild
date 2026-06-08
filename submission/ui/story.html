@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Your Company Is The Dungeon - Story Mode</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+        :root {
+            --bg: #0a0e1a;
+            --bg-2: #070a14;
+            --ink: #e8ecf6;
+            --ink-dim: #9aa6c0;
+            --ink-faint: #586079;
+            --line: #1d2740;
+            --blue: #5b8cff;
+            --strategist: #5b8cff;
+            --designer: #c084fc;
+            --marketer: #f59e0b;
+            --ops: #2dd4bf;
+            --narrator: #94a3b8;
+            --good: #34d399;
+            --bad: #fb7185;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
+            margin: 0;
+            height: 100%;
+            background:
+                radial-gradient(1100px 600px at 50% -20%, rgba(91, 140, 255, 0.10), transparent 60%),
+                linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+            color: var(--ink);
+            font-family: 'Inter', system-ui, sans-serif;
+            overflow: hidden;
+        }
+
+        #app {
+            position: relative;
+            height: 100vh;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+        }
+
+        /* ---- Top bar ---- */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 26px;
+            border-bottom: 1px solid var(--line);
+            backdrop-filter: blur(6px);
+        }
+        .brand {
+            font-family: 'Fraunces', serif;
+            font-size: 18px;
+            letter-spacing: 0.2px;
+            color: var(--ink);
+        }
+        .brand small {
+            display: block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.28em;
+            text-transform: uppercase;
+            color: var(--ink-dim);
+            margin-top: 2px;
+        }
+        .hud {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--ink-dim);
+        }
+        .hud b { color: var(--ink); font-weight: 600; }
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 11px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(255,255,255,0.02);
+        }
+        .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-dim); }
+        .dot.live { background: var(--good); box-shadow: 0 0 10px var(--good); }
+        .iconbtn {
+            border: 1px solid var(--line);
+            background: rgba(255,255,255,0.02);
+            color: var(--ink-dim);
+            border-radius: 8px;
+            width: 34px; height: 34px;
+            cursor: pointer;
+            font-size: 15px;
+            transition: 140ms ease;
+        }
+        .iconbtn:hover { color: var(--ink); border-color: #2c3a5e; }
+
+        /* ---- Stage ---- */
+        #stage {
+            position: relative;
+            overflow: hidden;
+            display: grid;
+            grid-template-columns: 1fr 360px;
+        }
+        #scene {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 64px 44px 130px;
+            overflow: hidden;
+        }
+        #diagram {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #diagram svg {
+            width: auto !important;
+            height: auto !important;
+            max-width: 100% !important;
+            max-height: 62vh !important;
+        }
+        #diagram .node rect,
+        #diagram .node polygon,
+        #diagram .node circle,
+        #diagram .node path {
+            fill: #16233f !important;
+            stroke-width: 1.6px !important;
+        }
+        #diagram .node .label,
+        #diagram .nodeLabel,
+        #diagram .edgeLabel,
+        #diagram .node text,
+        #diagram text.nodeLabel,
+        #diagram .label text {
+            color: #eaf0ff !important;
+            fill: #eaf0ff !important;
+            font-size: 16px !important;
+            font-weight: 500;
+        }
+        #diagram .edgeLabel rect { fill: #0a0e1a !important; opacity: 0.85; }
+        #diagram .cluster rect { fill: rgba(255,255,255,0.02) !important; stroke: #2c3a5e !important; }
+        #diagram .flowchart-link, #diagram .edgePath path { stroke: #4a5f8f !important; stroke-width: 1.6px !important; }
+
+        /* Title beat */
+        .title-card { text-align: center; max-width: 720px; }
+        .title-card .kicker {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px; letter-spacing: 0.34em; text-transform: uppercase;
+            color: var(--blue); margin-bottom: 18px;
+        }
+        .title-card h1 {
+            font-family: 'Fraunces', serif;
+            font-weight: 600;
+            font-size: clamp(34px, 5vw, 60px);
+            line-height: 1.04;
+            margin: 0 0 22px;
+            background: linear-gradient(180deg, #ffffff, #b9c6e8);
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .title-card p { color: var(--ink-dim); font-size: 16px; line-height: 1.6; margin: 0 auto 30px; max-width: 540px; }
+
+        .field { text-align: left; margin: 0 auto 14px; max-width: 540px; }
+        .field label {
+            display: block; font-family: 'JetBrains Mono', monospace;
+            font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+            color: var(--ink-dim); margin-bottom: 6px;
+        }
+        .field input, .field textarea {
+            width: 100%; background: rgba(255,255,255,0.03);
+            border: 1px solid var(--line); border-radius: 10px;
+            color: var(--ink); padding: 11px 13px; font-size: 14px;
+            font-family: 'Inter', sans-serif; outline: none; transition: 140ms ease;
+            resize: none;
+        }
+        .field input:focus, .field textarea:focus { border-color: var(--blue); background: rgba(91,140,255,0.06); }
+
+        .cta {
+            margin-top: 8px;
+            display: inline-flex; align-items: center; gap: 10px;
+            font-family: 'Inter', sans-serif; font-weight: 600; font-size: 15px;
+            color: #06101f;
+            background: linear-gradient(180deg, #7aa6ff, #5b8cff);
+            border: none; border-radius: 11px; padding: 13px 26px;
+            cursor: pointer; transition: 160ms ease;
+            box-shadow: 0 16px 40px -18px rgba(91,140,255,0.8);
+        }
+        .cta:hover { transform: translateY(-1px); }
+        .cta:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        /* Scene heading shown above diagrams */
+        #scene-head {
+            position: absolute; top: 20px; left: 34px; right: 34px;
+            display: flex; align-items: center; gap: 12px;
+            opacity: 0; transition: opacity 400ms ease;
+        }
+        #scene-head.show { opacity: 1; }
+        .beat-pill {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            letter-spacing: 0.2em; text-transform: uppercase;
+            padding: 4px 10px; border-radius: 999px;
+            border: 1px solid var(--line); color: var(--ink-dim);
+        }
+        #scene-title { font-family: 'Fraunces', serif; font-size: 20px; color: var(--ink); }
+
+        /* ---- Side rail: memory + worker ---- */
+        #rail {
+            border-left: 1px solid var(--line);
+            padding: 22px 20px;
+            display: flex; flex-direction: column; gap: 18px;
+            overflow: auto;
+            background: rgba(7,10,20,0.5);
+        }
+        .rail-h {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink-dim);
+            margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+        }
+        .worker-card {
+            border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+            background: rgba(255,255,255,0.02);
+        }
+        .worker-role {
+            font-family: 'Fraunces', serif; font-size: 17px; margin-bottom: 3px;
+            display: flex; align-items: center; gap: 9px;
+        }
+        .role-orb { width: 11px; height: 11px; border-radius: 50%; box-shadow: 0 0 12px currentColor; }
+        .worker-deploy {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-dim);
+            word-break: break-all;
+        }
+        .worker-state { margin-top: 9px; font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 7px; }
+        .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); animation: pulse 1.2s ease-in-out infinite; }
+        @keyframes pulse { 0%,100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
+
+        .mem-item {
+            border: 1px solid var(--line); border-left: 2px solid var(--ops);
+            border-radius: 8px; padding: 10px 11px; margin-bottom: 9px;
+            background: rgba(45,212,191,0.04);
+            opacity: 0; transform: translateX(8px);
+            animation: memIn 420ms ease forwards;
+        }
+        @keyframes memIn { to { opacity: 1; transform: none; } }
+        .mem-src { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ops); margin-bottom: 5px; }
+        .mem-body { font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; }
+        .mem-empty { font-size: 12px; color: var(--ink-faint); font-style: italic; }
+
+        /* ---- Digital Workforce panel (dynamic org) ---- */
+        .org-stat {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px;
+            color: var(--ink); margin-bottom: 8px; line-height: 1.55;
+            border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+            background: rgba(192,132,252,0.05);
+        }
+        .org-stat b { color: var(--designer); }
+        .org-model { font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; margin-bottom: 12px; font-style: italic; }
+        .org-role { margin-bottom: 10px; padding-left: 15px; position: relative; }
+        .org-orb { position: absolute; left: 0; top: 5px; width: 8px; height: 8px; border-radius: 50%; }
+        .org-role b { font-size: 12px; color: var(--ink); font-weight: 600; }
+        .org-kind { font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); margin-left: 6px; }
+        .org-why { font-size: 11px; color: var(--ink-dim); line-height: 1.45; margin-top: 2px; }
+
+        .gate {
+            margin-top: 2px; border: 1px solid var(--line); border-radius: 12px;
+            padding: 13px 14px; background: rgba(255,255,255,0.02);
+        }
+        .gate-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+        .gate-label { font-size: 12px; color: var(--ink-dim); }
+        .score-num { font-family: 'Fraunces', serif; font-size: 26px; color: var(--ink); }
+        .score-bar { height: 7px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
+        .score-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--marketer), var(--good)); transition: width 900ms cubic-bezier(.2,.7,.2,1); }
+        .gate-verdict { margin-top: 9px; font-size: 12px; font-weight: 600; }
+        .gate-verdict.pass { color: var(--good); }
+        .gate-verdict.review { color: var(--marketer); }
+
+        /* ---- Narration track ---- */
+        #narration {
+            position: absolute; left: 0; right: 360px; bottom: 0;
+            padding: 18px 40px 22px;
+            background: linear-gradient(180deg, transparent, rgba(7,10,20,0.92) 38%);
+            pointer-events: none;
+        }
+        #narration-text {
+            max-width: 760px;
+            font-family: 'Fraunces', serif; font-size: clamp(16px, 1.9vw, 22px);
+            line-height: 1.5; color: var(--ink);
+            min-height: 1.5em;
+        }
+        .caret { display: inline-block; width: 9px; height: 1.05em; vertical-align: text-bottom; background: var(--blue); margin-left: 3px; animation: blink 1s steps(1) infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        /* ---- Footer controls ---- */
+        footer {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 16px; padding: 14px 26px; border-top: 1px solid var(--line);
+        }
+        .progress { display: flex; align-items: center; gap: 7px; }
+        .seg { width: 30px; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.08); transition: background 300ms ease; }
+        .seg.done { background: var(--blue); }
+        .seg.active { background: linear-gradient(90deg, var(--blue), var(--designer)); box-shadow: 0 0 12px rgba(91,140,255,0.6); }
+        .controls { display: flex; align-items: center; gap: 10px; }
+        .btn {
+            font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500;
+            color: var(--ink); background: rgba(255,255,255,0.03);
+            border: 1px solid var(--line); border-radius: 9px; padding: 9px 16px;
+            cursor: pointer; transition: 140ms ease;
+        }
+        .btn:hover:not(:disabled) { border-color: #2c3a5e; background: rgba(255,255,255,0.06); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn.primary { color: #06101f; background: linear-gradient(180deg, #7aa6ff, #5b8cff); border: none; font-weight: 600; }
+        .btn.ghost { color: var(--ink-dim); }
+
+        .hint { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-faint); }
+
+        /* Mermaid node entrance: fade only. NEVER animate transform here -
+           mermaid uses transform:translate(x,y) to POSITION each node, so
+           animating transform collapses every node onto the origin. */
+        .draw .node, .draw .cluster, .draw .edgePaths .edgePath, .draw .edgeLabels .edgeLabel,
+        .draw .flowchart-link {
+            opacity: 0;
+            animation: drawIn 520ms ease forwards;
+        }
+        @keyframes drawIn { from { opacity: 0; } to { opacity: 1; } }
+
+        .fade-scene { animation: sceneIn 500ms ease; }
+        @keyframes sceneIn { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: none; } }
+
+        a.switch { color: var(--ink-faint); font-size: 11px; text-decoration: none; font-family: 'JetBrains Mono', monospace; }
+        a.switch:hover { color: var(--ink-dim); }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="brand">
+                Your Company Is The Dungeon
+                <small>Story Mode</small>
+            </div>
+            <div class="hud">
+                <span class="chip"><span id="mode-dot" class="dot"></span><span id="mode-label">simulation</span></span>
+                <span>Level <b id="hud-level">1</b></span>
+                <span><b id="hud-xp">0</b> XP</span>
+                <a class="switch" href="/geometric">geometric &rsaquo;</a>
+                <button id="mute" class="iconbtn" title="Toggle audio">&#9834;</button>
+            </div>
+        </header>
+
+        <section id="stage">
+            <div id="scene">
+                <div id="scene-head">
+                    <span id="scene-beat" class="beat-pill">Beat</span>
+                    <span id="scene-title"></span>
+                </div>
+
+                <div id="diagram">
+                    <div class="title-card fade-scene">
+                        <div class="kicker">A reasoning RPG on Microsoft Foundry</div>
+                        <h1>Every company begins<br/>as a single sentence.</h1>
+                        <p>Type a pitch. A Foundry World Designer decomposes it into a venture quest line, then specialist agents build the org, the systems, and the launch &mdash; one verified gate at a time.</p>
+                        <div class="field">
+                            <label>Company</label>
+                            <input id="in-company" value="QuestForge Ltd." />
+                        </div>
+                        <div class="field">
+                            <label>Pitch</label>
+                            <textarea id="in-pitch" rows="3">A solo-founder tool that turns a rough startup idea into positioning, a landing page, and a launch campaign.</textarea>
+                        </div>
+                        <div class="field">
+                            <label>Or a company URL &mdash; map any real business</label>
+                            <input id="in-url" placeholder="https://example.com  (optional; overrides the pitch)" />
+                        </div>
+                        <button id="begin" class="cta">Begin the descent &rarr;</button>
+                    </div>
+                </div>
+            </div>
+
+            <aside id="rail">
+                <div>
+                    <div class="rail-h"><span class="dot"></span> Active Worker</div>
+                    <div id="worker" class="worker-card">
+                        <div class="worker-role"><span class="role-orb" style="color:var(--narrator)"></span><span id="worker-name">World Designer</span></div>
+                        <div id="worker-deploy" class="worker-deploy">awaiting brief</div>
+                        <div id="worker-state" class="worker-state">Idle</div>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="rail-h"><span class="dot" style="background:var(--designer)"></span> Digital Workforce</div>
+                    <div id="org-panel"><div class="mem-empty">The org an LLM designs for this company appears here &mdash; one human operator plus the digital workers that execute.</div></div>
+                </div>
+
+                <div>
+                    <div class="rail-h"><span class="dot" style="background:var(--ops)"></span> Foundry IQ Memory</div>
+                    <div id="memory"><div class="mem-empty">Memory recalled per chapter appears here.</div></div>
+                </div>
+
+                <div>
+                    <div class="rail-h"><span class="dot" style="background:var(--marketer)"></span> Verification Gate</div>
+                    <div class="gate">
+                        <div class="gate-row">
+                            <span class="gate-label">Validator score</span>
+                            <span id="score" class="score-num">&mdash;</span>
+                        </div>
+                        <div class="score-bar"><div id="score-fill" class="score-fill"></div></div>
+                        <div id="verdict" class="gate-verdict">Awaiting first artifact</div>
+                    </div>
+                </div>
+            </aside>
+
+            <div id="narration">
+                <div id="narration-text"></div>
+            </div>
+        </section>
+
+        <footer>
+            <div class="progress" id="progress"></div>
+            <div class="controls">
+                <span id="hint" class="hint">Enter a pitch to begin</span>
+                <button id="auto" class="btn ghost" disabled>Auto-play</button>
+                <button id="next" class="btn primary" disabled>Next &rarr;</button>
+                <button id="reset" class="btn" disabled>Reset</button>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/game/game/audio.js"></script>
+    <script type="module" src="/game/game/story.js?v=5"></script>
+</body>
+</html>

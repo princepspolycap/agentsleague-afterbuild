@@ -95,6 +95,47 @@ def _chat_json(role: str, system: str, user: str, fallback: Any) -> Any:
     return parsed if parsed is not None else fallback
 
 
+# Canonical quest line: role, artifact_type, default id/title/xp. Order is fixed
+# because downstream execution reads steps[0]=positioning, steps[1]=page, etc.
+_CANONICAL_STEPS = [
+    ("strategist", "doc",   "step_1_positioning",  "Define Your Target Audience and Positioning",     15),
+    ("designer",   "url",   "step_2_landing_page", "Draft and Validate Your Landing Page Structure",  25),
+    ("marketer",   "email", "step_3_launch_email", "Draft Your Launch Campaign Email",                20),
+]
+
+
+def _normalize_steps(steps: Any, pitch: str) -> List[Dict[str, Any]]:
+    """Coerce model-produced quest steps to the QuestStep contract.
+
+    The live narrator model sometimes returns ids as ints, omits keys, or uses
+    invalid enum values. We force every field to the schema's expected type and
+    pin role + artifact_type by position so QuestStep(**step) can never raise
+    mid-demo and the downstream handoff order stays correct. Mirrors
+    world_designer._normalize_chapters.
+    """
+    model_steps = steps if isinstance(steps, list) else []
+    out: List[Dict[str, Any]] = []
+    for idx, (role, artifact_type, default_id, default_title, default_xp) in enumerate(_CANONICAL_STEPS):
+        raw = model_steps[idx] if idx < len(model_steps) and isinstance(model_steps[idx], dict) else {}
+        try:
+            xp = int(raw.get("xp_reward", default_xp))
+        except (TypeError, ValueError):
+            xp = default_xp
+        xp = max(10, min(30, xp))
+        out.append({
+            "id": str(raw.get("id") or default_id),
+            "title": str(raw.get("title") or default_title),
+            "description": str(
+                raw.get("description")
+                or f"Work with the {role.title()} to advance the venture: '{pitch}'"
+            ),
+            "assigned_to": role,            # pinned by position for downstream safety
+            "artifact_type": artifact_type, # pinned by position
+            "xp_reward": xp,
+        })
+    return out
+
+
 class BaseFoundryAgent:
     def __init__(self, name: str, role: str, system_instructions: str):
         self.name = name
@@ -155,7 +196,7 @@ class MasterNarrator(BaseFoundryAgent):
         )
         out = _chat_json(self.role, self.system_instructions, user, {"steps": fallback})
         steps = out.get("steps") if isinstance(out, dict) else None
-        return steps if isinstance(steps, list) and len(steps) == 3 else fallback
+        return _normalize_steps(steps, pitch)
 
 
 class StrategistAgent(BaseFoundryAgent):

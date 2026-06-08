@@ -1,20 +1,25 @@
 import os
 import sys
+import json
+import time
 import yaml
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, Iterator
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # Ensure submission path is in Python path for local modular references
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from state.schema import StateStore, QuestState, QuestStep, CompanyState, WorldGraph, Chapter
+from state.schema import StateStore, QuestState, QuestStep, CompanyState, WorldGraph, Chapter, OrgBlueprint
 from agents.foundry_agents import MasterNarrator, StrategistAgent, DesignerAgent, MarketerAgent
+from agents.model_config import model_for, is_live
 from agents.world_designer import design_world
 from agents.worker_factory import run_world, execute_chapter
+from agents.org_designer import design_org
+from agents.retrieval import retrieve, brief_from_url
 from tools.code_interpreter_wrappers import validate_positioning, validate_landing_page, validate_marketing_email
 
 app = FastAPI(
@@ -48,6 +53,12 @@ def get_state():
         return {"initialized": False, "state": None}
     return {"initialized": True, "state": state.model_dump()}
 
+
+@app.get("/api/mode")
+def get_mode():
+    """Report whether the reasoning path is hitting live Foundry or simulation."""
+    return {"live": is_live(), "mode": "live" if is_live() else "simulation"}
+
 @app.post("/api/init")
 def initialize_game(payload: PitchRequest):
     """Initializes the game session with a custom pitch and decomposes it."""
@@ -66,8 +77,11 @@ def initialize_game(payload: PitchRequest):
     narrator = MasterNarrator()
     try:
         steps_data = narrator.decompose_pitch(pitch)
+        quest_steps = [QuestStep(**s) for s in steps_data]
     except Exception as e:
-        # Fallback to offline mock steps if any SDK issue occurs
+        # Fallback to offline mock steps if decomposition or validation fails.
+        store.log_event("DECOMPOSE_FALLBACK", "system",
+                        f"Narrator decomposition unusable, using safe defaults: {e}")
         steps_data = [
             {
                 "id": "step_1_positioning",
@@ -94,18 +108,182 @@ def initialize_game(payload: PitchRequest):
                 "xp_reward": 20
             }
         ]
-        
+        quest_steps = [QuestStep(**s) for s in steps_data]
+
     quest_state = QuestState(
         id="first_landing_page",
         title="Forge Your First Landing Page",
         description="Fulfill positioning, draft a page, and set up campaign outreach.",
-        steps=[QuestStep(**s) for s in steps_data]
+        steps=quest_steps
     )
     state.active_quest = quest_state
     store.save()
     
     store.log_event("QUEST_START", narrator.name, "Decomposed pitch into active quest-steps.", {"steps": steps_data})
     return {"initialized": True, "state": state.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Shared agent-execution + reasoning-trace helpers (used by the plain POST
+# endpoint and the SSE streaming endpoint, so both run identical logic).
+# ---------------------------------------------------------------------------
+
+def _run_step_agent(quest: QuestState, step: QuestStep) -> Tuple[Dict[str, Any], bool, Dict[str, Any]]:
+    """Run the right character agent for a quest step and validate its artifact.
+
+    Returns (artifact_data, success, validation_results). Pure compute - no
+    state mutation or persistence, so callers control how results are stored.
+    """
+    pitch = (store.state.pitch if store.state else "") or ""
+    role = step.assigned_to
+
+    if role == "strategist":
+        artifact = StrategistAgent().formulate_positioning(pitch)
+        success, results = validate_positioning(artifact)
+    elif role == "designer":
+        positioning = quest.steps[0].artifact_data or {}
+        artifact = DesignerAgent().build_page_structure(positioning)
+        success, results = validate_landing_page(artifact)
+    elif role == "marketer":
+        positioning = quest.steps[0].artifact_data or {}
+        page_structure = quest.steps[1].artifact_data or {}
+        artifact = MarketerAgent().draft_launch_email(positioning, page_structure)
+        success, results = validate_marketing_email(artifact)
+    else:
+        raise ValueError(f"Unknown agent role: {role}")
+
+    return artifact, success, results
+
+
+# Friendly per-role labels for the reasoning trace.
+_ROLE_PERSONA = {
+    "strategist": ("Soren", "Strategist"),
+    "designer": ("Dahlia", "Designer"),
+    "marketer": ("Maddox", "Marketer"),
+}
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    """Format one Server-Sent Event frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _stream_step_reasoning(state: CompanyState, quest: QuestState, step: QuestStep) -> Iterator[str]:
+    """Generator that performs the agent turn while emitting live trace events.
+
+    Each yielded frame corresponds to a real phase boundary: routing, the live
+    Foundry deployment call, then each deterministic validator check. This is
+    the genuine multi-step reasoning made visible during the turn (not after).
+    """
+    persona_name, persona_role = _ROLE_PERSONA.get(step.assigned_to, (step.assigned_to, step.assigned_to))
+    deployment = model_for(step.assigned_to) or ""
+    mode = "live" if (is_live() and deployment) else "simulation"
+    deployment_label = f"foundry-{step.assigned_to}" if mode == "live" else "simulation"
+
+    # Mark the step in-progress up front so a refresh mid-turn is consistent.
+    step.status = "in-progress"
+    store.log_event("STEP_START", step.assigned_to, f"Agent begins work on: {step.title}", {"step_id": step.id})
+    store.save()
+
+    # Phase 1: the Narrator routes the step to the right specialist.
+    yield _sse("phase", {
+        "kind": "route",
+        "actor": "The Narrator",
+        "message": f"Routing '{step.title}' to {persona_name} the {persona_role}.",
+        "deployment": deployment_label,
+        "mode": mode,
+    })
+
+    # Phase 2: invoke the Foundry deployment (the real reasoning happens here).
+    yield _sse("phase", {
+        "kind": "invoke_start",
+        "actor": persona_name,
+        "message": f"Invoking {deployment_label} deployment to reason over the pitch...",
+        "role": step.assigned_to,
+    })
+
+    t0 = time.time()
+    try:
+        artifact_data, success, val_results = _run_step_agent(quest, step)
+    except Exception as exc:  # noqa: BLE001
+        step.status = "failed"
+        store.log_event("STEP_EXECUTION_ERROR", "system", f"Failed executing step reasoning: {exc}")
+        store.save()
+        yield _sse("failure", {"message": f"Agent execution failure: {exc}"})
+        return
+    latency = round(time.time() - t0, 2)
+
+    artifact_keys = list(artifact_data.keys())
+    yield _sse("phase", {
+        "kind": "invoke_done",
+        "actor": persona_name,
+        "message": f"Artifact returned ({len(artifact_keys)} fields) in {latency}s.",
+        "latency_s": latency,
+        "artifact_keys": artifact_keys,
+    })
+
+    # Phase 3: deterministic code-interpreter validators, streamed per check.
+    yield _sse("phase", {
+        "kind": "validate_start",
+        "actor": "Code Interpreter",
+        "message": "Scoring the artifact with deterministic validators...",
+    })
+    checks = (val_results or {}).get("checks", {}) or {}
+    for name, passed in checks.items():
+        time.sleep(0.18)  # paced so the audience can read each check land
+        yield _sse("phase", {
+            "kind": "check",
+            "actor": "Code Interpreter",
+            "name": name,
+            "passed": bool(passed),
+            "message": f"check {name}: {'PASS' if passed else 'FAIL'}",
+        })
+
+    score = int((val_results or {}).get("score", 0))
+    yield _sse("phase", {
+        "kind": "score",
+        "actor": "Code Interpreter",
+        "score": score,
+        "passed": bool(success),
+        "message": f"Validation score: {score}/100",
+    })
+
+    # Persist results identically to the POST path so the verification gate works.
+    step.artifact_data = artifact_data
+    step.validation_results = val_results
+    store.log_event("STEP_COMPLETED_REASONING", step.assigned_to,
+                    "Artifact created. Verification gate waiting for review.",
+                    {"artifact": artifact_data, "validation_results": val_results})
+    store.save()
+
+    yield _sse("done", {
+        "state": state.model_dump(),
+        "current_step": step.model_dump(),
+    })
+
+
+@app.get("/api/step/execute/stream")
+def execute_current_step_stream():
+    """SSE variant of execute: streams reasoning phases live during the turn.
+
+    The browser consumes this with EventSource and appends each phase to the
+    reasoning trace in real time. Falls back to POST /api/step/execute if the
+    client cannot stream. Persists identical state, so approval works after.
+    """
+    state = store.load()
+    if not state or not state.active_quest:
+        raise HTTPException(status_code=400, detail="Game session not initialized. Post to /api/init first.")
+    quest = state.active_quest
+    if quest.current_step_index >= len(quest.steps):
+        raise HTTPException(status_code=400, detail="All quest-steps completed!")
+    step = quest.steps[quest.current_step_index]
+
+    return StreamingResponse(
+        _stream_step_reasoning(state, quest, step),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 
 @app.post("/api/step/execute")
 def execute_current_step():
@@ -125,31 +303,8 @@ def execute_current_step():
     store.log_event("STEP_START", step.assigned_to, f"Agent begins work on: {step.title}", {"step_id": step.id})
     store.save()
     
-    artifact_data: Dict[str, Any] = {}
-    success = False
-    val_results: Dict[str, Any] = {}
-    
-    pitch = state.pitch
-    
     try:
-        if step.assigned_to == "strategist":
-            agent = StrategistAgent()
-            artifact_data = agent.formulate_positioning(pitch)
-            success, val_results = validate_positioning(artifact_data)
-            
-        elif step.assigned_to == "designer":
-            agent = DesignerAgent()
-            positioning = quest.steps[0].artifact_data or {}
-            artifact_data = agent.build_page_structure(positioning)
-            success, val_results = validate_landing_page(artifact_data)
-            
-        elif step.assigned_to == "marketer":
-            agent = MarketerAgent()
-            positioning = quest.steps[0].artifact_data or {}
-            page_structure = quest.steps[1].artifact_data or {}
-            artifact_data = agent.draft_launch_email(positioning, page_structure)
-            success, val_results = validate_marketing_email(artifact_data)
-            
+        artifact_data, success, val_results = _run_step_agent(quest, step)
         step.artifact_data = artifact_data
         step.validation_results = val_results
         
@@ -279,16 +434,102 @@ class AutoplayRequest(BaseModel):
     auto_approve_threshold: int = 80  # score >= this auto-approves
 
 
+# ---------------------------------------------------------------------------
+# Org Designer: dynamic digital workforce for a company (pitch OR url)
+# ---------------------------------------------------------------------------
+
+class AnalyzeRequest(BaseModel):
+    pitch: Optional[str] = None
+    url: Optional[str] = None
+    company_name: Optional[str] = "QuestForge Ltd."
+
+
+@app.post("/api/company/analyze")
+def analyze_company(payload: AnalyzeRequest):
+    """Design the dynamic org an LLM thinks this company needs.
+
+    Accepts a pitch OR a company URL. When a URL is given, the homepage is
+    fetched (SSRF-guarded, stdlib only) and turned into a brief, so you can
+    point this at any company. The result is a team of digital workers - the
+    execution layer behind a single human operator - with an educational `why`
+    per role. Also awards a one-time "Org chartered" XP (simple game mechanic).
+    """
+    url = (payload.url or "").strip()
+    pitch = (payload.pitch or "").strip()
+    if not url and not pitch:
+        raise HTTPException(status_code=400, detail="Provide a pitch or a company url.")
+
+    if url:
+        brief = brief_from_url(url)
+        source, source_ref = "url", url
+    else:
+        brief, source, source_ref = pitch, "pitch", pitch
+
+    company_name = payload.company_name or "QuestForge Ltd."
+    # Analyze starts a fresh venture session - designing the org is the first
+    # reasoning step, before any chapters exist.
+    state = store.initialize_new_company(
+        name=company_name, pitch=pitch or brief, description="A venture forged in QuestForge."
+    )
+    store.log_event("SESSION_START", "system", f"New analyze session for: {company_name}")
+
+    blueprint = design_org(brief, source=source, source_ref=source_ref)
+    state.org = OrgBlueprint(**blueprint)
+
+    # Simple game mechanic: chartering the org rewards XP scaled by how much
+    # leverage the digital workforce gives the single human operator.
+    charter_xp = 15 + 2 * state.org.digital_worker_count
+    state.xp += charter_xp
+    state.business_flags["org_chartered"] = True
+    if state.xp >= 50 and state.level < 2:
+        state.level = 2
+    store.log_event(
+        "ORG_CHARTERED", "org_designer",
+        f"Chartered a {state.org.headcount}-seat org: 1 operator + "
+        f"{state.org.digital_worker_count} digital workers (+{charter_xp} XP).",
+        {
+            "source": source,
+            "headcount": state.org.headcount,
+            "digital_worker_count": state.org.digital_worker_count,
+            "monthly_burn_usd": state.org.monthly_burn_usd,
+            "leverage_ratio": state.org.leverage_ratio,
+            "xp_earned": charter_xp,
+        },
+    )
+
+    store.save()
+    return {
+        "state": state.model_dump(),
+        "org": state.org.model_dump(),
+        "source": source,
+        "brief": brief[:600],
+        "mode": "live" if is_live() else "simulation",
+    }
+
+
 @app.post("/api/world/design")
 def design_world_endpoint(payload: AutoplayRequest):
-    """Uses the WorldDesigner to produce a full venture graph."""
+    """Uses the WorldDesigner to produce a full venture graph.
+
+    Preserves an org chartered by /api/company/analyze in the same session, so
+    the dynamic workforce, earned XP, and flags carry through into the build.
+    """
     brief = payload.pitch
     company_name = payload.company_name or "QuestForge Ltd."
 
+    prev = store.load()
     state = store.initialize_new_company(
         name=company_name, pitch=brief, description="A venture forged in QuestForge."
     )
-    store.log_event("SESSION_START", "system", f"New world session for: {company_name}")
+    # Carry forward a prior analyze session (org + earned XP + flags).
+    if prev and prev.org:
+        state.org = prev.org
+        state.xp = prev.xp
+        state.level = prev.level
+        state.business_flags = prev.business_flags
+        store.log_event("WORLD_SESSION", "system", f"Attached venture graph to chartered org for: {company_name}")
+    else:
+        store.log_event("SESSION_START", "system", f"New world session for: {company_name}")
 
     chapters_data = design_world(brief)
     world = WorldGraph(
@@ -320,6 +561,9 @@ def run_next_chapter():
     idx = world.chapters.index(chapter)
     world.current_chapter_index = idx
 
+    # Foundry IQ memory recalled for this chapter (surfaced to the story view).
+    memory = retrieve(f"{world.brief} {chapter.goal} {chapter.success_metric}", top_k=2)
+
     previous_artifacts = [ch.artifact for ch in world.chapters[:idx] if ch.artifact]
     invocation, artifact, score = execute_chapter(chapter, world.brief, previous_artifacts)
     world.invocations.append(invocation)
@@ -347,7 +591,12 @@ def run_next_chapter():
         store.log_event("WORLD_COMPLETED", "system", "All chapters completed! Venture stage: launched.")
 
     store.save()
-    return {"state": state.model_dump(), "chapter": chapter.model_dump(), "invocation": invocation.model_dump()}
+    return {
+        "state": state.model_dump(),
+        "chapter": chapter.model_dump(),
+        "invocation": invocation.model_dump(),
+        "memory": memory,
+    }
 
 
 @app.post("/api/world/autoplay")
@@ -414,7 +663,25 @@ app.mount("/game", StaticFiles(directory=UI_DIRECTORY, html=True), name="ui")
 
 @app.get("/")
 def read_root():
-    """Redirects to the UI page."""
+    """Serve the 3Blue1Brown-style story view as the default experience."""
+    return FileResponse(os.path.join(UI_DIRECTORY, "story.html"))
+
+
+@app.get("/story")
+def read_story():
+    """Serve the animated, narrated story view."""
+    return FileResponse(os.path.join(UI_DIRECTORY, "story.html"))
+
+
+@app.get("/geometric")
+def read_geometric():
+    """Serve the geometric Phaser UI."""
+    return FileResponse(os.path.join(UI_DIRECTORY, "geometric.html"))
+
+
+@app.get("/sprites")
+def read_sprites():
+    """Serve the legacy sprite-based UI (assets are gitignored)."""
     return FileResponse(os.path.join(UI_DIRECTORY, "index.html"))
 
 if __name__ == "__main__":

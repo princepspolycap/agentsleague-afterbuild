@@ -4,6 +4,9 @@ let phaserGame = null;
 let currentGameState = null;
 let isPlayerNearActiveAgent = false;
 let isReasoningBusy = false;
+// When true, updateUIWithState keeps the live streamed reasoning trace on
+// screen instead of rebuilding it from the replay log.
+let suppressLogRerender = false;
 
 // Core API endpoints
 const API_BASE = "/api";
@@ -49,6 +52,18 @@ const gameView = document.getElementById("game-view");
 const sidebarView = document.getElementById("sidebar-view");
 const statusPanel = document.getElementById("status-panel");
 const resetBtn = document.getElementById("reset-btn");
+
+// Audio mute toggle (synthesized Web Audio, no files).
+const audioToggle = document.getElementById("audio-toggle");
+if (audioToggle) {
+    audioToggle.addEventListener("click", () => {
+        if (!window.DungeonAudio) return;
+        DungeonAudio.unlock();
+        const nowMuted = DungeonAudio.toggleMute();
+        audioToggle.innerText = nowMuted ? "SOUND: OFF" : "SOUND: ON";
+        if (!nowMuted) DungeonAudio.tick(true); // confirmation blip
+    });
+}
 
 const companyInput = document.getElementById("company-input");
 const pitchInput = document.getElementById("pitch-input");
@@ -336,17 +351,20 @@ function updateUIWithState() {
             : "pixel-font-title text-base text-orange-300";
     }
     
-    // Render logs
-    terminalLogs.innerHTML = "";
-    currentGameState.replay_log.forEach(log => {
-        let color = "text-slate-300";
-        if (log.event_type.includes("APPROVED")) color = "text-emerald-400 font-bold";
-        else if (log.event_type.includes("REJECTED") || log.event_type.includes("ERROR")) color = "text-rose-400";
-        else if (log.event_type.includes("START")) color = "text-yellow-300";
-        else if (log.actor && log.actor !== "system") color = "text-teal-400";
-        
-        logTerminal(`[${log.actor}] ${log.message}`, color);
-    });
+    // Render logs. During a streamed turn we keep the live phase trace on
+    // screen instead of replacing it with the coarser replay-log summary.
+    if (!suppressLogRerender) {
+        terminalLogs.innerHTML = "";
+        currentGameState.replay_log.forEach(log => {
+            let color = "text-slate-300";
+            if (log.event_type.includes("APPROVED")) color = "text-emerald-400 font-bold";
+            else if (log.event_type.includes("REJECTED") || log.event_type.includes("ERROR")) color = "text-rose-400";
+            else if (log.event_type.includes("START")) color = "text-yellow-300";
+            else if (log.actor && log.actor !== "system") color = "text-teal-400";
+            
+            logTerminal(`[${log.actor}] ${log.message}`, color);
+        });
+    }
     
     // Render Quests Track List
     questBoard.innerHTML = "";
@@ -603,6 +621,7 @@ launchBtn.addEventListener("click", async () => {
     const pitch = pitchInput.value.trim();
     const cName = companyInput.value.trim();
     if (!pitch) return;
+    if (window.DungeonAudio) DungeonAudio.unlock();
     
     launchBtn.disabled = true;
     launchBtn.innerText = "DEPLOYING CORE NARRATIVE...";
@@ -630,6 +649,7 @@ if (worldAutoplayBtn) {
         const pitch = pitchInput.value.trim();
         const cName = companyInput.value.trim();
         if (!pitch) return;
+        if (window.DungeonAudio) DungeonAudio.unlock();
 
         worldAutoplayBtn.disabled = true;
         launchBtn.disabled = true;
@@ -666,11 +686,15 @@ if (worldAutoplayBtn) {
 // Run Step Reasoning loops
 runStepBtn.addEventListener("click", attemptRunCurrentStep);
 
-async function attemptRunCurrentStep() {
+async function attemptRunCurrentStep(force = false) {
     const currentStep = getCurrentActiveStep();
     if (!currentStep || currentStep.artifact_data || isReasoningBusy) return;
 
-    if (!isPlayerNearActiveAgent) {
+    // Proximity is a player-affordance for manual play only. Autoplay (the
+    // demo-safe path) passes force=true so the agent turn never depends on a
+    // Phaser tween completing - background tabs throttle requestAnimationFrame,
+    // which would otherwise strand the player and skip the live agent call.
+    if (!force && !isPlayerNearActiveAgent) {
         const agentMeta = AGENT_DISPLAY[currentStep.assigned_to] || { name: currentStep.assigned_to, room: "Agent Room" };
         logTerminal(`[game] Approach ${agentMeta.name} in the ${agentMeta.room} before running the turn.`, "text-yellow-300");
         const npc = getCurrentNpc();
@@ -688,14 +712,14 @@ async function attemptRunCurrentStep() {
     notifyPhaserAgentActive();
     
     try {
-        const res = await fetch(`${API_BASE}/step/execute`, { method: "POST" });
-        if (!res.ok) throw new Error("Agent fail");
-        
-        const data = await res.json();
-        currentGameState = data.state;
+        // Preferred path: stream the reasoning trace live via SSE so the
+        // decomposition + tool calls appear during the turn, not after.
+        const finalState = await streamStepReasoning();
+        currentGameState = finalState;
+        // Keep the streamed phase trace visible through this state refresh.
+        suppressLogRerender = true;
         updateUIWithState();
-        
-        // Trigger Phaser success balloon
+        suppressLogRerender = false;
         notifyPhaserAgentComplete(true);
     } catch (e) {
         console.error(e);
@@ -708,10 +732,113 @@ async function attemptRunCurrentStep() {
     }
 }
 
+// Color map for streamed reasoning phases.
+const PHASE_COLORS = {
+    route: "text-violet-300",
+    invoke_start: "text-sky-300",
+    invoke_done: "text-teal-300",
+    validate_start: "text-amber-300",
+    check: "text-slate-300",
+    score: "text-emerald-400 font-bold",
+};
+
+// Stream a single agent turn over SSE. Resolves with the final game state.
+// Falls back to the plain POST execute endpoint if EventSource is unavailable
+// or the stream errors before completing.
+function streamStepReasoning() {
+    return new Promise((resolve, reject) => {
+        if (typeof EventSource === "undefined") {
+            return runStepReasoningViaPost().then(resolve, reject);
+        }
+
+        let settled = false;
+        let es;
+        const watchdog = setTimeout(() => {
+            if (settled) return;
+            try { es && es.close(); } catch (_) {}
+            // Stream stalled - fall back to the blocking POST path.
+            runStepReasoningViaPost().then(resolve, reject);
+            settled = true;
+        }, 60000);
+
+        try {
+            es = new EventSource(`${API_BASE}/step/execute/stream`);
+        } catch (err) {
+            clearTimeout(watchdog);
+            return runStepReasoningViaPost().then(resolve, reject);
+        }
+
+        es.addEventListener("phase", (ev) => {
+            try {
+                const p = JSON.parse(ev.data);
+                const color = PHASE_COLORS[p.kind] || "text-slate-400";
+                const actor = p.actor ? `[${p.actor}] ` : "";
+                let line = `${actor}${p.message || p.kind}`;
+                if (p.kind === "check") line = `${actor}${p.passed ? "PASS" : "FAIL"}  ${p.name}`;
+                logTerminal(line, color);
+                // Audio cues bound to the real reasoning phases.
+                if (window.DungeonAudio) {
+                    if (p.kind === "invoke_start") DungeonAudio.thinkingStart();
+                    else if (p.kind === "invoke_done") DungeonAudio.thinkingStop();
+                    else if (p.kind === "check") DungeonAudio.tick(p.passed);
+                    else if (p.kind === "score") DungeonAudio.chime();
+                }
+            } catch (_) {}
+        });
+
+        es.addEventListener("done", (ev) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(watchdog);
+            try {
+                const payload = JSON.parse(ev.data);
+                es.close();
+                resolve(payload.state);
+            } catch (err) {
+                es.close();
+                reject(err);
+            }
+        });
+
+        es.addEventListener("failure", (ev) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(watchdog);
+            if (window.DungeonAudio) DungeonAudio.thinkingStop();
+            try {
+                const payload = JSON.parse(ev.data);
+                logTerminal(`[system] ${payload.message || "Agent failure."}`, "text-rose-400");
+            } catch (_) {}
+            es.close();
+            reject(new Error("stream failure"));
+        });
+
+        // Native connection error (not a server 'failure' frame).
+        es.onerror = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(watchdog);
+            if (window.DungeonAudio) DungeonAudio.thinkingStop();
+            try { es.close(); } catch (_) {}
+            // Fall back to POST so a flaky stream never blocks the demo.
+            runStepReasoningViaPost().then(resolve, reject);
+        };
+    });
+}
+
+// Non-streaming fallback: one blocking call to the POST execute endpoint.
+async function runStepReasoningViaPost() {
+    const res = await fetch(`${API_BASE}/step/execute`, { method: "POST" });
+    if (!res.ok) throw new Error("Agent fail");
+    const data = await res.json();
+    return data.state;
+}
+
 // Approve step
 approveBtn.addEventListener("click", async () => {
     try {
         const approvedStep = getCurrentActiveStep();
+        const prevLevel = currentGameState?.level ?? 1;
         const res = await fetch(`${API_BASE}/step/approve`, { method: "POST" });
         const data = await res.json();
 
@@ -722,7 +849,16 @@ approveBtn.addEventListener("click", async () => {
             ?? approvedStep?.xp_reward
             ?? 0;
         spawnPhaserXPEffect(earnedXp);
-        
+
+        // Audio: approve chime, then level-up / quest-complete flourishes.
+        if (window.DungeonAudio) {
+            const questDone = data.state?.active_quest?.status === "completed";
+            const leveledUp = (data.state?.level ?? 1) > prevLevel;
+            if (questDone) DungeonAudio.complete();
+            else if (leveledUp) DungeonAudio.levelUp();
+            else DungeonAudio.approve();
+        }
+
         currentGameState = data.state;
         updateUIWithState();
     } catch (e) {
@@ -742,6 +878,7 @@ rejectBtn.addEventListener("click", async () => {
         
         // Sweat balloon in Phaser
         notifyPhaserAgentReject();
+        if (window.DungeonAudio) DungeonAudio.reject();
         
         currentGameState = data.state;
         updateUIWithState();
@@ -843,14 +980,20 @@ async function runAutoplayLoop() {
 
         // 2. Run the turn if the artifact is not already on the table.
         if (!getCurrentActiveStep()?.artifact_data) {
-            await attemptRunCurrentStep();
+            await attemptRunCurrentStep(true);
             // Wait out the reasoning loader.
             let guard = 30;
             while (isReasoningBusy && guard-- > 0) await sleep(200);
         }
         if (!isAutoplayActive) break;
 
-        // 3. Auto-approve via the same DOM path the human uses.
+        // 3. Auto-approve via the same DOM path the human uses - but never
+        //    approve an empty step. If the live agent call failed to produce an
+        //    artifact, stop autoplay loudly instead of awarding XP for nothing.
+        if (!getCurrentActiveStep()?.artifact_data) {
+            logTerminal("[autoplay] Agent produced no artifact - halting before approval. Check Foundry connectivity.", "text-rose-400");
+            break;
+        }
         await sleep(AUTOPLAY_DELAY_MS);
         approveBtn.click();
         await sleep(AUTOPLAY_DELAY_MS);
@@ -939,6 +1082,7 @@ async function runWorldAutoplayLoop() {
 
             const earnedXp = Math.max(0, (currentGameState.xp || 0) - previousXp);
             if (earnedXp > 0) spawnPhaserXPEffect(earnedXp);
+            if (earnedXp > 0 && window.DungeonAudio) DungeonAudio.approve();
 
             const status = data.chapter?.status || "completed";
             const score = data.chapter?.validation_score ?? 0;

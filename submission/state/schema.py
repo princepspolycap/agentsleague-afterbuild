@@ -12,6 +12,44 @@ class CharacterState(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Org blueprint: the dynamic digital workforce the OrgDesigner proposes for a
+# specific company. This is the "what org structure + agents does this company
+# need" reasoning step. Roles are the execution layer behind a human operator.
+# ---------------------------------------------------------------------------
+
+class OrgRole(BaseModel):
+    """One seat in the company's dynamic org - usually a digital worker."""
+    id: str
+    title: str
+    kind: str = "digital_worker"  # human | digital_worker | hybrid
+    mandate: str = ""             # what this role is accountable for
+    reports_to: Optional[str] = None  # parent role id (None == top of org)
+    kpis: List[str] = Field(default_factory=list)
+    tools: List[str] = Field(default_factory=list)
+    deployment_hint: str = ""     # which Foundry model class fits this worker
+    lifecycle_stage: str = ""     # discovery|positioning|mvp|gtm|retention|ops
+    seniority: str = "ic"         # lead | ic
+    monthly_cost_usd: int = 0     # simple budget mechanic input
+    why: str = ""                 # educational: why this role must exist
+
+
+class OrgBlueprint(BaseModel):
+    """The dynamic org an LLM designs for a company (from a pitch or a URL)."""
+    company_summary: str = ""
+    operating_model: str = ""     # how the human + digital workers split work
+    roles: List[OrgRole] = Field(default_factory=list)
+    # Derived stats (filled by the designer; power the simple game mechanic).
+    headcount: int = 0
+    digital_worker_count: int = 0
+    human_count: int = 0
+    monthly_burn_usd: int = 0
+    leverage_ratio: float = 0.0   # digital workers per human operator
+    source: str = "pitch"         # pitch | url
+    source_ref: str = ""          # the originating url or pitch text
+    notes: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # World graph: the richer structure produced by WorldDesigner.
 # ---------------------------------------------------------------------------
 
@@ -80,6 +118,7 @@ class CompanyState(BaseModel):
     level: int = 1
     active_quest: Optional[QuestState] = None
     world: Optional[WorldGraph] = None
+    org: Optional[OrgBlueprint] = None
     agents: Dict[str, CharacterState] = Field(default_factory=dict)
     business_flags: Dict[str, bool] = Field(default_factory=dict)
     streak: int = 0
