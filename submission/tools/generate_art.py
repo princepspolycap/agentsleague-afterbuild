@@ -69,6 +69,24 @@ outputs (no third-party art inputs) and ship under this repo's MIT license.
 Disclosure: AI-generated content. Model: {model}.
 """
 
+# Wide cinematic key art for the intro lore cards (16:9-ish; w*h <= 1,048,576).
+# One scene per lore beat, same house palette so the sequence reads as one film.
+KEYART_STYLE = (
+    "cinematic wide establishing shot, minimal flat geometric vector art, dark "
+    "navy night palette with teal and gold light accents, vast scale, no text, "
+    "no border, no frame, full bleed edge to edge"
+)
+KEYART = {
+    "title": "a glowing business-tower dungeon descending into the earth, floors lit like circuit boards, tiny founder silhouette at the entrance",
+    "premise": "split scene: a small lit boardroom of a few human silhouettes above, and below it a vast luminous lattice of working agent nodes doing the labor",
+    "sahara": "terraforming the sahara desert at dawn, green growth and water channels spreading through golden dunes toward a new city on the horizon",
+    "needs": "an automated landscape of food greenhouses, water channels, solar microgrids and modular shelters connected by glowing logistics lines",
+    "workforce": "a human silhouette at a desk with a constellation of glowing digital worker avatars fanned out above, each tethered by a thread of light",
+    "flywheel": "a great luminous wheel of many small human figures and AI nodes exchanging light evenly, energy flowing in a fair circular loop",
+    "foundry": "a vast glowing foundry core like a reactor of reasoning, orbited by smaller agent lights, deep geometric machinery",
+    "gate": "a single human hand pressing a glowing approval seal on a monumental gate, agent silhouettes waiting behind it",
+}
+
 
 def _request_image(prompt: str, width: int = 1024, height: int = 1024) -> bytes:
     """Call the MAI images/generations API and return PNG bytes."""
@@ -103,34 +121,43 @@ def _request_image(prompt: str, width: int = 1024, height: int = 1024) -> bytes:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate worker portraits via Foundry MAI.")
     parser.add_argument("--force", action="store_true", help="regenerate even if the file exists")
-    parser.add_argument("--only", default="", help="comma-separated roles to generate")
+    parser.add_argument("--only", default="", help="comma-separated roles/scenes to generate")
+    parser.add_argument("--keyart", action="store_true",
+                        help="generate the wide lore key-art scenes instead of portraits")
     args = parser.parse_args()
 
-    roles = [r.strip() for r in args.only.split(",") if r.strip()] or list(PORTRAITS)
-    unknown = [r for r in roles if r not in PORTRAITS]
+    catalog = KEYART if args.keyart else PORTRAITS
+    out_sub = OUT_DIR / "lore" if args.keyart else OUT_DIR
+    roles = [r.strip() for r in args.only.split(",") if r.strip()] or list(catalog)
+    unknown = [r for r in roles if r not in catalog]
     if unknown:
-        print(f"Unknown roles: {unknown}. Valid: {list(PORTRAITS)}")
+        print(f"Unknown entries: {unknown}. Valid: {list(catalog)}")
         return 1
 
     if not (IMAGE_ENDPOINT and IMAGE_API_KEY and IMAGE_DEPLOYMENT):
         print("Image deployment not configured (IMAGE_ENDPOINT / IMAGE_DEPLOYMENT / "
               "IMAGE_API_KEY). Would generate:")
         for role in roles:
-            print(f"  - {role}.png  <- '{STYLE}, {PORTRAITS[role]}'")
+            print(f"  - {role}.png")
         print("The game keeps its procedural look without these. Exiting 0.")
         return 0
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_sub.mkdir(parents=True, exist_ok=True)
     failures = 0
     for role in roles:
-        out = OUT_DIR / f"{role}.png"
+        out = out_sub / f"{role}.png"
         if out.exists() and not args.force:
             print(f"skip {out.name} (exists; use --force to regenerate)")
             continue
-        prompt = f"{STYLE}, {PORTRAITS[role]}"
+        if args.keyart:
+            prompt = f"{KEYART_STYLE}, {catalog[role]}"
+            width, height = 1344, 768  # wide cinematic, w*h within API limit
+        else:
+            prompt = f"{STYLE}, {catalog[role]}"
+            width, height = 1024, 1024
         print(f"generating {out.name} on {IMAGE_DEPLOYMENT} ...")
         try:
-            png = _request_image(prompt)
+            png = _request_image(prompt, width=width, height=height)
         except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
             print(f"  FAILED {role}: {exc}")
             failures += 1

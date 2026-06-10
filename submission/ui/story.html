@@ -370,6 +370,21 @@
                 linear-gradient(180deg, #0a0e1a 0%, #05070f 100%);
             transition: opacity 600ms ease;
         }
+        /* Full-bleed MAI key art behind each lore card, crossfaded per beat.
+           Two stacked layers swap opacity so scene changes feel filmic. */
+        .intro-art {
+            position: absolute; inset: 0; z-index: 0; pointer-events: none;
+            background-size: cover; background-position: center;
+            opacity: 0; transition: opacity 900ms ease;
+        }
+        .intro-art.on { opacity: 0.5; }
+        #intro-shade {
+            position: absolute; inset: 0; z-index: 1; pointer-events: none;
+            background:
+                radial-gradient(1200px 700px at 50% 58%, rgba(5,7,15,0.55), rgba(5,7,15,0.92) 78%),
+                linear-gradient(180deg, rgba(5,7,15,0.55), rgba(5,7,15,0.35) 40%, rgba(5,7,15,0.8));
+        }
+        #intro-card, .intro-skip, .intro-hint, .intro-dots { position: relative; z-index: 2; }
         #intro-overlay.hide { opacity: 0; pointer-events: none; }
         .intro-skip {
             position: absolute; top: 22px; right: 26px; z-index: 2;
@@ -521,6 +536,39 @@
         .stack-strip .st-item { white-space: nowrap; }
         .stack-strip .st-item b { color: var(--ink-dim); font-weight: 500; }
         .stack-strip .st-sep { color: var(--line); }
+        .stack-strip { cursor: pointer; transition: color 140ms ease; }
+        .stack-strip:hover { color: var(--ink-dim); }
+        .stack-strip:hover .st-lead { color: var(--ink); }
+
+        /* ---- Stack page: what powers this build ---- */
+        #stack-overlay {
+            position: fixed; inset: 0; z-index: 70; display: none;
+            align-items: center; justify-content: center; padding: 36px;
+            background: rgba(5,7,15,0.92);
+        }
+        #stack-overlay.open { display: flex; }
+        .stack-card {
+            max-width: 880px; max-height: 86vh; overflow-y: auto;
+            border: 1px solid var(--line); border-radius: 16px; padding: 30px 34px;
+            background: linear-gradient(180deg, #0c1120, #080c17);
+        }
+        .stack-card h2 { font-family: 'Fraunces', serif; font-size: 26px; margin: 0 0 4px; }
+        .stack-card .sc-sub { color: var(--ink-dim); font-size: 13px; margin-bottom: 18px; }
+        .stack-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .stack-item {
+            border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px;
+            background: rgba(255,255,255,0.02);
+        }
+        .stack-item b { display: block; color: var(--ink); font-size: 13px; margin-bottom: 3px; }
+        .stack-item span { color: var(--ink-dim); font-size: 11.5px; line-height: 1.5; }
+        .stack-item .si-tag {
+            display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+            border: 1px solid var(--line); font-family: 'JetBrains Mono', monospace;
+            font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint);
+        }
+        .stack-item .si-tag.live { color: var(--good); border-color: rgba(52,211,153,0.4); }
+        .stack-close { margin-top: 18px; float: right; }
+        @media (max-width: 760px) { .stack-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -550,7 +598,7 @@
                     <div class="title-card fade-scene">
                         <div class="kicker">A reasoning RPG on Microsoft Foundry</div>
                         <h1>Take the CEO's chair.</h1>
-                        <p>Bring a pitch &mdash; or a real company. A Foundry World Designer decomposes it into a venture quest line, then your agent workforce builds the org, the systems, and the launch &mdash; one gate you approve at a time.</p>
+                        <p>The CEO wants the impossible &mdash; terraform the Sahara, automate basic needs. Too big to command, so you align. Every venture below is one front of that map: bring a pitch or a real company, and your agent workforce builds the org, the systems, and the launch &mdash; one gate you approve at a time.</p>
                         <div class="cast-strip" aria-hidden="true">
                             <figure style="animation-delay:0ms"><img src="/game/assets/generated/narrator.png" alt="" onerror="this.parentElement.style.display='none'"><figcaption>Narrator</figcaption></figure>
                             <figure style="animation-delay:80ms"><img src="/game/assets/generated/orgdesigner.png" alt="" onerror="this.parentElement.style.display='none'"><figcaption>Org Designer</figcaption></figure>
@@ -628,7 +676,7 @@
                 <button id="next" class="btn primary" disabled>Next &rarr;</button>
                 <button id="reset" class="btn" disabled>Reset</button>
             </div>
-            <div class="stack-strip" aria-label="Microsoft technologies in this build">
+            <div class="stack-strip" id="stack-strip" aria-label="Microsoft technologies in this build - click for details" title="Click for the full stack">
                 <span class="st-lead">Built on Microsoft Foundry</span>
                 <span class="st-sep">|</span>
                 <span class="st-item"><b>gpt-5.5</b> reasoning</span>
@@ -653,15 +701,56 @@
     <!-- Lore / tutorial intro: the game introduces itself before the first pitch.
          Fully skippable (Skip button / Esc). Append ?intro=0 to bypass on reload. -->
     <div id="intro-overlay" aria-hidden="false">
+        <div id="intro-art-a" class="intro-art"></div>
+        <div id="intro-art-b" class="intro-art"></div>
+        <div id="intro-shade"></div>
         <button id="intro-skip" class="intro-skip">Skip intro</button>
         <div id="intro-card" class="intro-card"></div>
         <div id="intro-hint" class="intro-hint"></div>
         <div id="intro-dots" class="intro-dots"></div>
     </div>
 
+    <!-- Stack page: every Microsoft capability in this build and its job.
+         Opened by clicking the footer strip; Esc or Close dismisses. -->
+    <div id="stack-overlay" role="dialog" aria-label="What powers this build">
+        <div class="stack-card">
+            <h2>What powers this build</h2>
+            <div class="sc-sub">Everything that reasons runs on Microsoft Foundry. The shell is forkable browser tech, so it still runs after a fresh <code>git clone</code>.</div>
+            <div class="stack-grid">
+                <div class="stack-item"><b>Foundry model deployments <span class="si-tag live">live</span></b><span>gpt-5.5 family runs every reasoning agent: Org Designer, World Designer, and each digital worker. Cross-deployment fallback keeps the demo alive through rate limits.</span></div>
+                <div class="stack-item"><b>Multi-agent orchestration <span class="si-tag live">live</span></b><span>Org Designer designs the workforce, World Designer decomposes the venture, the Worker Factory executes each chapter with the right worker - one visible chain.</span></div>
+                <div class="stack-item"><b>Foundry IQ retrieval <span class="si-tag live">live</span></b><span>Each chapter recalls curated playbooks (discovery, GTM, org design) so workers ground their reasoning instead of inventing facts. Production path: Azure AI Search index.</span></div>
+                <div class="stack-item"><b>Code interpreter gates <span class="si-tag live">live</span></b><span>Deterministic validators score every artifact 0-100 before the human gate - checks the model cannot fake. Foundry's hosted code interpreter is the managed version.</span></div>
+                <div class="stack-item"><b>Hosted agents (invocations) <span class="si-tag">scaffolded</span></b><span>The Master Narrator ships as a deployable Foundry hosted agent speaking the invocations protocol - other agents and apps can call it, A2A-style.</span></div>
+                <div class="stack-item"><b>Reasoning visibility <span class="si-tag live">live</span></b><span>Thinking-token counts and scrubbed chain-of-thought previews stream into the trace, so the audience sees the model genuinely reasoning.</span></div>
+                <div class="stack-item"><b>MAI-Image-2e art <span class="si-tag live">live</span></b><span>Microsoft's efficient MAI image model painted the agent portraits and the full-screen lore scenes. Generated art is MIT-redistributable - forkers get the art and the generator.</span></div>
+                <div class="stack-item"><b>gpt-audio voice + Voice Live path <span class="si-tag live">live</span></b><span>Azure neural voices narrate every beat with a distinct voice per character; browser TTS is the offline net. Voice Live API is the production real-time upgrade.</span></div>
+                <div class="stack-item"><b>Foundry Memory pattern <span class="si-tag live">live</span></b><span>CompanyState + a replay log record every agent action and gate decision - the forkable equivalent of Foundry Agent Service Memory.</span></div>
+                <div class="stack-item"><b>Entra ID auth <span class="si-tag live">live</span></b><span>DefaultAzureCredential with token scope, API-key fallback for quick local dev. No secrets in source; .env is gitignored.</span></div>
+            </div>
+            <button id="stack-close" class="btn stack-close">Close</button>
+        </div>
+    </div>
+    <script>
+        // Stack page wiring (plain script: works even if modules fail).
+        (function () {
+            var strip = document.getElementById("stack-strip");
+            var overlay = document.getElementById("stack-overlay");
+            var close = document.getElementById("stack-close");
+            if (!strip || !overlay) return;
+            function setOpen(on) { overlay.classList.toggle("open", !!on); }
+            strip.addEventListener("click", function () { setOpen(true); });
+            if (close) close.addEventListener("click", function () { setOpen(false); });
+            overlay.addEventListener("click", function (e) { if (e.target === overlay) setOpen(false); });
+            document.addEventListener("keydown", function (e) {
+                if (e.key === "Escape" && overlay.classList.contains("open")) setOpen(false);
+            });
+        })();
+    </script>
+
     <script src="/game/vendor/mermaid.min.js?v=1"></script>
     <script src="/game/game/audio.js?v=4"></script>
     <script type="module" src="/game/game/story.js?v=10"></script>
-    <script src="/game/game/intro.js?v=5"></script>
+    <script src="/game/game/intro.js?v=6"></script>
 </body>
 </html>

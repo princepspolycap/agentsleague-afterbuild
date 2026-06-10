@@ -29,6 +29,23 @@
 
     const DWELL = 6800; // ms a card holds before auto-advancing (room for narration)
 
+    // Cinematic backdrops generated with MAI-Image-2.5-Flash (Microsoft's latest
+    // image model) via tools/generate_lore_art.py. Local-only and gitignored -
+    // a fresh clone simply gets the pure-text intro. We preload each image and
+    // attach it only if it actually loads, so a missing file can never break
+    // the card flow.
+    const IMG_BASE = "/game/assets/generated/lore/";
+    const loadedImgs = {}; // filename -> true once preloaded OK
+
+    function preloadLoreArt(names) {
+        names.forEach((name) => {
+            if (!name) return;
+            const im = new Image();
+            im.onload = () => { loadedImgs[name] = true; };
+            im.src = IMG_BASE + name;
+        });
+    }
+
     // The lore arc: premise -> the impossible vision -> the only way to get
     // there -> the mechanism (an agency of digital workers) -> the fair-data
     // flywheel -> how it reasons (Foundry) -> why you can trust it -> your turn.
@@ -38,49 +55,60 @@
             kicker: "Microsoft Agents League - Battle 2 - Reasoning Agents",
             h2: "Your Company Is the Dungeon",
             p: "A reasoning RPG, built on Microsoft Foundry. Let it play - or press space to move faster.",
+            img: "title.png",
         },
         {
             kicker: "The premise",
             h2: "Every company is two companies.",
             p: "One is the handful of people who decide. The other is all the work that has to get done. For the first time, that second company can be made of <span class='accent'>agents</span>.",
+            img: "premise.png",
         },
         {
             kicker: "Your seat",
             h2: "You are the CEO - and you want the impossible.",
             p: "Terraform the Sahara. Build new cities where there is only sand. It is too big to command into existence - so how could anyone actually do it?",
+            img: "sahara.png",
         },
         {
             kicker: "The only way",
             h2: "You cannot command a billion people. You align them.",
             p: "Automate the <span class='accent'>production and distribution of basic needs</span> - food, water, energy, shelter - and a billion humans, and their AI, finally have a reason to pull the same way.",
+            img: "needs.png",
         },
         {
             kicker: "The mechanism",
             h2: "So you build an agency of digital workers.",
             p: "Every person with a skill <span class='accent'>binds it to a digital worker</span> that does the execution. Their experience becomes a business that runs while they sleep - income they earn, not income they wait for.",
+            img: "workforce.png",
         },
         {
             kicker: "The flywheel",
             h2: "And everyone gets paid - fairly.",
             p: "The platform learns from <span class='accent'>real people doing real work</span>, paid evenly - not scraped the way today's models were. Even a superintelligence still needs the grassroots: a million humans who know what it cannot.",
+            img: "flywheel.png",
         },
         {
             kicker: "How it thinks",
             h2: "Every agent that reasons runs on Foundry.",
             p: "<span class='accent'>Foundry IQ</span> for memory, a <span class='accent'>code interpreter</span> for checks it cannot fake, and <span class='accent'>multi-agent orchestration</span> that turns them into a team.",
+            img: "foundry.png",
         },
         {
             kicker: "Why you can trust it",
             h2: "A human stays at the root of everything.",
             p: "No artifact counts until you approve it at a <span class='accent'>verification gate</span>. That one rule is the difference between a colleague and a slop machine.",
+            img: "gate.png",
         },
         {
             kicker: "Your turn",
             h2: "The vision is the CEO's. The path is yours.",
             p: "You bring the skill and the judgment. Your <span class='accent'>agent workforce</span> brings the execution. Pick the front you want to carve - and make it yours.",
+            img: "workforce.png",
         },
         { kind: "choice" },
     ];
+
+    preloadLoreArt(cards.map((c) => c.img).concat(["sahara.png", "needs.png"]));
 
     // The two missions the player can pick - early playable placeholders. Each
     // pre-fills the existing pitch screen, so the same org -> world -> gate loop
