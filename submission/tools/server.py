@@ -22,6 +22,7 @@ from agents.world_designer import design_world
 from agents.worker_factory import run_world, execute_chapter, bind_world_to_org
 from agents.org_designer import design_org
 from agents.retrieval import retrieve, brief_from_url
+from agents.memory import remember, recall_memories, memory_snapshot
 from agents.company_analyst import analyze_company as analyze_company_url
 from tools.code_interpreter_wrappers import validate_positioning, validate_landing_page, validate_marketing_email
 from tools.toolbox import tools_list, tools_call, tools_for_role
@@ -40,8 +41,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Persistent file-based store
-STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "state.json")
+# Persistent file-based store. DUNGEON_STATE_FILE lets a second server (e.g.
+# a simulation test bench on another port) run an isolated session instead of
+# clobbering the live demo's state file - two uvicorns on one default path
+# overwrite each other mid-playthrough.
+STATE_FILE = os.environ.get("DUNGEON_STATE_FILE") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "state.json")
 store = StateStore(filepath=STATE_FILE)
 
 class PitchRequest(BaseModel):
@@ -82,6 +87,18 @@ class ToolCallRequest(BaseModel):
 def post_toolbox_call(payload: ToolCallRequest):
     """Execute one toolbox tool (MCP tools/call shape)."""
     return tools_call(payload.name, payload.arguments)
+
+
+@app.get("/api/memory")
+def get_memory():
+    """Agent memory snapshot: what the workers have learned from this CEO.
+
+    Separate from Foundry IQ (stable source knowledge): this is the learning
+    layer - founder profile, procedural patterns from gate decisions, and
+    chapter summaries. Backed by the Foundry Agent Service memory store when
+    FOUNDRY_MEMORY_STORE is configured, local ledger otherwise.
+    """
+    return memory_snapshot()
 
 
 @app.get("/api/mode")
@@ -595,12 +612,14 @@ def analyze_company(payload: AnalyzeRequest):
         summary_hint = profile.get("company_summary", "")
         source, source_ref = "url", url
         if profile.get("scraped"):
-            scrape_msg = f"Scraped {profile['host']} (read {profile.get('scraped_chars', 0)} chars)."
+            scrape_msg = (f"Scraped {profile['host']} via {profile.get('parser', 'regex')} "
+                          f"(read {profile.get('scraped_chars', 0)} chars).")
         else:
             scrape_msg = f"Scraped {profile['host']} (homepage unreachable, using domain default)."
         store.log_event(
             "URL_SCRAPED", "scraper", scrape_msg,
             {"host": profile["host"], "scraped": profile.get("scraped", False),
+             "parser": profile.get("parser", ""),
              "signals": profile.get("signals", [])},
         )
         store.log_event(
@@ -611,6 +630,18 @@ def analyze_company(payload: AnalyzeRequest):
              "business_model": profile.get("business_model"),
              "mode": profile.get("mode")},
         )
+        # Agent memory: what the workforce now knows about the company it
+        # serves - the mapped profile persists into every later worker brief.
+        mem_entry = remember(
+            "user_profile",
+            f"Company mapped from {profile['host']}: {profile['company_summary']} "
+            f"Sells: {profile.get('what_they_sell', '')[:120]}. "
+            f"Customer: {profile.get('target_customer', '')[:80]}.",
+            {"host": profile["host"], "source": "url_scrape"})
+        if mem_entry:
+            store.log_event("MEMORY_WRITTEN", "memory",
+                f"Company profile stored ({mem_entry.get('origin', 'local-memory')}): {profile['host']}",
+                {"kind": "user_profile", "origin": mem_entry.get("origin", "")})
     else:
         brief, source, source_ref = pitch, "pitch", pitch
 
@@ -663,6 +694,13 @@ def design_world_endpoint(payload: AutoplayRequest):
     state = store.initialize_new_company(
         name=company_name, pitch=brief, description="A venture forged in QuestForge."
     )
+    # Agent memory (user profile): durable facts about this founder/company.
+    mem_entry = remember("user_profile", f"Founder is building: {company_name} - {brief[:280]}",
+             {"company": company_name})
+    if mem_entry:
+        store.log_event("MEMORY_WRITTEN", "memory",
+            f"User-profile memory stored ({mem_entry.get('origin', 'local-memory')}): {company_name}",
+            {"kind": "user_profile", "origin": mem_entry.get("origin", "")})
     # Carry forward a prior analyze session (org + earned XP + flags).
     if prev and prev.org:
         state.org = prev.org
@@ -841,6 +879,17 @@ def record_decision(payload: DecisionRequest):
     world.decisions = [d for d in world.decisions if d.get("chapter_id") != chapter.id]
     world.decisions.append(entry)
 
+    # Agent memory (procedural): the workers learn the CEO's operating pattern
+    # from every gate decision - recalled in all later worker briefs.
+    mem_entry = remember("procedural",
+             f"CEO chose '{choice['option']}' at the '{chapter.title}' gate"
+             + (f" accepting tradeoff: {choice['tradeoff']}" if choice["tradeoff"] else ""),
+             {"chapter_id": chapter.id})
+    if mem_entry:
+        store.log_event("MEMORY_WRITTEN", "memory",
+            f"Procedural memory stored ({mem_entry.get('origin', 'local-memory')}): {mem_entry.get('text', '')[:120]}",
+            {"kind": "procedural", "origin": mem_entry.get("origin", "")})
+
     store.log_event("CEO_DECISION", "founder",
         f"Gate decision after '{chapter.title}': {choice['option']}",
         {"chapter_id": chapter.id, "option": choice["option"],
@@ -888,8 +937,24 @@ def run_next_chapter():
     store.log_event("CHAPTER_EXECUTED", invocation.role,
         f"Chapter '{chapter.title}' -> score {score}, +{xp_earned} XP ({invocation.deployment}, {invocation.latency_s}s)",
         {"chapter_id": chapter.id, "score": score, "xp_earned": xp_earned, "latency_s": invocation.latency_s,
+         # Invocation outcome receipt: failed runs keep their partial
+         # tool_trace and carry the error string into the replay log.
+         "status": invocation.status,
+         "error": invocation.error,
+         "deployment": invocation.deployment,
          "reasoning_tokens": invocation.reasoning_tokens,
          "reasoning_preview": invocation.reasoning_preview,
+         # The four proof points every invocation must show (replay evidence
+         # that the agent stack actually worked, not just a model call):
+         "iq_hits": invocation.iq_sources,
+         "memory_injected": invocation.maf_memory,
+         "tools_called": invocation.maf_tools_called,
+         "tool_trace": invocation.tool_trace,
+         "inference_usage": {"client": invocation.maf_client or "openai-direct",
+                             "fallback_reason": invocation.maf_fallback_reason,
+                             "tokens_in": invocation.tokens_in,
+                             "tokens_out": invocation.tokens_out,
+                             "reasoning_tokens": invocation.reasoning_tokens},
          "rubric": chapter.rubric}
     )
 
@@ -920,6 +985,12 @@ def autoplay_world(payload: AutoplayRequest):
     state = store.initialize_new_company(
         name=company_name, pitch=brief, description="A venture forged in QuestForge."
     )
+    mem_entry = remember("user_profile", f"Founder is building: {company_name} - {brief[:280]}",
+             {"company": company_name})
+    if mem_entry:
+        store.log_event("MEMORY_WRITTEN", "memory",
+            f"User-profile memory stored ({mem_entry.get('origin', 'local-memory')}): {company_name}",
+            {"kind": "user_profile", "origin": mem_entry.get("origin", "")})
     store.log_event("SESSION_START", "system", f"Autoplay session for: {company_name}")
 
     # Design the dynamic org first so chapters are owned by designed digital
@@ -962,7 +1033,23 @@ def autoplay_world(payload: AutoplayRequest):
 
         store.log_event("CHAPTER_EXECUTED", invocation.role,
             f"Chapter '{chapter.title}' -> score {score}, +{xp_earned} XP",
-            {"chapter_id": chapter.id, "score": score, "latency_s": invocation.latency_s}
+            {"chapter_id": chapter.id, "score": score, "latency_s": invocation.latency_s,
+             # Invocation outcome receipt (same contract as /api/world/run-next).
+             "status": invocation.status,
+             "error": invocation.error,
+             "deployment": invocation.deployment,
+             "reasoning_tokens": invocation.reasoning_tokens,
+             # The four proof points every invocation must show (same evidence
+             # contract as /api/world/run-next - autoplay is not exempt):
+             "iq_hits": invocation.iq_sources,
+             "memory_injected": invocation.maf_memory,
+             "tools_called": invocation.maf_tools_called,
+             "tool_trace": invocation.tool_trace,
+             "inference_usage": {"client": invocation.maf_client or "openai-direct",
+                                 "fallback_reason": invocation.maf_fallback_reason,
+                                 "tokens_in": invocation.tokens_in,
+                                 "tokens_out": invocation.tokens_out,
+                                 "reasoning_tokens": invocation.reasoning_tokens}}
         )
         results.append({"chapter_id": chapter.id, "title": chapter.title, "score": score, "status": chapter.status})
 
@@ -976,13 +1063,18 @@ def autoplay_world(payload: AutoplayRequest):
 
 @app.post("/api/reset")
 def reset_game():
-    """Resets the state file."""
+    """Resets the state file and the agent-memory ledger (new venture = clean slate)."""
     if os.path.exists(STATE_FILE):
         try:
             os.remove(STATE_FILE)
         except Exception:
             pass
     store.state = None
+    try:
+        from agents.memory import forget_all
+        forget_all()
+    except Exception:
+        pass
     return {"success": True, "message": "State reset successfully."}
 
 # Mount static folder for UI

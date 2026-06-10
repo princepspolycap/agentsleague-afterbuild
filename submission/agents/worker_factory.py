@@ -11,6 +11,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from agents.model_config import get_foundry_client, is_live, model_for, model_for_hint, create_chat_completion, reasoning_from_response
+from agents.maf_runtime import maf_available, run_maf_agent
+from agents.memory import recall_memories, remember
 from agents.retrieval import retrieve
 from state.schema import Chapter, OrgBlueprint, OrgRole, WorkerInvocation, WorldGraph
 from tools.toolbox import tools_call, tools_for_role
@@ -381,6 +383,26 @@ def rubric_evaluate(chapter: Chapter, brief: str, artifact: Optional[Dict[str, A
     return rubric
 
 
+# Validators each archetype can draw as REAL Agent Framework FunctionTools -
+# the model calls these mid-run (visible function-calling, not post-hoc checks).
+_ROLE_VALIDATORS: Dict[str, Dict[str, Any]] = {
+    "strategist": {"validate_positioning": validate_positioning, "validate_org_chart": validate_org_chart},
+    "designer": {"validate_landing_page": validate_landing_page},
+    "marketer": {"validate_marketing_email": validate_marketing_email, "validate_financial_plan": validate_financial_plan},
+    "ops": {"validate_financial_plan": validate_financial_plan},
+}
+
+
+def _maf_tool_fns(role: str) -> Dict[str, Any]:
+    """Wrap a role's validators as plain callables for the MAF runtime."""
+    def adapt(fn):
+        def run(artifact: Dict[str, Any]) -> Dict[str, Any]:
+            ok, results = fn(artifact or {})
+            return {"success": ok, "results": results}
+        return run
+    return {name: adapt(fn) for name, fn in _ROLE_VALIDATORS.get(role, {}).items()}
+
+
 def _short_brief(brief: str, words: int = 6) -> str:
     """Compact a brief into a short product label for mock diagrams."""
     cleaned = re.sub(r"[^A-Za-z0-9 ]", " ", brief or "Venture").strip()
@@ -543,25 +565,61 @@ def execute_chapter(
             context_block += f"  Chapter {i}: {json.dumps(art)[:500]}\n"
         user += context_block
 
-    # Session memory: the CEO's decisions at prior dilemma gates are binding
-    # direction, not reference - the artifact must visibly reflect the latest.
-    if decisions:
-        user += "\n\nCEO decisions made at earlier gates (binding direction):\n"
-        for d in decisions[-3:]:
-            user += (f"- After '{d.get('chapter_title', d.get('chapter_id', ''))}': "
-                     f"chose \"{d.get('option', '')}\""
-                     + (f" (tradeoff accepted: {d.get('tradeoff', '')})" if d.get('tradeoff') else "")
-                     + "\n")
-        user += ("Your artifact MUST visibly follow the most recent decision - "
-                 "reference it where relevant.\n")
+    retrieval_query = f"{brief} {chapter.goal} {chapter.success_metric}"
+    _t_recall = time.perf_counter()
+    _recall_res = tools_call("recall", {"query": retrieval_query, "top_k": 2})
+    _recall_ms = round((time.perf_counter() - _t_recall) * 1000, 1)
+    retrieval_hits = (_recall_res.get("result") or {}).get("hits") or []
+    # tools/call receipt: the real recall call, with args and what came back.
+    invocation.tool_trace.append({
+        "tool": "recall",
+        "source": _recall_res.get("source", "local"),
+        "args": {"query": retrieval_query[:80], "top_k": 2},
+        "result": f"{len(retrieval_hits)} hits: " + (", ".join(str(h.get('source', '')) for h in retrieval_hits[:3]) or "none"),
+        "ms": _recall_ms,
+    })
+    # Proof point: the IQ recall that grounded this run (cited sources when
+    # the real Foundry IQ knowledge base answered, local playbooks otherwise).
+    invocation.iq_sources = [str(h.get("source", "")) for h in retrieval_hits if h.get("source")]
 
-    retrieval_hits = (tools_call("recall", {
-        "query": f"{brief} {chapter.goal} {chapter.success_metric}", "top_k": 2,
-    }).get("result") or {}).get("hits") or []
+    # Agent memory (NOT IQ): what the workers have learned from this CEO -
+    # gate-decision patterns, founder profile, prior artifact summaries.
+    # Foundry Agent Service memory store when configured, local ledger always.
+    memories = recall_memories(f"{brief} {chapter.goal}", limit=3)
+
+    # Proof point baseline: memory_injected must be visible on EVERY path
+    # (simulation and direct included), not only when MAF carries the run.
+    # The MAF path overwrites this with what its ContextProvider actually did.
+    injected: List[Dict[str, str]] = []
+    for d in (decisions or [])[-3:]:
+        injected.append({"kind": "ceo_decision", "text": str(d.get("option", ""))[:120]})
+    for h in retrieval_hits[:2]:
+        injected.append({"kind": "iq_recall", "text": str(h.get("source", ""))[:120]})
+    for m in memories[:3]:
+        injected.append({"kind": "agent_memory", "text": str(m.get("text", ""))[:120]})
+    invocation.maf_memory = injected
+
+    # Direct-path prompt: decisions + IQ snippets pasted in. The MAF path
+    # injects the same context through a ContextProvider instead (framework
+    # memory), so it gets the base prompt without these blocks.
+    user_direct = user
+    if decisions:
+        user_direct += "\n\nCEO decisions made at earlier gates (binding direction):\n"
+        for d in decisions[-3:]:
+            user_direct += (f"- After '{d.get('chapter_title', d.get('chapter_id', ''))}': "
+                            f"chose \"{d.get('option', '')}\""
+                            + (f" (tradeoff accepted: {d.get('tradeoff', '')})" if d.get('tradeoff') else "")
+                            + "\n")
+        user_direct += ("Your artifact MUST visibly follow the most recent decision - "
+                        "reference it where relevant.\n")
     if retrieval_hits:
-        user += "\n\nFoundry IQ context snippets:\n"
+        user_direct += "\n\nFoundry IQ context snippets:\n"
         for hit in retrieval_hits:
-            user += f"- Source: {hit['source']} | {hit['content'][:500]}\n"
+            user_direct += f"- Source: {hit['source']} | {hit['content'][:500]}\n"
+    if memories:
+        user_direct += "\n\nAgent memory - what you have learned about this CEO (apply it):\n"
+        for m in memories:
+            user_direct += f"- ({m.get('kind', 'procedural')}) {str(m.get('text', ''))[:300]}\n"
 
     if not client or not deployment:
         # Simulation fallback: rich, diagram-ready artifacts so the story
@@ -571,17 +629,73 @@ def execute_chapter(
         invocation.completed_at = time.time()
         invocation.latency_s = 0.1
         floor = _score_artifact(role, artifact)
+        _trace_validators(invocation, role, artifact)
         rubric = rubric_evaluate(chapter, brief, artifact, floor)
         chapter.rubric = rubric
+        _remember_chapter(chapter, worker_title, rubric["final"])
         return invocation, artifact, rubric["final"]
 
     t0 = time.perf_counter()
+
+    # Preferred live runtime: Microsoft Agent Framework. The worker becomes a
+    # real `agent_framework.Agent` - decisions + IQ recall injected through a
+    # ContextProvider (framework memory), validators offered as FunctionTools
+    # the model can call mid-run. Any failure falls back to the direct path.
+    if maf_available():
+        try:
+            validator_fns = _maf_tool_fns(role)
+            maf_system = system + (
+                "\n\nYou may call each validation tool AT MOST ONCE on your draft, "
+                "then output the final artifact as pure JSON - no commentary."
+            )
+            content, maf_meta = run_maf_agent(
+                deployment=deployment,
+                api_key=getattr(client, "api_key", "") or "",
+                base_url=str(getattr(client, "base_url", "")) or "",
+                name=worker_title or role,
+                instructions=maf_system,
+                prompt=user,
+                decisions=decisions,
+                retrieval_hits=retrieval_hits,
+                memories=memories,
+                tool_fns=validator_fns,
+            )
+            artifact = _extract_json(content)
+            floor = _score_artifact(role, artifact)
+            # Quality guard: a weak/unparseable MAF artifact falls through to
+            # the direct path rather than reaching the gate half-formed.
+            if not artifact or floor < 40:
+                raise ValueError(f"MAF artifact too weak (floor={floor})")
+            invocation.latency_s = round(time.perf_counter() - t0, 2)
+            invocation.completed_at = time.time()
+            invocation.status = "completed"
+            invocation.framework = "microsoft-agent-framework"
+            invocation.maf_client = str(maf_meta.get("maf_client") or "")
+            invocation.maf_fallback_reason = str(maf_meta.get("maf_fallback_reason") or "")
+            invocation.maf_memory = maf_meta.get("maf_memory") or injected
+            invocation.maf_tools_called = sorted(set(maf_meta.get("maf_tools_called") or []))
+            invocation.tokens_in = int(maf_meta.get("tokens_in") or 0)
+            invocation.tokens_out = int(maf_meta.get("tokens_out") or 0)
+            invocation.reasoning_tokens = int(maf_meta.get("reasoning_tokens") or 0)
+            # Mid-run FunctionTool receipts (the model calling validators on
+            # its own draft) join the same tools/call ledger as recall and the
+            # post-hoc sweep - chronological: recall -> mid-run -> sweep.
+            invocation.tool_trace.extend(maf_meta.get("maf_tool_trace") or [])
+            _trace_validators(invocation, role, artifact)
+            rubric = rubric_evaluate(chapter, brief, artifact, floor)
+            chapter.rubric = rubric
+            _remember_chapter(chapter, worker_title, rubric["final"])
+            return invocation, artifact, rubric["final"]
+        except Exception:
+            # Framework path failed - degrade silently to the direct call.
+            t0 = time.perf_counter()
+
     try:
         resp = create_chat_completion(
             deployment,
             [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_direct},
             ],
             max_completion_tokens=8000,
         )
@@ -607,9 +721,56 @@ def execute_chapter(
 
     artifact = _extract_json(content)
     floor = _score_artifact(role, artifact)
+    _trace_validators(invocation, role, artifact)
     rubric = rubric_evaluate(chapter, brief, artifact, floor)
     chapter.rubric = rubric
+    _remember_chapter(chapter, worker_title, rubric["final"])
     return invocation, artifact, rubric["final"]
+
+
+def _trace_validators(invocation: WorkerInvocation, role: str, artifact: Optional[Dict[str, Any]]) -> None:
+    """Run the role's validators through the toolbox and record each call.
+
+    This is the not-mocked receipt: every entry is a real tools/call with
+    arguments, the deterministic result, and wall-clock latency. Runs on all
+    paths (simulation included - the validators are real code either way).
+    """
+    if not artifact:
+        return
+    for name in tools_for_role(role):
+        if name == "recall":
+            continue
+        payload = _landing_payload(artifact) if name == "validate_landing_page" else artifact
+        t0 = time.perf_counter()
+        res = tools_call(name, {"artifact": payload})
+        ms = round((time.perf_counter() - t0) * 1000, 1)
+        r = res.get("result") or {}
+        score = r.get("score")
+        checks = r.get("checks") or {}
+        passed = sum(1 for v in checks.values() if v)
+        result_line = (f"score={score} checks {passed}/{len(checks)}" if score is not None
+                       else (res.get("error") or str(r)[:80]))
+        invocation.tool_trace.append({
+            "tool": name,
+            "source": res.get("source", "local"),
+            "args": {"artifact_keys": list(payload)[:5]},
+            "result": result_line,
+            "ms": ms,
+        })
+
+
+def _remember_chapter(chapter: Chapter, worker_title: str, score: int) -> None:
+    """Write a chat-summary memory after a chapter ships (agent memory loop).
+
+    Best-effort: memory must never break the game loop.
+    """
+    try:
+        remember("chat_summary",
+                 f"Chapter '{chapter.title}' shipped by {worker_title} (score {score}/100). "
+                 f"Goal: {chapter.goal[:120]}",
+                 {"chapter_id": chapter.id, "score": score})
+    except Exception:
+        pass
 
 
 def run_world(world: WorldGraph, brief: str, auto_approve_threshold: int = 80,

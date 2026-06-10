@@ -225,5 +225,8 @@ def analyze_company(url: str) -> Dict[str, Any]:
     profile["source"] = url
     profile["scraped"] = True
     profile["scraped_chars"] = scraped.get("chars", 0)
+    # Parser provenance: which path read the page (bs4 DOM walk vs stdlib
+    # regex fallback) - surfaced in the replay log and the story UI.
+    profile["parser"] = scraped.get("parser", "regex")
     profile["mode"] = "live" if (client and deployment and is_live()) else "simulation"
     return profile

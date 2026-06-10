@@ -19,6 +19,9 @@ Usage (server must already be running on the given base URL):
 Exit code 0 = all paths green. Non-zero = a demo path is broken; the failing
 assertion is printed. Works against both live and simulation servers - in
 simulation it proves the forkable fallback path; in live it proves Foundry.
+Add --live against a DEMO_MODE=live server to additionally certify the
+live-only evidence: real token counts, a named inference client, and
+non-simulation deployments on every invocation.
 """
 from __future__ import annotations
 
@@ -87,9 +90,28 @@ def check_world_path(base: str, pitch: str) -> None:
     print("\n[2/2] WORLD AUTOPLAY PATH")
     _post(base, "/api/reset")
     t = time.time()
-    out = _post(base, "/api/world/autoplay", {"pitch": pitch, "company_name": "SmokeWorld"})
+    # Live autoplay runs every chapter in one request (5 x 35-120s of model
+    # time). If the HTTP client gives up first, the server keeps executing -
+    # fall back to polling /api/state until the world lands (or 25 min).
+    try:
+        out = _post(base, "/api/world/autoplay", {"pitch": pitch, "company_name": "SmokeWorld"}, timeout=900)
+        state = out["state"]
+    except Exception as exc:  # noqa: BLE001 - timeout/disconnect; server continues
+        print(f"  autoplay request dropped ({exc}); polling state until the world completes...")
+        deadline = time.time() + 1500
+        state = {}
+        while time.time() < deadline:
+            time.sleep(15)
+            state = _get(base, "/api/state")["state"]
+            world = state.get("world") or {}
+            chapters = world.get("chapters", [])
+            done = sum(1 for c in chapters if c.get("status") == "completed")
+            print(f"  ... {done}/{len(chapters) or '?'} chapters completed")
+            if chapters and world.get("status") == "completed":
+                break
+        _require((state.get("world") or {}).get("status") == "completed",
+                 "world did not complete before the polling deadline")
     dt = time.time() - t
-    state = out["state"]
     world = state.get("world") or {}
     chapters = world.get("chapters", [])
     _require(len(chapters) >= 3, f"expected >=3 chapters, got {len(chapters)}")
@@ -109,11 +131,90 @@ def check_world_path(base: str, pitch: str) -> None:
     print(f"  OK -> stage=launched xp={state['xp']} level={state['level']} ({dt:.1f}s)")
 
 
+def check_evidence_path(base: str) -> None:
+    """Assert the four proof points + the agent-memory learning loop.
+
+    Runs after the world path so the replay log holds CHAPTER_EXECUTED events.
+    Every invocation must show iq_hits, memory_injected, tools evidence and
+    inference_usage - the rubric's 'agents actually working' story - and the
+    memory layer must have learned from the session (/api/memory).
+    """
+    print("\n[3/3] EVIDENCE PATH (proof points + agent memory)")
+    state = _get(base, "/api/state")["state"]
+    executed = [e for e in state.get("replay_log", []) if e.get("event_type") == "CHAPTER_EXECUTED"]
+    _require(len(executed) >= 3, f"expected >=3 CHAPTER_EXECUTED events, got {len(executed)}")
+    for e in executed:
+        p = e.get("payload") or {}
+        cid = p.get("chapter_id", "?")
+        _require(bool(p.get("iq_hits")), f"{cid}: iq_hits empty - IQ recall not evidenced")
+        _require(bool(p.get("memory_injected")), f"{cid}: memory_injected empty")
+        _require("tools_called" in p, f"{cid}: tools_called missing")
+        usage = p.get("inference_usage") or {}
+        _require(bool(usage.get("client")), f"{cid}: inference_usage.client missing")
+        kinds = sorted({m.get("kind", "") for m in p["memory_injected"]})
+        print(f"  {cid:<18} iq={len(p['iq_hits'])} mem_kinds={kinds} client={usage.get('client')}")
+    mem = _get(base, "/api/memory")
+    counts = mem.get("counts") or {}
+    _require(counts.get("chat_summary", 0) >= 1, "no chat_summary memories written after chapters shipped")
+    _require(counts.get("user_profile", 0) >= 1, "no user_profile memory written at venture start")
+    written = [e for e in state.get("replay_log", []) if e.get("event_type") == "MEMORY_WRITTEN"]
+    print(f"  OK -> memory store={mem.get('store')} counts={counts} MEMORY_WRITTEN events={len(written)}")
+
+
+def check_live_evidence(base: str) -> None:
+    """Certify the live server: real inference receipts, not simulation.
+
+    Reads CHAPTER_EXECUTED payloads from the replay log (the receipts survive
+    there even if a later session replaces the world). Asserts the live-only
+    fields on every executed chapter: a non-simulation deployment, a named
+    inference client (FoundryChatClient / OpenAIChatClient via MAF, or
+    openai-direct), real token counts, and a tool_trace whose receipts all
+    carry latency. Failed invocations must still carry their error + partial
+    trace. A simulation server legitimately fails this check - that is the
+    point.
+    """
+    print("\n[live] LIVE EVIDENCE (real inference receipts)")
+    mode = _get(base, "/api/mode")
+    _require(bool(mode.get("live")), f"server reports mode={mode.get('mode')!r} - start it with DEMO_MODE=live")
+    state = _get(base, "/api/state")["state"]
+    executed = [e for e in state.get("replay_log", []) if e.get("event_type") == "CHAPTER_EXECUTED"]
+    _require(len(executed) >= 3, f"expected >=3 CHAPTER_EXECUTED events, got {len(executed)}")
+
+    for e in executed:
+        p = e.get("payload") or {}
+        cid = p.get("chapter_id", "?")
+        trace = p.get("tool_trace") or []
+        usage = p.get("inference_usage") or {}
+        _require(any(t.get("tool") == "recall" for t in trace), f"{cid}: no recall receipt in tool_trace")
+        _require(all(isinstance(t.get("ms"), (int, float)) for t in trace),
+                 f"{cid}: a tool_trace receipt is missing latency (ms)")
+        if p.get("status") == "failed":
+            # Failed runs still owe their receipts: error string + partial trace.
+            _require(bool(p.get("error")), f"{cid}: failed invocation has no error recorded")
+            print(f"  {cid:<18} FAILED (receipts intact): {str(p.get('error'))[:60]}")
+            continue
+        _require(p.get("deployment", "") != "simulation", f"{cid}: deployment is 'simulation' on a live server")
+        client = usage.get("client") or ""
+        _require(bool(client), f"{cid}: no inference client name recorded")
+        tokens_out = int(usage.get("tokens_out") or 0)
+        _require(tokens_out > 0, f"{cid}: tokens_out={tokens_out} - no real token usage recorded")
+        _require(any(str(t.get("tool", "")).startswith("validate_") for t in trace),
+                 f"{cid}: no validator receipt in tool_trace")
+        midrun = [t for t in trace if t.get("source") == "maf-midrun"]
+        print(f"  {cid:<18} client={client:<18} tokens={usage.get('tokens_in', 0)}/{tokens_out} "
+              f"reasoning={usage.get('reasoning_tokens', 0)} trace={len(trace)} midrun={len(midrun)}")
+        if usage.get("fallback_reason"):
+            print(f"  {'':<18} fallback documented: {str(usage['fallback_reason'])[:90]}")
+    print("  OK -> live inference receipts certified")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="End-to-end demo smoke test.")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="Server base URL")
     parser.add_argument("--pitch", default="A budgeting app that turns bank transactions into weekly money coaching tips")
     parser.add_argument("--skip-world", action="store_true", help="Skip the slower World autoplay path")
+    parser.add_argument("--live", action="store_true",
+                        help="Also certify live-only evidence (tokens > 0, client name); requires a DEMO_MODE=live server")
     args = parser.parse_args()
 
     print(f"Demo smoke test against {args.base}")
@@ -127,6 +228,11 @@ def main() -> int:
         check_quest_path(args.base, args.pitch)
         if not args.skip_world:
             check_world_path(args.base, args.pitch)
+            check_evidence_path(args.base)
+            if args.live:
+                check_live_evidence(args.base)
+        elif args.live:
+            print("\n[live] skipped: --live needs the world path (drop --skip-world)")
     except SmokeError as exc:
         print(f"\nFAIL: {exc}")
         return 1

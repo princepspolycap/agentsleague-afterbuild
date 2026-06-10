@@ -6,3 +6,20 @@ uvicorn[standard]>=0.30
 openai>=1.55
 httpx>=0.27
 azure-identity>=1.19
+# Company-URL mapping: BeautifulSoup gives the scraper a real DOM walk on
+# messy real-world homepages; the stdlib regex path remains the fallback, so
+# a clone without bs4 still maps companies. SSRF guard unchanged.
+beautifulsoup4>=4.12
+
+# Microsoft Agent Framework runtime (workers run as MAF Agents; optional -
+# the direct OpenAI-against-Foundry path is the automatic fallback)
+agent-framework-core>=1.8
+agent-framework-openai>=1.8
+# Foundry provider: FoundryChatClient (project Responses endpoint), FoundryAgent,
+# FoundryEmbeddingClient. Preferred inference path when FOUNDRY_PROJECT_ENDPOINT
+# is set; the OpenAI provider above remains the compatibility fallback.
+agent-framework-foundry>=1.8
+aiohttp>=3.10
+# Foundry project SDK (new portal APIs): project client, agents, indexes,
+# evaluations. Used for Foundry IQ retrieval and hosted-agent management.
+azure-ai-projects>=2.0.0

@@ -78,13 +78,21 @@ const NARRATOR_VOICE = "onyx";
 let currentVoice = NARRATOR_VOICE;
 
 let typeToken = 0;
+let lastSpeech = Promise.resolve(); // completion of the previous narrated line
 async function narrate(text, speed = 18) {
     const el = $("narration-text");
     const myToken = ++typeToken;
+    // Let the previous line's voice finish its sentence before this beat cuts
+    // in (capped so a hung element can never stall the loop). Player-driven
+    // speech (dilemma picks) bypasses narrate and still interrupts instantly.
+    if (A.speak) { await Promise.race([lastSpeech, sleep(9000)]); }
+    if (myToken !== typeToken) return; // a newer beat superseded us while waiting
     // Speak the beat aloud in the active worker's voice (real Azure neural TTS,
     // browser TTS fallback). This also fills the air during slow live Foundry
     // calls, so latency reads as "the agent is thinking" rather than dead time.
-    if (A.speak) { try { A.speak(text, { voice: currentVoice }); } catch (e) { /* narration optional */ } }
+    let speechP = Promise.resolve();
+    if (A.speak) { try { speechP = A.speak(text, { voice: currentVoice }) || Promise.resolve(); } catch (e) { /* narration optional */ } }
+    lastSpeech = speechP;
     el.innerHTML = "";
     const caret = document.createElement("span");
     caret.className = "caret";
@@ -98,6 +106,12 @@ async function narrate(text, speed = 18) {
     }
     await sleep(450);
     if (myToken === typeToken && caret.parentNode) caret.remove();
+    // Hold the beat until the voice finishes the line - the typewriter runs
+    // ~3x faster than speech, and cutting the narrator mid-sentence was the
+    // top playtest complaint. Capped, and abandoned if a newer beat starts.
+    if (myToken === typeToken) {
+        await Promise.race([speechP, sleep(Math.min(20000, 2500 + text.length * 75))]);
+    }
 }
 
 // --- Diagram rendering -----------------------------------------------------
@@ -132,9 +146,16 @@ async function renderMermaid(def) {
     }
 }
 
-function setSceneHead(beat, title) {
+function setSceneHead(beat, title, prov) {
     $("scene-beat").textContent = beat;
     $("scene-title").textContent = title;
+    // Provenance chip: names WHO produced what is on stage and HOW, so the
+    // audience never wonders whether a diagram is canned or agent-made.
+    const p = $("scene-prov");
+    if (p) {
+        if (prov) { p.textContent = prov; p.hidden = false; }
+        else { p.hidden = true; }
+    }
     $("scene-head").classList.add("show");
 }
 
@@ -409,6 +430,20 @@ document.querySelectorAll("#arch-row .arch-card").forEach((card) => {
         }
     });
 });
+
+// Mission cards on the founding screen: picking a front fills the company +
+// pitch (still editable - the front is a starting point, not a lock).
+document.querySelectorAll("#mission-row .intro-choice").forEach((card) => {
+    card.addEventListener("click", () => {
+        document.querySelectorAll("#mission-row .intro-choice").forEach((c) => c.classList.remove("sel"));
+        card.classList.add("sel");
+        $("in-company").value = card.dataset.company || "";
+        $("in-pitch").value = card.dataset.pitch || "";
+        $("in-url").value = "";
+        const beginBtn = $("begin");
+        if (beginBtn) beginBtn.focus();
+    });
+});
 document.addEventListener("keydown", (e) => {
     if (state.phase !== "title") return;
     if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
@@ -469,11 +504,25 @@ function setReasoning(inv) {
     if (!el) return;
     const tokens = Number(inv && inv.reasoning_tokens) || 0;
     const preview = (inv && inv.reasoning_preview) || "";
-    if (!tokens && !preview) { el.hidden = true; el.innerHTML = ""; return; }
+    const isMaf = !!(inv && inv.framework === "microsoft-agent-framework");
+    const hasMem = !!(inv && (inv.maf_memory || []).length);
+    if (!tokens && !preview && !isMaf && !hasMem) { el.hidden = true; el.innerHTML = ""; return; }
     let html = `<div class="rz-head">&#9670; Reasoning`;
     if (tokens) html += ` <span class="rz-tokens">${tokens} thinking tokens</span>`;
     html += `</div>`;
     if (preview) html += `<div class="rz-text">&ldquo;${esc(preview)}&hellip;&rdquo;</div>`;
+    // Teach the runtime: memory injected (ContextProvider on the MAF path,
+    // briefed directly otherwise) and the FunctionTools the model called.
+    if (isMaf || hasMem) {
+        const mem = (inv.maf_memory || []).map((m) =>
+            `<span class="tool-chip">${m.kind === "ceo_decision" ? "&#9819; decision" : m.kind === "agent_memory" ? "&#9851; memory" : "&#9783; IQ"}: ${esc((m.text || "").slice(0, 36))}</span>`).join(" ");
+        const called = (inv.maf_tools_called || []).map((t) =>
+            `<span class="tool-chip">&#9874; ${esc(t)}</span>`).join(" ");
+        if (isMaf) html += `<div class="rz-head" style="margin-top:8px">&#10038; Agent Framework run</div>`;
+        if (mem) html += `<div class="rz-text">memory injected${isMaf ? " (ContextProvider)" : ""}: ${mem}</div>`;
+        if (called) html += `<div class="rz-text">tools the model called: ${called}</div>`;
+        if (isMaf && !mem && !called) html += `<div class="rz-text">agent ran on Microsoft Agent Framework</div>`;
+    }
     el.innerHTML = html;
     el.hidden = false;
 }
@@ -495,6 +544,107 @@ function setMemory(hits) {
     });
 }
 
+// Under the Hood: accuracy / reasoning / reliability tracked live as the
+// game plays. Each chapter, gate, and CEO decision feeds a row with REAL run
+// evidence - the player (and any judge watching) can always answer "is it
+// grounded, is it thinking, can I trust it?" by glancing at the rail.
+const lensState = { accuracy: 0, reasoning: 0, reliability: 0 };
+function lens(dim, evidence) {
+    const row = $(`lens-${dim}`);
+    if (!row || !(dim in lensState)) return;
+    lensState[dim] += 1;
+    row.classList.add("lit");
+    row.querySelector(".lens-count").textContent = `\u00d7${lensState[dim]}`;
+    if (evidence) row.querySelector(".lens-evidence").textContent = evidence;
+}
+
+// Agent Memory panel: what the workers have LEARNED from this CEO (separate
+// from IQ source knowledge). Reads /api/memory - Foundry Agent Service memory
+// store when configured, the local ledger otherwise - and renders the three
+// memory kinds. Best-effort: the panel must never block the run loop.
+const LEARNED_KIND = {
+    user_profile: { ico: "&#9818;", label: "profile" },
+    procedural: { ico: "&#9851;", label: "pattern" },
+    chat_summary: { ico: "&#9783;", label: "shipped" },
+};
+let learnedCount = 0; // how many memories the workers hold (drives narration)
+async function refreshLearned() {
+    const host = $("learned");
+    if (!host) return;
+    let snap;
+    try {
+        const res = await fetch("/api/memory");
+        if (!res.ok) return;
+        snap = await res.json();
+    } catch (_) { return; }
+    const groups = (snap && snap.memories) || {};
+    const rows = [];
+    ["procedural", "user_profile", "chat_summary"].forEach((kind) => {
+        (groups[kind] || []).slice(-3).reverse().forEach((m) => rows.push({ kind, text: m.text || "" }));
+    });
+    learnedCount = rows.length;
+    if (!rows.length) return; // keep the teaching placeholder until something lands
+    host.innerHTML = `<div class="mem-item" style="animation:none;border-style:dashed"><div class="mem-src">&#9670; ${
+        snap.store === "foundry-memory" ? "Foundry Agent Service memory" : "local memory ledger"}</div></div>`;
+    rows.slice(0, 6).forEach((m, i) => {
+        const k = LEARNED_KIND[m.kind] || LEARNED_KIND.procedural;
+        const div = document.createElement("div");
+        div.className = "mem-item";
+        div.style.animationDelay = `${i * 110}ms`;
+        div.innerHTML = `<div class="mem-src">${k.ico} ${k.label}</div><div class="mem-body">${esc(m.text.slice(0, 150))}</div>`;
+        host.appendChild(div);
+    });
+}
+
+// The Agent Framework panel: per-run evidence of what the framework did.
+// While the worker thinks it shows what the ContextProvider is injecting
+// (live state); when the run lands it shows the REAL memory entries and the
+// FunctionTools the model itself chose to call. Runs accumulate, newest on
+// top, so the audience can scroll the whole session's agent activity.
+function mafRunStart(workerName, chapterTitle) {
+    const host = $("maf-panel");
+    if (!host) return;
+    const empty = host.querySelector(".mem-empty");
+    if (empty) empty.remove();
+    const lastDecision = state.decisions && state.decisions.length
+        ? state.decisions[state.decisions.length - 1] : null;
+    const div = document.createElement("div");
+    div.className = "maf-run";
+    div.id = "maf-run-live";
+    let mem = `<span class="maf-chip mem">&#9783; Foundry IQ recall</span>`;
+    if (lastDecision) mem = `<span class="maf-chip mem">&#9819; ${esc(lastDecision.option.slice(0, 34))}&hellip;</span> ` + mem;
+    div.innerHTML = `
+        <div class="maf-run-head"><span>${esc(workerName)} &middot; Agent</span><span class="maf-live">&#9679; running</span></div>
+        <div class="maf-row"><b>ContextProvider injecting</b><br>${mem}</div>
+        <div class="maf-row"><b>FunctionTools offered</b><br><span class="maf-chip">role validators</span></div>`;
+    host.prepend(div);
+}
+
+function mafRunLand(inv) {
+    const host = $("maf-panel");
+    if (!host) return;
+    const live = document.getElementById("maf-run-live");
+    const isMaf = !!(inv && inv.framework === "microsoft-agent-framework");
+    const hasMem = !!(inv && (inv.maf_memory || []).length);
+    if (!isMaf && !hasMem) { if (live) live.remove(); return; }
+    const mem = (inv.maf_memory || []).map((m) =>
+        `<span class="maf-chip mem">${m.kind === "ceo_decision" ? "&#9819;" : m.kind === "agent_memory" ? "&#9851;" : "&#9783;"} ${esc((m.text || "").slice(0, 34))}</span>`).join(" ")
+        || `<span class="maf-chip">none this run</span>`;
+    const called = (inv.maf_tools_called || []).map((t) =>
+        `<span class="maf-chip called">&#9874; ${esc(t)}</span>`).join(" ")
+        || `<span class="maf-chip">none - clean first draft</span>`;
+    const div = live || document.createElement("div");
+    div.className = "maf-run";
+    div.removeAttribute("id");
+    const clientTag = inv.maf_client ? `${esc(inv.maf_client)} &middot; ` : "";
+    div.innerHTML = `
+        <div class="maf-run-head"><span>${esc(inv.worker_title || inv.role || "worker")} &middot; Agent</span><span>${clientTag}${inv.latency_s ?? 0}s</span></div>
+        <div class="maf-row"><b>Memory injected</b> <span style="opacity:.65">(ContextProvider)</span><br>${mem}</div>
+        <div class="maf-row"><b>Tools the model called</b> <span style="opacity:.65">(FunctionTools)</span><br>${called}</div>`;
+    if (!live) host.prepend(div);
+    while (host.querySelectorAll(".maf-run").length > 4) host.lastElementChild.remove();
+}
+
 // Diegetic toolbox: name the tools the worker drew, in the worker card,
 // BEFORE the artifact renders (the ludonarrative rule - the player watches
 // the worker reach into the shared toolbox, never hears it narrated).
@@ -504,6 +654,24 @@ function setTools(names) {
     if (!names || !names.length) { el.hidden = true; el.innerHTML = ""; return; }
     el.innerHTML = `<div class="rz-head">&#9874; Toolbox</div>`
         + names.map((n) => `<span class="tool-chip">${esc(n)}</span>`).join("");
+    el.hidden = false;
+}
+
+// The tools/call trace: every REAL call the worker made through the toolbox
+// this run - tool name, arguments, deterministic result, wall-clock latency.
+// Rendered as a terminal log so the audience sees receipts, not claims.
+function setToolTrace(trace) {
+    const el = $("worker-trace");
+    if (!el) return;
+    if (!trace || !trace.length) { el.hidden = true; el.innerHTML = ""; return; }
+    let html = `<div class="rz-head">&#9654; tools/call trace <span style="opacity:.6">(live, server-recorded)</span></div>`;
+    trace.forEach((t) => {
+        const argStr = t.args ? esc(JSON.stringify(t.args)).slice(0, 90) : "";
+        html += `<div class="trace-line"><span class="tr-call">&rarr; ${esc(t.tool)}</span>`
+            + `<span class="tr-args">${argStr}</span>`
+            + `<div class="tr-res">&larr; ${esc(String(t.result || ""))} <span class="tr-ms">${t.ms}ms &middot; ${esc(t.source || "local")}</span></div></div>`;
+    });
+    el.innerHTML = html;
     el.hidden = false;
 }
 
@@ -622,13 +790,14 @@ async function beginStory() {
 
     $("begin").disabled = true;
     $("reset").disabled = false;
+    refreshLearned(); // surface anything the workers already remember
 
     // Clear the founding form off the stage immediately - the form is the
     // door, not the room. From here the scene belongs to the narration and
     // the artifacts (this is what kept the title page and the game looking
     // like the same screen).
     $("diagram").innerHTML = `<div class="founding fade-scene">`
-        + `<div class="kicker">The descent begins</div>`
+        + `<div class="kicker">The ascension begins</div>`
         + `<h1>${esc(state.company)}</h1>`
         + (state.archetype ? `<p class="founding-arch">${esc(state.archetype.name)} &middot; ${esc(state.archetype.skill)}</p>` : ``)
         + `</div>`;
@@ -690,7 +859,18 @@ async function beginStory() {
     if (fromUrl && profile) {
         setMemory((profile.signals || []).map((s) => ({ source: profile.host || "homepage", content: s })));
         setWorker("orgdesigner", "STRATEGIST_MODEL (Foundry)", "Designing the org", true);
-        await narrate(`Scraped ${profile.host}${profile.scraped ? "" : " (unreachable - using a sensible default)"}. The Company Analyst reads it as: ${profile.company_summary} It sells ${profile.what_they_sell} to ${profile.target_customer}. Model: ${profile.business_model}.`);
+        // Under the Hood: the URL path is a two-hop evidence chain - scrape
+        // (grounding), analyst reasoning (thinking), guarded fallbacks (trust).
+        const sigN = (profile.signals || []).length;
+        if (profile.scraped) {
+            lens("accuracy", `homepage read via ${profile.parser === "bs4" ? "BeautifulSoup DOM walk" : "stdlib parser"} - ${sigN} evidence signals extracted from ${profile.host}`);
+        }
+        lens("reasoning", `two-hop chain: scrape -> Company Analyst inferred "${String(profile.company_summary || "").slice(0, 60)}"`);
+        lens("reliability", profile.scraped
+            ? "scrape was SSRF-guarded; analyst output normalized before it touched the org"
+            : "homepage unreachable - degraded to a domain default instead of failing");
+        refreshLearned(); // the mapped company profile just landed in agent memory
+        await narrate(`Read ${profile.host}. The Analyst's verdict: ${profile.company_summary} Saved to agent memory.`);
     }
 
     if (A.thinkingStop) A.thinkingStop();
@@ -698,6 +878,8 @@ async function beginStory() {
 
     setOrgPanel(org);
     setWorker("orgdesigner", "STRATEGIST_MODEL (Foundry)", `Org chartered: ${org.headcount} seats`, false);
+    setSceneHead("Beat 1", "The org this company needs",
+        "\u2692 drawn live from the Org Designer's blueprint (agent JSON \u2192 Mermaid)");
     await renderMermaid(orgBlueprintMermaid(org));
     await narrate(`${org.company_summary} The operating model: ${org.operating_model} That is ${org.digital_worker_count} digital workers behind one human - ${org.leverage_ratio}x leverage.`);
 
@@ -739,12 +921,19 @@ async function beginStory() {
 }
 
 async function revealVentureGraph() {
-    setSceneHead("Beat 3", "The venture, decomposed");
-    let def = "graph TD\n";
+    setSceneHead("Beat 3", "The venture, decomposed",
+        "\u2692 drawn live from the World Designer's chapter graph (JSON \u2192 Mermaid)");
+    // The stage is a wide cinema frame - lay the quest line LEFT-TO-RIGHT so
+    // five chapters read as a path across the screen, not a column squeezed
+    // under the header. Map nodes carry the short phase name only (the part
+    // before the colon); full titles live in the narration and chapter runs -
+    // a map wants landmarks, not paragraphs.
+    let def = "graph LR\n";
     const idOf = (id) => `c_${id.replace(/[^a-zA-Z0-9_]/g, "")}`;
+    const mapLabel = (t) => san(String(t || "").split(":")[0].trim() || t);
     state.chapters.forEach((ch) => {
         const color = ROLE_COLOR[ch.owner_role] || "#5b8cff";
-        def += `  ${idOf(ch.id)}["${san(ch.title)}"]\n`;
+        def += `  ${idOf(ch.id)}["${mapLabel(ch.title)}"]\n`;
         def += `  style ${idOf(ch.id)} stroke:${color},stroke-width:2px\n`;
     });
     state.chapters.forEach((ch) => {
@@ -846,7 +1035,8 @@ async function runNextChapter() {
     $("auto").disabled = true;
     markProgress(state.idx);
 
-    setSceneHead(`Chapter ${state.idx + 1}`, ch.title);
+    setSceneHead(`Chapter ${state.idx + 1}`, ch.title,
+        `\u2692 artifact + diagram by ${ownerName} (agent JSON \u2192 Mermaid)`);
     setWorker(ch.owner_role, `${(ch.owner_role || "role").toUpperCase()}_MODEL (Foundry)`, "Reasoning over the brief", true, ownerName);
     setReasoning(null);
     setTools(null);
@@ -860,11 +1050,17 @@ async function runNextChapter() {
     const recallLine = lastDecision
         ? ` Your decision at the last gate - "${lastDecision.option}" - is in its brief, as binding direction.`
         : "";
+    // Agent memory, spoken: once the workforce has learned from this CEO, the
+    // narration credits it - memory is a mechanic the player can hear.
+    const memoryLine = learnedCount > 0
+        ? " It carries what it has learned about you."
+        : "";
     const goalLine = (ch.goal || "").trim().replace(/\.$/, "");
     // The reasoning theater takes the stage while the worker thinks - the
     // narration runs underneath it (audio), the plan forms on screen (visual).
+    mafRunStart(ownerName, ch.title);
     const theaterDone = theaterOpen(ch, ownerName, lastDecision);
-    narrate(`Chapter ${state.idx + 1}: ${goalLine}. ${ownerName}${ch.assigned_worker_title ? ", a digital worker the Org Designer created," : " agent"} spins up on its Foundry deployment and recalls relevant playbooks from Foundry IQ memory.${recallLine}`);
+    narrate(`Chapter ${state.idx + 1}: ${goalLine}. ${ownerName} spins up on Foundry and recalls from IQ memory.${memoryLine}${recallLine}`);
     await theaterDone;
 
     let res;
@@ -890,11 +1086,24 @@ async function runNextChapter() {
     const chapter = res.chapter || {};
     const inv = res.invocation || {};
     const score = chapter.validation_score ?? 0;
+    // Stash this run's evidence so the dilemma gate can show its provenance.
+    state.lastInv = inv;
+    state.lastMemory = res.memory || [];
     if (res.state && res.state.world) state.decisions = res.state.world.decisions || state.decisions;
     setMemory(res.memory);
-    setWorker(ch.owner_role, inv.deployment || "simulation", `Done in ${inv.latency_s ?? 0}s`, false, inv.worker_title || ownerName);
+    refreshLearned(); // agent memory grew during this run (chapter summary)
+    // Feed the Judge's Lens with this run's real evidence.
+    const iqN = (res.memory || []).length;
+    if (iqN) lens("accuracy", `chapter grounded in ${iqN} cited IQ source${iqN > 1 ? "s" : ""} + validator-checked artifact`);
+    const memN = (inv.maf_memory || []).length;
+    lens("reasoning", `${memN} memory item${memN === 1 ? "" : "s"} injected, multi-step run on ${inv.deployment || "simulation"}${inv.maf_tools_called && inv.maf_tools_called.length ? `, model called ${inv.maf_tools_called.length} tool(s)` : ""}`);
+    const deployLabel = (inv.deployment || "simulation")
+        + (inv.framework === "microsoft-agent-framework" ? " \u00b7 Agent Framework" : "");
+    setWorker(ch.owner_role, deployLabel, `Done in ${inv.latency_s ?? 0}s`, false, inv.worker_title || ownerName);
     setTools(inv.tools_drawn);
+    setToolTrace(inv.tool_trace);
     setReasoning(inv);
+    mafRunLand(inv);
     // The reveal beat: the model's actual chain-of-thought, center stage.
     await theaterReveal(inv);
 
@@ -907,6 +1116,9 @@ async function runNextChapter() {
     await sleep(500);
     setGate(score, chapter.rubric);
     if (score >= 80) { if (A.approve) A.approve(); } else if (A.reject) A.reject();
+    lens("reliability", score >= 80
+        ? `gate ${state.idx + 1} passed at ${score}/100 - validator floor held, human approval sealed it`
+        : `gate held a ${score}/100 artifact for human review - nothing ships unverified`);
     setHud(res.state);
 
     const artifactKind = describeArtifact(ch.owner_role);
@@ -960,6 +1172,22 @@ async function runDilemmaGate(chapter, auto) {
     if (!dilemma || !Array.isArray(dilemma.options) || dilemma.options.length < 2) return;
 
     $("dilemma-prompt").textContent = dilemma.prompt;
+    // Provenance strip: the dilemma is written by the Narrator FROM the
+    // artifact just sealed - show the reasoning trail, not a popup from nowhere.
+    const trail = $("dilemma-trail");
+    if (trail) {
+        const inv = state.lastInv || {};
+        const iqN = (state.lastMemory || []).length;
+        const memN = (inv.maf_memory || []).length;
+        const chips = [
+            `<span class="tchip gold">&#9818; posed by The Narrator</span>`,
+            `<span class="tchip">from &ldquo;${esc((chapter.title || "").slice(0, 34))}&rdquo; sealed at ${chapter.validation_score ?? "&mdash;"}/100</span>`,
+        ];
+        if (iqN) chips.push(`<span class="tchip">&#9783; ${iqN} IQ source${iqN > 1 ? "s" : ""}</span>`);
+        if (memN) chips.push(`<span class="tchip">&#9851; ${memN} memory items in brief</span>`);
+        chips.push(`<span class="tchip">decision #${(state.decisions || []).length + 1} of this run</span>`);
+        trail.innerHTML = chips.join("");
+    }
     const host = $("dilemma-options");
     host.innerHTML = "";
     dilemma.options.slice(0, 2).forEach((o, i) => {
@@ -972,13 +1200,46 @@ async function runDilemmaGate(chapter, auto) {
     });
     $("dilemma-overlay").hidden = false;
     $("hint").textContent = "Your call, CEO - 1 / 2, or chart your own path";
-    if (A.speak) { try { A.speak(dilemma.prompt, { voice: NARRATOR_VOICE }); } catch (_) {} }
+    const cd = $("dilemma-countdown");
+    if (cd) { cd.hidden = true; cd.textContent = ""; }
+    let promptSpeech = Promise.resolve();
+    if (A.speak) { try { promptSpeech = A.speak(dilemma.prompt, { voice: NARRATOR_VOICE }) || Promise.resolve(); } catch (_) {} }
+
+    // Wire the free-text path BEFORE parking on the promise - statements after
+    // the await only run once the dilemma is already decided, which left the
+    // Commit button dead during a live gate. (decide is hoisted, so this works.)
+    $("dilemma-own-btn").onclick = () => { $("dilemma-own-wrap").hidden = false; $("dilemma-own-input").focus(); };
+    $("dilemma-own-go").onclick = () => {
+        const v = $("dilemma-own-input").value.trim();
+        if (v) decide(v, "", true);
+    };
 
     const picked = await new Promise((resolve) => {
         dilemmaResolve = resolve;
-        if (auto) setTimeout(() => {
-            if (dilemmaResolve) decide(dilemma.options[0].option, dilemma.options[0].tradeoff, false);
-        }, 3500);
+        if (auto) {
+            // Autoplay never steals the CEO's moment: the clock starts only
+            // AFTER the narrator finishes posing the question (capped), shows
+            // a visible countdown inside the card, and option 1 is only the
+            // default when it hits zero. Any human pick cancels it.
+            (async () => {
+                await Promise.race([promptSpeech, sleep(Math.min(24000, 3000 + dilemma.prompt.length * 80))]);
+                if (!dilemmaResolve) return; // decided while the question was read
+                let left = 15;
+                if (cd) { cd.hidden = false; cd.textContent = `auto-deciding in ${left}s - press 1 / 2 / 3 to take the wheel`; }
+                const tickDown = setInterval(() => {
+                    if (!dilemmaResolve) { clearInterval(tickDown); if (cd) cd.hidden = true; return; }
+                    left -= 1;
+                    if (left <= 0) {
+                        clearInterval(tickDown);
+                        if (cd) cd.hidden = true;
+                        if (dilemmaResolve) decide(dilemma.options[0].option, dilemma.options[0].tradeoff, false);
+                    } else {
+                        if (cd) cd.textContent = `auto-deciding in ${left}s - press 1 / 2 / 3 to take the wheel`;
+                        $("hint").textContent = `Your call, CEO - auto-deciding in ${left}s (press 1 / 2 / 3 to choose)`;
+                    }
+                }, 1000);
+            })();
+        }
     });
 
     async function decide(option, tradeoff, custom) {
@@ -992,15 +1253,12 @@ async function runDilemmaGate(chapter, auto) {
             });
             state.decisions = res.decisions || state.decisions;
         } catch (_) { /* decision recording is additive */ }
+        refreshLearned(); // the workers just learned the CEO's operating pattern
+        lens("reasoning", `CEO decision recorded - next worker's brief carries "${String(option).slice(0, 50)}" as binding direction`);
         await narrate(`Decided: ${option}. Your workforce will execute accordingly.`);
         r({ option, tradeoff, custom });
     }
 
-    $("dilemma-own-btn").onclick = () => { $("dilemma-own-wrap").hidden = false; $("dilemma-own-input").focus(); };
-    $("dilemma-own-go").onclick = () => {
-        const v = $("dilemma-own-input").value.trim();
-        if (v) decide(v, "", true);
-    };
     return picked;
 }
 
@@ -1200,6 +1458,19 @@ window.DungeonStory = {
 $("next").addEventListener("click", runNextChapter);
 $("auto").addEventListener("click", autoPlay);
 $("reset").addEventListener("click", resetStory);
+
+// Ops rail toggle (button or R key): full-screen cinema vs full telemetry.
+const railToggle = $("rail-toggle");
+if (railToggle) {
+    const stage = document.getElementById("stage");
+    railToggle.addEventListener("click", () => stage.classList.toggle("rail-hidden"));
+    document.addEventListener("keydown", (e) => {
+        if (e.key.toLowerCase() !== "r") return;
+        if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+        stage.classList.toggle("rail-hidden");
+    });
+}
+
 $("mute").addEventListener("click", () => {
     if (A.unlock) A.unlock();
     const muted = A.toggleMute ? A.toggleMute() : false;

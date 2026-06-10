@@ -23,13 +23,15 @@
     }
 
     const cardEl = document.getElementById("intro-card");
-    const dotsEl = document.getElementById("intro-dots");
     const hintEl = document.getElementById("intro-hint");
     const skipBtn = document.getElementById("intro-skip");
 
     const DWELL = 6800;      // fallback hold (ms) when narration is unavailable
     const DWELL_MAX = 34000;  // safety cap while a narration line is speaking
                               // (must clear the longest baked take: sahara ~28s)
+    const VOICED_MAX = 16000; // safety cap for a voiced clip scene (clips are
+                              // ~10s; if `ended` never fires, advance at 16s
+                              // instead of letting the film hang in silence)
 
     // Cinematic backdrops. Stills are generated with the Foundry MAI image
     // deployment (tools/generate_art.py --keyart) and ship committed. If a
@@ -50,7 +52,24 @@
     const NARRATOR_STYLE = "A master storyteller speaking softly to one person by firelight, inviting them into an adventure. Low, warm, breathy chest voice. Slow conversational pace with long natural pauses at every dash and period. Lean into key words with rising wonder, then drop to near-whisper on the final line. Imperfect, human, alive - slight breaths audible. Absolutely never monotone, never robotic, never an announcer or commercial read.";
     const loadedImgs = {}; // filename -> true once preloaded OK
     const loadedVids = {}; // scene base name -> object URL of a playable clip
+    const voicedVids = {}; // scene name -> true when the clip carries narration
+    const probing = {};    // scene name -> true while the clip fetch is in flight
+    const playBlocked = {}; // scene name -> true when unmuted playback was
+                            // refused (autoplay policy) - degrade to baked take
     let pendingBg = null;  // scene requested before its image finished loading
+
+    // A voiced clip whose UNMUTED play() the browser refuses (autoplay policy
+    // edge: activation expired, webview flags, OS overrides) must never strand
+    // the scene in silence - the baked narration was already stopped in its
+    // favor. Mark the scene and re-present it on the baked-mp3 path: muted
+    // motion + spoken take, the exact pre-voiced experience.
+    function notifyVoicedBlocked(name) {
+        if (playBlocked[name]) return;
+        playBlocked[name] = true;
+        if (!done && started && index >= 0 && cards[index] && cards[index].img === name) {
+            render(index);
+        }
+    }
 
     function preloadLoreArt(names) {
         names.forEach((name) => {
@@ -65,14 +84,34 @@
                 }
             };
             im.src = IMG_BASE + name;
-            // Probe for a motion clip alongside the still. Fetch the whole
-            // file so playback starts instantly and never buffers mid-scene;
-            // a 404 just means this scene stays a still.
+            // Probe for motion clips alongside the still. `<scene>.voiced.mp4`
+            // (Gemini Omni / Veo 3.1 with native narration) wins over the
+            // silent `<scene>.mp4`; either is fetched whole so playback never
+            // buffers mid-scene. A 404 just means this scene stays a still.
+            // While the probe is in flight the scene HOLDS (no baked dwell
+            // timer) so a slow fetch can never cut a clip short.
             const base = name.replace(/\.png$/, "");
-            fetch(VID_BASE + base + ".mp4")
+            probing[name] = true;
+            fetch(VID_BASE + base + ".voiced.mp4")
                 .then((r) => (r.ok ? r.blob() : null))
                 .then((blob) => {
-                    if (!blob || !/video/.test(blob.type || "video/mp4")) return;
+                    if (blob && /video/.test(blob.type || "video/mp4")) {
+                        loadedVids[name] = URL.createObjectURL(blob);
+                        voicedVids[name] = true;
+                        // If this scene is already on screen (it raced ahead
+                        // of the fetch and started its baked take), re-present
+                        // it: render() swaps in the clip, enters film-mode and
+                        // hands pacing to the clip's own voice (stopSpeaking
+                        // kills the baked take so the voices never overlap).
+                        if (!done && started && index >= 0 && cards[index] && cards[index].img === name) {
+                            render(index);
+                        }
+                        return null;
+                    }
+                    return fetch(VID_BASE + base + ".mp4").then((r) => (r.ok ? r.blob() : null));
+                })
+                .then((blob) => {
+                    if (!blob || !/video/.test(blob.type || "video/mp4") || loadedVids[name]) return;
                     loadedVids[name] = URL.createObjectURL(blob);
                     // Upgrade the scene live if it is currently showing.
                     if (!done && index >= 0 && cards[index] && cards[index].img === name) {
@@ -121,6 +160,15 @@
         KB.forEach((k) => incoming.classList.remove(k));
         if (clip) {
             // Motion clip: the video supplies the life; no Ken Burns on top.
+            // Voiced clips (Omni/Veo native narration) also supply the VOICE:
+            // unmuted, no loop - the film speaks for itself and the card
+            // advances when the clip ends (wired in render()). A scene whose
+            // unmuted playback was refused (playBlocked) keeps the motion but
+            // muted + looped; the baked take carries the voice instead.
+            const voiced = !!voicedVids[name] && !playBlocked[name];
+            vid.muted = !voiced;
+            vid.loop = !voiced;
+            if (voiced) vid.removeAttribute("muted"); else vid.setAttribute("muted", "");
             incoming.style.backgroundImage = loadedImgs[name]
                 ? "url('" + IMG_BASE + name + "')" : ""; // poster behind the clip
             if (vid.src !== clip) {
@@ -132,7 +180,16 @@
             const p = vid.play();
             if (p && p.catch) {
                 p.catch(() => {
-                    // Load was still warming up - retry once it has data.
+                    if (voiced) {
+                        // Unmuted playback refused. One quick retry (load may
+                        // have been warming up), then degrade the scene to the
+                        // baked-narration path rather than hang in silence.
+                        setTimeout(() => {
+                            vid.play().catch(() => notifyVoicedBlocked(name));
+                        }, 300);
+                        return;
+                    }
+                    // Muted clip: load was still warming up - retry on data.
                     vid.addEventListener("loadeddata", () => {
                         vid.play().catch(() => { /* poster still shows */ });
                     }, { once: true });
@@ -155,110 +212,70 @@
         bgFront = incoming;
     }
 
-    // The intro is a short film, not a slide deck. Each card is a scene: a
-    // full-bleed Veo/MAI backdrop, an intertitle (kicker + one line on
-    // screen), and a voice-over written for the ear that advances the card
-    // when it finishes speaking. The arc is an invitation into the story -
-    // the hero's journey (chart your path) -> too big to command -> the vow
-    // of basic needs -> the agency of digital workers -> fair pay -> Foundry
-    // reasoning -> the human seal -> the title lands ("your company is the
-    // dungeon") -> the choice screen, where the player answers back.
+    // The intro is a short film, not a slide deck. Five scenes, League-of-
+    // Legends energy: invoke, don't explain. Each card is a full-bleed
+    // backdrop, an intertitle, and a voice-over that advances the card when
+    // it finishes. The arc: invitation -> the vow -> the mechanism -> how it
+    // thinks -> the title. (The approval law lives inside "how it thinks" as
+    // one phrase - it's a game rule, not a story beat.)
     const cards = [
         {
             kicker: "Microsoft Agents League - Battle 2 - Reasoning Agents",
             h2: "Welcome to your hero's journey.",
             sub: "Chart your path: terraform the Sahara. Automate basic needs.",
-            vo: "Welcome to your hero's journey. You are to chart a path within a world that terraforms the Sahara desert and automates basic needs. At your disposal: a league of reasoning agents - your digital workers - moving through the web of social contracts our lives are suspended in, automating your basic needs by automating how your skill set makes money. The journey is ambitious. And it is taken care of. What it needs - is you.",
+            vo: "Welcome to your hero's journey. You are to chart a path within a world that terraforms the Sahara desert and automates basic needs. At your disposal: a league of reasoning agents - your digital workers. The journey is ambitious. What it needs - is you.",
             img: "sahara.png",
-        },
-        {
-            kicker: "The catch",
-            h2: "Too big to command.",
-            sub: "No one can order a desert green.",
-            vo: "But no one can command a desert green, or hire a billion hands. Most of us suffer the side effects of our chaotically complex social contract systems - overdue for an update. A vision this size is never commanded into existence. It is aligned.",
-            img: "premise.png",
         },
         {
             kicker: "The vow",
             h2: "Align a billion people.",
             sub: "No belly hungry. No head unroofed. No back unclad. No soul enslaved.",
-            vo: "Here is the vow that aligns them: no belly goes hungry. No head goes without a roof. No back is unclad. And no soul is enslaved to survival. Automate the basics - food, water, energy, shelter - and a billion humans, and their AI, finally pull the same way.",
+            vo: "A vision this size is never commanded into existence. It is aligned - by a vow. No belly goes hungry. No head goes without a roof. No back is unclad. And no soul is enslaved to survival.",
             img: "needs.png",
         },
         {
             kicker: "The mechanism",
             h2: "An agency of digital workers.",
             sub: "Bind your skill to a worker that executes.",
-            vo: "The mechanism is an agency of digital workers. Bind your real skill to a worker that executes, and your experience becomes a business that runs while you sleep.",
+            vo: "The mechanism is an agency of digital workers. Bind your real skill to a worker that executes, and your experience becomes a business that runs while you sleep - and everyone gets paid, fairly.",
             img: "workforce.png",
-        },
-        {
-            kicker: "The flywheel",
-            h2: "Everyone gets paid. Fairly.",
-            sub: "Real, consented work - not scraping.",
-            vo: "And everyone gets paid - fairly. The platform learns from real, consented work, paid evenly - not scraped. Even a superintelligence needs the grassroots.",
-            img: "flywheel.png",
         },
         {
             kicker: "How it thinks",
             h2: "Reasoning runs on Foundry.",
-            sub: "IQ memory - code interpreter - orchestration.",
-            vo: "Every agent that reasons here runs on Microsoft Foundry. Memory it can cite. A code interpreter for checks it cannot fake. And orchestration that turns lone agents into a team.",
+            sub: "Memory it can cite. Checks it cannot fake. Your seal as law.",
+            vo: "Every agent here reasons on Microsoft Foundry - memory it can cite, checks it cannot fake, and one law above them all: nothing counts until you approve it.",
             img: "foundry.png",
-        },
-        {
-            kicker: "The law of this world",
-            h2: "A human holds the seal.",
-            sub: "Nothing counts until you approve it.",
-            vo: "And the deepest law of this world: nothing counts until a human presses the seal. Every artifact stops at this gate, and waits, for you.",
-            img: "gate.png",
         },
         {
             kicker: "The game",
             h2: "Your company is the dungeon.",
             sub: "Clear it room by room. The path is yours.",
-            vo: "This is how you enter the story. Found a company on one front of the mission, take the CEO's chair, and clear it room by room with your workforce. Your company is the dungeon.",
+            vo: "Found a company on one front of the mission. Take the CEO's chair. Clear it room by room with your workforce. Your company is the dungeon. Now - choose your front, and tell us what you bring.",
             img: "title.png",
         },
-        { kind: "choice" },
     ];
 
     preloadLoreArt(cards.map((c) => c.img).filter(Boolean));
 
-    // The two missions the player can pick - early playable placeholders. Each
-    // pre-fills the existing pitch screen, so the same org -> world -> gate loop
-    // runs underneath. A third "own brief" path keeps the live Poly default.
-    const MISSIONS = {
-        needs: {
-            company: "The Commons Project",
-            pitch: "An agency of digital workers that automates the production and distribution of basic needs - food, water, energy, and shelter logistics - so a community can meet essential demand with a small human crew and an aligned AI workforce.",
-        },
-        terraform: {
-            company: "Sahara Forge",
-            pitch: "An agency of digital workers that plans and coordinates terraforming the Sahara - water routing, solar microgrids, soil regeneration, and new-city logistics - turning uninhabitable desert into livable cities.",
-        },
-    };
+    // (Missions now live on the founding screen itself - story.js renders the
+    // mission cards inside the title card, so the film's last scene fades
+    // directly onto the one founding screen. No duplicate choice card.)
 
     let index = -1;
     let timer = null;
     let done = false;
-
-    cards.forEach(() => {
-        const d = document.createElement("span");
-        d.className = "d";
-        dotsEl.appendChild(d);
-    });
-
-    function paintDots() {
-        Array.prototype.forEach.call(dotsEl.children, (d, n) => {
-            d.classList.toggle("on", n <= index);
-        });
-    }
+    let started = false; // the film rolls only after one gesture (audio unlock)
 
     function render(n) {
         const c = cards[n];
-        if (c.kind === "choice") { renderChoice(); return; }
         setBackdrop(c.img || null, false);
+        // One-film rule: when the scene's clip carries its own narration, the
+        // picture and the voice ARE the storytelling - the overlay drops to a
+        // lower-third kicker and the scrim thins (CSS .film-mode). Scenes
+        // without a voiced clip keep the full card + baked narration.
+        const voiced = !!(c.img && voicedVids[c.img]) && !playBlocked[c.img];
+        overlay.classList.toggle("film-mode", voiced);
         cardEl.innerHTML =
             '<div class="intro-anim">' +
             '<div class="kicker">' + c.kicker + "</div>" +
@@ -266,8 +283,22 @@
             (c.sub ? "<p>" + c.sub + "</p>" : "") +
             "</div>";
         if (A.tick) { try { A.tick(true); } catch (e) { /* audio optional */ } }
-        speakThenAdvance(c.vo || (c.h2 + " " + (c.sub || "")),
-            c.img ? NARR_BASE + c.img.replace(/\.png$/, ".mp3") : null);
+        if (voiced) {
+            // Omni/Veo voiced clip: the film carries its own narration - no
+            // baked take. The clip's `ended` event advances the card.
+            wireVoicedAdvance();
+        } else if (c.img && probing[c.img]) {
+            // The clip probe is still in flight - HOLD rather than starting
+            // the baked take with its short dwell timer (which would cut a
+            // 10s clip at ~7s). When the probe settles, render(index) re-runs
+            // and takes the right branch. DWELL_MAX is the only failsafe.
+            const my = ++advanceToken;
+            clearTimeout(timer);
+            timer = setTimeout(() => { if (my === advanceToken && !done) next(); }, DWELL_MAX);
+        } else {
+            speakThenAdvance(c.vo || (c.h2 + " " + (c.sub || "")),
+                c.img ? NARR_BASE + c.img.replace(/\.png$/, ".mp3") : null);
+        }
         hintEl.textContent = "space / click to advance - esc to skip";
     }
 
@@ -276,6 +307,31 @@
     // back to a fixed dwell. A token guards against a stale onend firing after
     // the player has already advanced by hand.
     let advanceToken = 0;
+
+    // Drive card advance from a voiced clip's own playback: bump the token
+    // (invalidating any baked-narration timer), stop a baked take that may have
+    // started during the race before the clip finished loading, then advance a
+    // beat after the clip ends - with a hard cap so a stalled clip never
+    // freezes the film.
+    function wireVoicedAdvance() {
+        const my = ++advanceToken;
+        clearTimeout(timer);
+        if (A.stopSpeaking) { try { A.stopSpeaking(); } catch (e) { /* narration optional */ } }
+        timer = setTimeout(() => { if (my === advanceToken && !done) next(); }, VOICED_MAX);
+        const vid = bgFront && bgFront.querySelector("video");
+        if (vid) {
+            vid.addEventListener("ended", () => {
+                if (my !== advanceToken || done) return;
+                clearTimeout(timer);
+                timer = setTimeout(() => { if (my === advanceToken && !done) next(); }, 700);
+            }, { once: true });
+            vid.addEventListener("error", () => {
+                if (my !== advanceToken || done) return;
+                const c = cards[index];
+                if (c && c.img) notifyVoicedBlocked(c.img);
+            }, { once: true });
+        }
+    }
 
     function speakThenAdvance(vo, baked) {
         const my = ++advanceToken;
@@ -308,59 +364,6 @@
         }
     }
 
-    function renderChoice() {
-        advanceToken++; // the choice screen holds for input - no auto-advance
-        clearTimeout(timer);
-        setBackdrop("sahara.png", true);
-        cardEl.innerHTML =
-            '<div class="intro-anim">' +
-            '<div class="kicker">Character creation</div>' +
-            "<h2>What do you bring?</h2>" +
-            "<p>Your real skill is your starting gear - it becomes the human seat of your org. Then pick the front your agents build toward.</p>" +
-            '<div class="intro-arch">' +
-            '<button class="intro-arch-chip" data-arch="Builder" data-skill="building product: shipping software, prototypes, systems">Builder</button>' +
-            '<button class="intro-arch-chip" data-arch="Seller" data-skill="selling: closing deals, partnerships, growth conversations">Seller</button>' +
-            '<button class="intro-arch-chip" data-arch="Designer" data-skill="design: brand, product experience, storytelling">Designer</button>' +
-            '<button class="intro-arch-chip" data-arch="Operator" data-skill="operations: process, logistics, keeping the machine running">Operator</button>' +
-            "</div>" +
-            '<div class="intro-skill">' +
-            '<input id="intro-skill-input" placeholder="or say it your way - what are you good at?" />' +
-            "</div>" +
-            '<div class="intro-choices">' +
-            '<button class="intro-choice a" data-mission="needs">' +
-            '<span class="ic-tag">Mission A - press 1</span>' +
-            '<span class="ic-title">Automate basic needs</span>' +
-            '<span class="ic-sub">Food, water, energy, shelter - produced and distributed by an aligned human and AI workforce.</span>' +
-            "</button>" +
-            '<button class="intro-choice b" data-mission="terraform">' +
-            '<span class="ic-tag">Mission B - press 2</span>' +
-            '<span class="ic-title">Terraform the Sahara</span>' +
-            '<span class="ic-sub">Water routing, solar microgrids, soil regeneration, new-city logistics - desert into cities.</span>' +
-            "</button>" +
-            "</div>" +
-            '<div class="intro-freeform">or <button id="intro-freeform" class="linklike">start from your own brief</button></div>' +
-            "</div>";
-        if (A.tick) { try { A.tick(true); } catch (e) { /* audio optional */ } }
-        if (A.speak) { try { A.speak("Now - tell us what you bring. Your skill is your starting gear. Then choose your front, founder: press one to automate basic needs, press two to terraform the Sahara, or bring a brief of your own. The dungeon takes all comers.", { voice: "onyx", baked: NARR_BASE + "choice.mp3", instructions: NARRATOR_STYLE }); } catch (e) { /* narration optional */ } }
-        hintEl.textContent = "press 1 or 2 to choose your front - esc for your own brief";
-
-        Array.prototype.forEach.call(cardEl.querySelectorAll(".intro-arch-chip"), (b) => {
-            b.addEventListener("click", (e) => {
-                e.stopPropagation();
-                const was = b.classList.contains("sel");
-                Array.prototype.forEach.call(cardEl.querySelectorAll(".intro-arch-chip"), (c) => c.classList.remove("sel"));
-                if (!was) b.classList.add("sel");
-            });
-        });
-        Array.prototype.forEach.call(cardEl.querySelectorAll(".intro-choice"), (b) => {
-            b.addEventListener("click", (e) => { e.stopPropagation(); pickMission(b.dataset.mission); });
-        });
-        const ff = document.getElementById("intro-freeform");
-        if (ff) ff.addEventListener("click", (e) => { e.stopPropagation(); startFreeform(); });
-        const skill = document.getElementById("intro-skill-input");
-        if (skill) skill.addEventListener("click", (e) => e.stopPropagation());
-    }
-
     function setField(id, val) {
         const el = document.getElementById(id);
         if (!el) return;
@@ -368,44 +371,15 @@
         el.dispatchEvent(new Event("input", { bubbles: true }));
     }
 
-    // Picking a mission IS founding the company: the run starts underneath
-    // while the film fades - one continuous descent, no second form. The
-    // archetype chip (or typed skill) rides along as the founder's gear.
-    function pickMission(key) {
-        const m = MISSIONS[key];
-        if (!m) return;
-        const chip = cardEl.querySelector(".intro-arch-chip.sel");
-        const typed = (document.getElementById("intro-skill-input") || {}).value || "";
-        const archetype = chip
-            ? { name: chip.dataset.arch, skill: chip.dataset.skill }
-            : (typed.trim() ? { name: "Founder", skill: typed.trim() } : null);
-        if (window.DungeonStory && window.DungeonStory.start) {
-            window.DungeonStory.start({ company: m.company, pitch: m.pitch, archetype: archetype });
-            dismiss(false, null);
-        } else {
-            // Fallback: pre-fill the form the old way.
-            setField("in-company", m.company);
-            setField("in-pitch", m.pitch + (archetype ? " The founding operator's edge: " + archetype.skill + "." : ""));
-            setField("in-url", "");
-            dismiss(false, "begin");
-        }
-    }
-
-    // Keep whatever default is already on the pitch screen (the live Poly meta).
-    function startFreeform() { dismiss(false, "pitch"); }
-
     function show(n) {
         if (done) return;
         index = Math.max(0, Math.min(cards.length - 1, n));
         render(index);
-        paintDots();
     }
-
-    function isChoice() { return cards[index] && cards[index].kind === "choice"; }
 
     function next() {
         if (index < cards.length - 1) show(index + 1);
-        else if (!isChoice()) dismiss(false, "pitch");
+        else dismiss(false, "pitch");
     }
     function prev() { if (index > 0) show(index - 1); }
 
@@ -432,14 +406,10 @@
     function onKey(e) {
         if (done) return;
         if (e.key === "Escape") { e.preventDefault(); dismiss(false, "pitch"); return; }
-        if (isChoice()) {
-            // Let the player type freely in the skill field.
-            const typing = document.activeElement && document.activeElement.id === "intro-skill-input";
-            if (typing) return;
-            const k = e.key.toLowerCase();
-            if (k === "1" || k === "a") { e.preventDefault(); pickMission("needs"); }
-            else if (k === "2" || k === "b") { e.preventDefault(); pickMission("terraform"); }
-            else if (e.key === "ArrowLeft") { e.preventDefault(); prev(); }
+        if (!started) {
+            // Any forward key is the start gesture - it unlocks audio and
+            // rolls the film from scene 1 (it must not skip ahead).
+            if (e.key === " " || e.key === "Enter" || e.key === "ArrowRight") { e.preventDefault(); startFilm(); }
             return;
         }
         if (e.key === " " || e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); next(); }
@@ -448,7 +418,7 @@
 
     overlay.addEventListener("click", (e) => {
         if (e.target === skipBtn) return;
-        if (isChoice()) return; // on the choice card, only the buttons act
+        if (!started) { startFilm(); return; }
         next();
     });
     if (skipBtn) skipBtn.addEventListener("click", (e) => { e.stopPropagation(); dismiss(false, "pitch"); });
@@ -459,5 +429,29 @@
         if (A.unlock) { try { A.unlock(); } catch (e) { /* audio optional */ } }
     }, { once: true });
 
-    show(0);
+    // Browsers refuse unmuted playback until the player gestures, so the film
+    // opens behind one explicit "begin" - the press-start of the game. If this
+    // session already saw a gesture (e.g. an in-page reload), roll immediately.
+    function startFilm() {
+        if (started || done) return;
+        started = true;
+        overlay.classList.remove("gate");
+        if (A.unlock) { try { A.unlock(); } catch (e) { /* audio optional */ } }
+        show(0);
+    }
+
+    if (navigator.userActivation && navigator.userActivation.hasBeenActive) {
+        startFilm();
+    } else {
+        overlay.classList.add("gate");
+        setBackdrop(cards[0].img, true); // dimmed first frame as the poster
+        cardEl.innerHTML =
+            '<div class="intro-anim">' +
+            '<div class="kicker">' + cards[0].kicker + "</div>" +
+            "<h2>Your Company Is the Dungeon</h2>" +
+            '<p>A short film opens the descent. Sound on.</p>' +
+            '<span class="intro-begin">&#9654;&ensp;Begin</span>' +
+            "</div>";
+        hintEl.textContent = "click anywhere to begin - esc to skip";
+    }
 })();

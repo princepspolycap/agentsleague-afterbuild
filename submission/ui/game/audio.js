@@ -35,6 +35,7 @@
     let serverTTSPromise = null; // in-flight probe - speak() awaits this
     let serverAudio = null;       // current HTMLAudioElement playing narration
     let serverAudioToken = 0;     // cancels stale fetches/playbacks
+    let speechSettle = null;      // resolves the current speak()'s done-promise
 
     function probeServerTTS() {
         if (serverTTSProbed) return serverTTSPromise || Promise.resolve(serverTTS);
@@ -159,18 +160,28 @@
         // to the browser voice if the server is unavailable or errors.
         // Cancels any in-flight speech so beats never overlap. Markup is
         // stripped so HTML accents are not read aloud.
+        // Returns a promise that resolves when THIS line finishes playing
+        // (ended, error, or cancellation) so callers can pace beats on the
+        // voice instead of cutting it mid-sentence.
         speak(text, opts) {
-            if (muted || !narrationOn) return null;
+            if (muted || !narrationOn) return Promise.resolve();
             const clean = stripMarkup(text);
-            if (!clean) return null;
+            if (!clean) return Promise.resolve();
 
             this.stopSpeaking();
             const myToken = ++serverAudioToken;
+            let settle;
+            const done = new Promise((resolve) => { settle = resolve; });
+            speechSettle = settle;
+            const userOnEnd = opts && opts.onend;
+            const o = Object.assign({}, opts, {
+                onend: () => { settle(); if (typeof userOnEnd === "function") userOnEnd(); },
+            });
 
             // Curated takes ship as files - instant, deterministic, directed.
-            if (opts && opts.baked) {
-                this._speakBaked(clean, myToken, opts);
-                return null;
+            if (o.baked) {
+                this._speakBaked(clean, myToken, o);
+                return done;
             }
 
             // Wait for the availability probe (already in flight since load;
@@ -179,10 +190,10 @@
             // genuinely unavailable - never just because of a race.
             probeServerTTS().then((available) => {
                 if (myToken !== serverAudioToken || muted || !narrationOn) return;
-                if (available) this._speakServer(clean, myToken, opts);
-                else this._speakBrowser(clean, opts);
+                if (available) this._speakServer(clean, myToken, o);
+                else this._speakBrowser(clean, o);
             });
-            return null;
+            return done;
         },
 
         // Play a curated narration file; degrade to live TTS if it is missing
@@ -250,18 +261,34 @@
 
         // Browser SpeechSynthesis voice (offline-safe fallback).
         _speakBrowser(clean, opts) {
-            if (!TTS) return;
+            if (!TTS) {
+                if (opts && typeof opts.onend === "function") opts.onend();
+                return;
+            }
             try { TTS.cancel(); } catch (e) { /* ignore */ }
             const u = new SpeechSynthesisUtterance(clean);
             if (chosenVoice) u.voice = chosenVoice;
             u.rate = (opts && opts.rate) || 0.98;
             u.pitch = (opts && opts.pitch) || 1.0;
             u.volume = (opts && opts.volume) || 1.0;
-            if (opts && typeof opts.onend === "function") { u.onend = opts.onend; u.onerror = opts.onend; }
+            if (opts && typeof opts.onend === "function") {
+                u.onend = opts.onend;
+                u.onerror = opts.onend;
+                // Watchdog: some engines accept an utterance but never speak
+                // (no voices, OS-muted assistive audio). If speech has not
+                // STARTED within 1.2s, report done so pacing never stalls on
+                // silence - under intro.js's 1.5s "never really played"
+                // threshold, so the film keeps its reading-pace fallback.
+                const watchdog = setTimeout(() => { try { opts.onend(); } catch (_) {} }, 1200);
+                u.onstart = () => clearTimeout(watchdog);
+            }
             try { TTS.speak(u); } catch (e) { /* narration optional */ }
         },
 
         stopSpeaking() {
+            // Settle the in-flight speak() promise (cancellation counts as
+            // done) so no caller can deadlock waiting on a cancelled line.
+            if (speechSettle) { const s = speechSettle; speechSettle = null; s(); }
             serverAudioToken++;
             if (serverAudio) {
                 try { serverAudio.pause(); } catch (e) { /* ignore */ }

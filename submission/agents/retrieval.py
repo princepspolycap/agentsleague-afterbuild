@@ -1,15 +1,16 @@
-"""Foundry IQ retrieval client (stub).
+"""Foundry IQ retrieval client.
 
-Production: calls Azure AI Search via the Foundry IQ surface to retrieve
-relevant chunks from the knowledge base (competitor URLs, bootstrap playbooks).
-
-Current state: returns mock context from local knowledge/ directory. Swap in
-the real Azure AI Search SDK when the index is provisioned.
+Preferred path: real Foundry IQ - permission-aware, cited retrieval over the
+project knowledge base (set FOUNDRY_PROJECT_ENDPOINT + FOUNDRY_IQ_KNOWLEDGE_BASE).
+Fallback: a local keyword scan over submission/knowledge/, so a keyless clone
+still recalls the same playbooks. Hits carry an `origin` field (`foundry-iq`
+vs `local-knowledge`) so the UI and replay log can show which path answered.
 """
 from __future__ import annotations
 
 import html
 import ipaddress
+import os
 import re
 import socket
 import urllib.error
@@ -21,17 +22,68 @@ from urllib.parse import urlparse
 
 KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "knowledge"
 
+# Cached availability of the real IQ path: None = untried, False = failed once
+# (missing role, no knowledge base provisioned) - skip for the process life.
+_IQ_AVAILABLE: Optional[bool] = None
+
+
+def _iq_retrieve(query: str, top_k: int) -> Optional[List[dict]]:
+    """Query the Foundry IQ knowledge base on the project endpoint.
+
+    Returns cited hits, or None when IQ is not configured/reachable so the
+    caller falls back to the local knowledge scan.
+    """
+    global _IQ_AVAILABLE
+    if _IQ_AVAILABLE is False:
+        return None
+    endpoint = os.getenv("FOUNDRY_PROJECT_ENDPOINT", "").strip().rstrip("/")
+    kb = os.getenv("FOUNDRY_IQ_KNOWLEDGE_BASE", "").strip()
+    if not endpoint or not kb:
+        return None
+    try:
+        import httpx
+        from azure.identity import DefaultAzureCredential
+        token = DefaultAzureCredential(exclude_interactive_browser_credential=False) \
+            .get_token("https://ai.azure.com/.default").token
+        resp = httpx.post(
+            f"{endpoint}/knowledgebases/{kb}/retrieve",
+            params={"api-version": "2025-11-15-preview"},
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": query, "top": top_k},
+            timeout=12.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        hits: List[dict] = []
+        for item in (data.get("results") or data.get("references") or [])[:top_k]:
+            hits.append({
+                "content": str(item.get("content") or item.get("text") or "")[:800],
+                "source": str(item.get("source") or item.get("title") or kb),
+                "score": float(item.get("score") or item.get("relevance") or 0.0),
+                "origin": "foundry-iq",
+                "citation": str(item.get("url") or item.get("id") or ""),
+            })
+        if hits:
+            _IQ_AVAILABLE = True
+            return hits
+        return None  # empty answer: let local knowledge try
+    except Exception:
+        _IQ_AVAILABLE = False
+        return None
+
 
 def retrieve(query: str, top_k: int = 3, source_filter: Optional[str] = None) -> List[dict]:
     """Retrieve relevant chunks for a query.
 
-    Returns a list of dicts: [{content, source, score}, ...]
+    Returns a list of dicts: [{content, source, score, origin, ...}, ...].
+    Tries the real Foundry IQ knowledge base first (cited), then the local
+    knowledge/ keyword scan (forkable fallback).
     """
-    # In live mode, this would call:
-    #   from azure.search.documents import SearchClient
-    #   results = search_client.search(query, top=top_k, ...)
-    #
-    # For now, scan local knowledge/ files and do a naive keyword match.
+    if not source_filter:
+        iq_hits = _iq_retrieve(query, top_k)
+        if iq_hits:
+            return iq_hits
+
     results = []
     if not KNOWLEDGE_DIR.exists():
         return results
@@ -55,6 +107,7 @@ def retrieve(query: str, top_k: int = 3, source_filter: Optional[str] = None) ->
                 "content": snippet[:800],
                 "source": str(fpath.relative_to(KNOWLEDGE_DIR)),
                 "score": hits / max(len(keywords), 1),
+                "origin": "local-knowledge",
             })
 
     results.sort(key=lambda r: r["score"], reverse=True)
@@ -114,10 +167,21 @@ def scrape_company(url: str, max_bytes: int = 400_000, timeout: float = 6.0) -> 
     headings (what the company chooses to say first), call-to-action labels,
     and a trimmed body. Returns None on any fetch failure so callers can fall
     back to a domain-only brief. SSRF-guarded via `_fetch_html`.
+
+    Parser law (same degradation rule as every subsystem): BeautifulSoup when
+    installed - a real DOM walk that survives messy real-world HTML - and the
+    dependency-free regex path otherwise. The result carries `parser` so the
+    UI/replay can show which path read the page.
     """
     html_doc = _fetch_html(url, max_bytes=max_bytes, timeout=timeout)
     if not html_doc:
         return None
+
+    soup_signals = _soup_company_signals(html_doc)
+    if soup_signals is not None:
+        host = urlparse(url).netloc or url
+        soup_signals.update({"host": host, "url": url})
+        return soup_signals
 
     # Drop non-content blocks before extracting structure.
     cleaned = re.sub(r"(?is)<(script|style|noscript|template|svg)\b.*?</\1>", " ", html_doc)
@@ -144,7 +208,62 @@ def scrape_company(url: str, max_bytes: int = 400_000, timeout: float = 6.0) -> 
         "ctas": ctas,
         "text": body,
         "chars": len(body),
+        "parser": "regex",
     }
+
+
+def _soup_company_signals(html_doc: str) -> Optional[dict]:
+    """Extract company signals with BeautifulSoup when installed.
+
+    A DOM walk beats regex on real-world pages (nested tags, unquoted attrs,
+    broken markup). Returns None when bs4 is missing or parsing fails, so
+    `scrape_company` falls through to the dependency-free regex path.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return None
+    try:
+        soup = BeautifulSoup(html_doc, "html.parser")
+        for tag in soup(["script", "style", "noscript", "template", "svg"]):
+            tag.decompose()
+
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+
+        def meta(*names: str) -> str:
+            for n in names:
+                el = soup.find("meta", attrs={"name": n}) or soup.find("meta", attrs={"property": n})
+                if el and el.get("content"):
+                    return str(el["content"]).strip()
+            return ""
+
+        description = meta("description", "og:description", "twitter:description")
+        site_name = meta("og:site_name", "application-name")
+        headings = [h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h2", "h3"], limit=24)]
+        headings = [h for h in headings if 2 < len(h) < 140][:12]
+        ctas = []
+        for el in soup.find_all(["a", "button"], limit=200):
+            label = el.get_text(" ", strip=True)
+            if 2 < len(label) < 40 and label not in ctas:
+                ctas.append(label)
+            if len(ctas) >= 10:
+                break
+        body = " ".join(soup.get_text(" ", strip=True).split())[:4000]
+
+        if not any([title, description, headings, body]):
+            return None
+        return {
+            "title": title,
+            "site_name": site_name,
+            "description": description,
+            "headings": headings,
+            "ctas": ctas,
+            "text": body,
+            "chars": len(body),
+            "parser": "bs4",
+        }
+    except Exception:
+        return None
 
 
 def brief_from_url(url: str) -> str:

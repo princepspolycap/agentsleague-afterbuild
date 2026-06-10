@@ -52,6 +52,8 @@ agentsleague-afterbuild/
 - ✅ Thinking-token capture on all reasoning paths (`last_reasoning` sinks, SSE `invoke_done`, replay log) + secret scrubber (`scrub_secrets`)
 - ✅ Voice upgrade chain (`TTS_DEPLOYMENTS`: gpt-audio-1.5 family first, gpt-4o-mini-tts fallback, browser TTS net)
 - ✅ Foundry hosted agent scaffold (`submission/hosted_agent/` — invocations protocol, agent.yaml, Dockerfile)
+- ✅ Agent memory layer (`agents/memory.py`) — Foundry Agent Service memory store (`FOUNDRY_MEMORY_STORE`) with local `state/memory.json` fallback; user_profile / procedural / chat_summary kinds; injected into every worker brief (ContextProvider on MAF path) and written at gate decisions + chapter completion
+- ✅ Four proof points on every invocation (all paths incl. simulation): `iq_hits`, `memory_injected`, `tools_called`, `inference_usage` — in `CHAPTER_EXECUTED` replay events and the story UI evidence panels; `/api/memory` endpoint exposes the learning snapshot
 - ⏳ Wire agents to real Foundry SDK (currently mock returns)
 - ⏳ Foundry IQ knowledge base + retrieval client
 - ⏳ Phaser side-scroller UI shell
@@ -124,12 +126,13 @@ Full script: [submission/docs/demo_script.md](../submission/docs/demo_script.md)
 
 | Criterion                | Weight | What helps                                                         |
 | ------------------------ | -----: | ------------------------------------------------------------------ |
-| Accuracy & Relevance     |    20% | Tighter mapping to `live_battle_challenge.md` primitives           |
-| Reasoning & Multi-step   |    20% | Visible decomposition, tool calls in replay log, multi-hop chains  |
+| Accuracy & Relevance     |    25% | Tighter mapping to `live_battle_challenge.md` primitives           |
+| Reasoning & Multi-step   |    25% | Visible decomposition, tool calls in replay log, multi-hop chains  |
 | Reliability & Safety     |    20% | Verification gates, simulation fallbacks, deterministic validators |
 | Creativity & Originality |    15% | Side-scroller game-feel, business-dungeon framing                  |
 | UX & Presentation        |    15% | Phaser polish, NPC dialogue, XP/level-up animations                |
-| Community Vote           |    10% | Pending confirmation from Carlotta                                 |
+
+(Official weights from `live_battle_challenge.md` Evaluation Criteria; no community-vote criterion exists in the spec.)
 
 Full breakdown: [submission/docs/rubric_mapping.md](../submission/docs/rubric_mapping.md).
 

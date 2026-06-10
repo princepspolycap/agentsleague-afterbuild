@@ -99,6 +99,25 @@ class WorkerInvocation(BaseModel):
     # Tools the worker drew from the Toolbox for this chapter (diegetic: the
     # rail names them before the artifact appears).
     tools_drawn: List[str] = Field(default_factory=list)
+    # The actual tools/call ledger for this run - one entry per real call
+    # through the toolbox (MCP shape): {tool, source, args, result, ms}.
+    # This is the not-mocked receipt the UI renders as a terminal trace.
+    tool_trace: List[Dict[str, Any]] = Field(default_factory=list)
+    # Microsoft Agent Framework runtime evidence (empty on the direct path):
+    # which framework ran the agent, which MAF chat client carried inference
+    # (FoundryChatClient on the project Responses endpoint vs OpenAIChatClient
+    # on the resource /openai/v1 path), what its ContextProvider injected as
+    # session memory, and which FunctionTools the model actually called.
+    framework: str = ""
+    maf_client: str = ""
+    # Why the preferred FoundryChatClient path degraded (e.g. 403 RBAC on the
+    # project Responses endpoint) - empty when it carried the run or never ran.
+    maf_fallback_reason: str = ""
+    maf_memory: List[Dict[str, Any]] = Field(default_factory=list)
+    maf_tools_called: List[str] = Field(default_factory=list)
+    # Foundry IQ recall that grounded this run (source names; cited when the
+    # real IQ knowledge base answered, local playbook files otherwise).
+    iq_sources: List[str] = Field(default_factory=list)
     latency_s: float = 0.0
     error: Optional[str] = None
 
