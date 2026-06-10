@@ -50,6 +50,10 @@ MIT**, so forkers get both the art and the generator.
 - Config: `IMAGE_ENDPOINT`, `IMAGE_DEPLOYMENT`, `IMAGE_API_KEY` in
   `submission/.env` (see [.env.example](../../.env.example) for the deploy
   command and supported regions).
+- Generator: run `python submission/tools/generate_art.py` to produce the
+  worker-role portraits into `generated/` (offline-safe: prints a dry-run plan
+  when no deployment is configured). The story view auto-shows a portrait when
+  `generated/<role>.png` exists and stays geometric when it does not.
 - API: `POST {IMAGE_ENDPOINT}/mai/v1/images/generations` with
   `{"model": "MAI-Image-2e", "prompt": ..., "width": 1024, "height": 1024}`
   and an `api-key` header. Output is always PNG (min 768px per side,

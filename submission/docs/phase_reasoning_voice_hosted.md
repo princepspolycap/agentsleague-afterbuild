@@ -81,6 +81,7 @@ agent-callable surface other agents and apps can invoke (A2A-style interop):
 ## Still open (next phase)
 
 - Visual treatment of the reasoning panel (this phase wired the data; visuals
-  are next).
+  are next). MAI-generated worker portraits are now in
+  (`tools/generate_art.py` -> `ui/assets/generated/`).
 - Real Foundry IQ index behind `agents/retrieval.py` (still local-keyword).
 - Deploying the hosted agent to a real project and demoing a cross-agent call.

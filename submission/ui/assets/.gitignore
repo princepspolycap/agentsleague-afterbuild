@@ -10,3 +10,7 @@ local/
 *.json
 !asset_manifest.example.json
 !README.md
+# Foundry MAI-generated art is ours and ships under MIT (see generated/CREDITS.md).
+!generated/
+!generated/*.png
+!generated/CREDITS.md

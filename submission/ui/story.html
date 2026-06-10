@@ -229,6 +229,13 @@
             border: 1px solid var(--line); border-radius: 12px; padding: 14px;
             background: rgba(255,255,255,0.02);
         }
+        /* MAI-generated portrait (progressive enhancement: hidden when the
+           PNG is absent, so a fresh clone keeps the geometric baseline). */
+        .worker-portrait {
+            width: 100%; aspect-ratio: 1; border-radius: 10px; object-fit: cover;
+            border: 1px solid var(--line); margin-bottom: 10px; display: block;
+        }
+        .worker-portrait[hidden] { display: none; }
         .worker-role {
             font-family: 'Fraunces', serif; font-size: 17px; margin-bottom: 3px;
             display: flex; align-items: center; gap: 9px;
@@ -525,6 +532,7 @@
                 <div>
                     <div class="rail-h"><span class="dot"></span> Active Worker</div>
                     <div id="worker" class="worker-card">
+                        <img id="worker-portrait" class="worker-portrait" alt="" hidden>
                         <div class="worker-role"><span class="role-orb" style="color:var(--narrator)"></span><span id="worker-name">World Designer</span></div>
                         <div id="worker-deploy" class="worker-deploy">awaiting brief</div>
                         <div id="worker-state" class="worker-state">Idle</div>
@@ -581,7 +589,7 @@
     </div>
 
     <script src="/game/game/audio.js?v=3"></script>
-    <script type="module" src="/game/game/story.js?v=8"></script>
+    <script type="module" src="/game/game/story.js?v=9"></script>
     <script src="/game/game/intro.js?v=5"></script>
 </body>
 </html>

@@ -396,6 +396,15 @@ function setWorker(role, deployLabel, stateText, thinking, displayName) {
     // distinct. Unknown roles keep the narrator voice.
     currentVoice = VOICE_BY_ROLE[role] || NARRATOR_VOICE;
     $("worker-name").textContent = displayName || ROLE_NAME[role] || role;
+    // MAI-generated portrait for this role (tools/generate_art.py). Hidden if
+    // the PNG is missing so the geometric baseline still works offline.
+    const img = $("worker-portrait");
+    if (img) {
+        img.hidden = true;
+        img.onload = () => { img.hidden = false; };
+        img.onerror = () => { img.hidden = true; };
+        img.src = `/game/assets/generated/${role}.png`;
+    }
     const orb = document.querySelector(".role-orb");
     if (orb) orb.style.color = ROLE_COLOR[role] || "#94a3b8";
     $("worker-deploy").textContent = deployLabel || "";
