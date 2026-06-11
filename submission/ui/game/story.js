@@ -788,6 +788,11 @@ async function beginStory() {
     if (state.phase !== "title") return; // already descending
     state.phase = "founding";
 
+    document.documentElement.classList.remove("prestart");
+    document.body.classList.remove("prestart");
+    const stageEl = document.getElementById("stage");
+    if (stageEl) stageEl.classList.remove("prestart", "rail-hidden");
+
     $("begin").disabled = true;
     $("reset").disabled = false;
     refreshLearned(); // surface anything the workers already remember
