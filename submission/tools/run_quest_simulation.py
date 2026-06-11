@@ -8,6 +8,7 @@ from typing import Dict, Any
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from state.schema import StateStore, QuestState, QuestStep
+from state.events import EventType
 from agents.foundry_agents import MasterNarrator, StrategistAgent, DesignerAgent, MarketerAgent
 from tools.code_interpreter_wrappers import validate_positioning, validate_landing_page, validate_marketing_email
 
@@ -24,7 +25,7 @@ def run_simulation(pitch: str) -> None:
         pitch=pitch,
         description="A startup forged in QuestForge."
     )
-    store.log_event("SESSION_START", "system", "Initialized fresh startup session and spawned character party.")
+    store.log_event(EventType.SESSION_START, "system", "Initialized fresh startup session and spawned character party.")
     
     # 2. Master Narrator Decomposes the Pitch into 3 Quests
     narrator = MasterNarrator()
@@ -39,7 +40,7 @@ def run_simulation(pitch: str) -> None:
     state.active_quest = quest_state
     store.save()
     
-    store.log_event("QUEST_START", narrator.name, "Decomposed pitch into active quest-steps.", {"steps": steps_data})
+    store.log_event(EventType.QUEST_START, narrator.name, "Decomposed pitch into active quest-steps.", {"steps": steps_data})
     
     print("\n📜 Active Quests Decomposed by Master Narrator:")
     for idx, step in enumerate(state.active_quest.steps, start=1):
@@ -59,7 +60,7 @@ def run_simulation(pitch: str) -> None:
         print(f"NPC Active: {step.assigned_to.capitalize()} Agent")
         
         step.status = "in-progress"
-        store.log_event("STEP_START", step.assigned_to, f"Beginning work on {step.id}", {"step_id": step.id})
+        store.log_event(EventType.STEP_START, step.assigned_to, f"Beginning work on {step.id}", {"step_id": step.id})
         
         artifact_data: Dict[str, Any] = {}
         success = False
@@ -114,18 +115,18 @@ def run_simulation(pitch: str) -> None:
             step.status = "completed"
             state.xp += step.xp_reward
             print(f"   🎉 Approved! +{step.xp_reward} XP awarded.")
-            store.log_event("STEP_APPROVED", "human_verifier", f"Approved {step.id}. XP reward claim dispatched.", {"new_xp": state.xp})
+            store.log_event(EventType.STEP_APPROVED, "human_verifier", f"Approved {step.id}. XP reward claim dispatched.", {"new_xp": state.xp})
         else:
             step.status = "failed"
             print(f"   ⚠️ Rejected artifact! Step failed. Narrative corrected.")
-            store.log_event("STEP_REJECTED", "human_verifier", f"Rejected {step.id}. Refinement scheduled.")
+            store.log_event(EventType.STEP_REJECTED, "human_verifier", f"Rejected {step.id}. Refinement scheduled.")
             
     quest_state.status = "completed"
     # Award quest level completions
     if state.xp >= 50:
         state.level += 1
         print(f"\n🌟 LEVEL UP! You are now Level {state.level}! Total cumulative XP: {state.xp}")
-        store.log_event("LEVEL_UP", "system", f"Level up achieved: Level {state.level}", {"xp": state.xp})
+        store.log_event(EventType.LEVEL_UP, "system", f"Level up achieved: Level {state.level}", {"xp": state.xp})
         
     print("\n" + "=" * 60)
     print("🏆 QUEST LINE COMPLETED SUCCESSFULLY!")

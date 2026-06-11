@@ -12,6 +12,8 @@ from pydantic import BaseModel
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from state.schema import StateStore, QuestState, QuestStep, CompanyState, WorldGraph, Chapter
+from state.api_contract import state_response, step_response, chapter_response, reset_response
+from state.events import EventType
 from agents.foundry_agents import MasterNarrator, StrategistAgent, DesignerAgent, MarketerAgent
 from agents.world_designer import design_world
 from agents.worker_factory import run_world, execute_chapter
@@ -31,8 +33,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Persistent file-based store
-STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "state.json")
+# Persistent file-based store. DUNGEON_STATE_FILE lets smoke tests and parallel
+# local servers run isolated sessions instead of sharing one state file.
+STATE_FILE = os.environ.get("DUNGEON_STATE_FILE") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "state.json"
+)
 store = StateStore(filepath=STATE_FILE)
 
 class PitchRequest(BaseModel):
@@ -43,10 +48,7 @@ class PitchRequest(BaseModel):
 def get_state():
     """Gets the current company state from disk."""
     state = store.load()
-    if not state:
-        # Return a clean empty-like structure or indicator
-        return {"initialized": False, "state": None}
-    return {"initialized": True, "state": state.model_dump()}
+    return state_response(state)
 
 @app.post("/api/init")
 def initialize_game(payload: PitchRequest):
@@ -60,7 +62,7 @@ def initialize_game(payload: PitchRequest):
         pitch=pitch,
         description="A startup forged in QuestForge."
     )
-    store.log_event("SESSION_START", "system", f"Initialized fresh startup session for company: {company_name}")
+    store.log_event(EventType.SESSION_START, "system", f"Initialized fresh startup session for company: {company_name}")
     
     # 2. Master Narrator Decomposes the Pitch into 3 Quests
     narrator = MasterNarrator()
@@ -104,8 +106,8 @@ def initialize_game(payload: PitchRequest):
     state.active_quest = quest_state
     store.save()
     
-    store.log_event("QUEST_START", narrator.name, "Decomposed pitch into active quest-steps.", {"steps": steps_data})
-    return {"initialized": True, "state": state.model_dump()}
+    store.log_event(EventType.QUEST_START, narrator.name, "Decomposed pitch into active quest-steps.", {"steps": steps_data})
+    return state_response(state, surface="legacy_quest")
 
 @app.post("/api/step/execute")
 def execute_current_step():
@@ -122,7 +124,7 @@ def execute_current_step():
     
     # Work begins
     step.status = "in-progress"
-    store.log_event("STEP_START", step.assigned_to, f"Agent begins work on: {step.title}", {"step_id": step.id})
+    store.log_event(EventType.STEP_START, step.assigned_to, f"Agent begins work on: {step.title}", {"step_id": step.id})
     store.save()
     
     artifact_data: Dict[str, Any] = {}
@@ -153,7 +155,7 @@ def execute_current_step():
         step.artifact_data = artifact_data
         step.validation_results = val_results
         
-        store.log_event("STEP_COMPLETED_REASONING", step.assigned_to, f"Artifact created. Verification gate waiting for review.", {
+        store.log_event(EventType.STEP_COMPLETED_REASONING, step.assigned_to, f"Artifact created. Verification gate waiting for review.", {
             "artifact": artifact_data,
             "validation_results": val_results
         })
@@ -161,11 +163,11 @@ def execute_current_step():
         
     except Exception as e:
         step.status = "failed"
-        store.log_event("STEP_EXECUTION_ERROR", "system", f"Failed executing step reasoning: {str(e)}")
+        store.log_event(EventType.STEP_EXECUTION_ERROR, "system", f"Failed executing step reasoning: {str(e)}")
         store.save()
         raise HTTPException(status_code=500, detail=f"Agent Execution Failure: {str(e)}")
         
-    return {"state": state.model_dump(), "current_step": step.model_dump()}
+    return step_response(state, step)
 
 def _compute_artifact_tier(score: int) -> Dict[str, Any]:
     """Score -> quality tier with XP multiplier. Bronze does not extend streaks."""
@@ -217,7 +219,7 @@ def approve_current_step():
         "xp_earned": total_xp,
     }
 
-    store.log_event("STEP_APPROVED", "human_verifier", f"Approved step {step.id}. {tier_info['label']} tier (+{total_xp} XP).", {
+    store.log_event(EventType.STEP_APPROVED, "human_verifier", f"Approved step {step.id}. {tier_info['label']} tier (+{total_xp} XP).", {
         "xp_added": total_xp,
         "xp_base": base_xp,
         "xp_streak_bonus": streak_bonus,
@@ -229,10 +231,10 @@ def approve_current_step():
     # Check leveling up
     if state.xp >= 50 and state.level == 1:
         state.level += 1
-        store.log_event("LEVEL_UP", "system", f"StartUp Level Up! Advanced to level {state.level}", {"xp": state.xp})
+        store.log_event(EventType.LEVEL_UP, "system", f"StartUp Level Up! Advanced to level {state.level}", {"xp": state.xp})
     elif state.xp >= 100 and state.level == 2:
         state.level += 1
-        store.log_event("LEVEL_UP", "system", f"StartUp Level Up! Advanced to level {state.level}", {"xp": state.xp})
+        store.log_event(EventType.LEVEL_UP, "system", f"StartUp Level Up! Advanced to level {state.level}", {"xp": state.xp})
         
     # Move index forward
     quest.current_step_index += 1
@@ -240,10 +242,10 @@ def approve_current_step():
     if quest.current_step_index >= len(quest.steps):
         quest.status = "completed"
         state.stage = "validated"
-        store.log_event("QUEST_LINE_COMPLETED", "system", "First Landing Page questline has been fully accomplished! Stage upgraded to 'validated'.")
+        store.log_event(EventType.QUEST_LINE_COMPLETED, "system", "First Landing Page questline has been fully accomplished! Stage upgraded to 'validated'.")
         
     store.save()
-    return {"state": state.model_dump()}
+    return state_response(state, surface="legacy_quest")
 
 @app.post("/api/step/reject")
 def reject_current_step(feedback: Optional[str] = Body(default=None, embed=True)):
@@ -261,12 +263,12 @@ def reject_current_step(feedback: Optional[str] = Body(default=None, embed=True)
     step.status = "not-started"
     state.streak = 0
     
-    store.log_event("STEP_REJECTED", "human_verifier", f"Rejected artifact for {step.id}. Strategic feedback recorded.", {
+    store.log_event(EventType.STEP_REJECTED, "human_verifier", f"Rejected artifact for {step.id}. Strategic feedback recorded.", {
         "human_feedback": feedback or "No comments detailed."
     })
     
     store.save()
-    return {"state": state.model_dump()}
+    return state_response(state, surface="legacy_quest")
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +290,7 @@ def design_world_endpoint(payload: AutoplayRequest):
     state = store.initialize_new_company(
         name=company_name, pitch=brief, description="A venture forged in QuestForge."
     )
-    store.log_event("SESSION_START", "system", f"New world session for: {company_name}")
+    store.log_event(EventType.SESSION_START, "system", f"New world session for: {company_name}")
 
     chapters_data = design_world(brief)
     world = WorldGraph(
@@ -297,11 +299,11 @@ def design_world_endpoint(payload: AutoplayRequest):
         status="active",
     )
     state.world = world
-    store.log_event("WORLD_DESIGNED", "world_designer", f"Produced {len(world.chapters)} chapters.", {
+    store.log_event(EventType.WORLD_DESIGNED, "world_designer", f"Produced {len(world.chapters)} chapters.", {
         "chapters": [{"id": ch.id, "title": ch.title, "owner_role": ch.owner_role} for ch in world.chapters]
     })
     store.save()
-    return {"state": state.model_dump()}
+    return state_response(state, surface="world_graph")
 
 
 @app.post("/api/world/run-next")
@@ -336,7 +338,7 @@ def run_next_chapter():
     elif state.xp >= 100 and state.level < 3:
         state.level = 3
 
-    store.log_event("CHAPTER_EXECUTED", invocation.role,
+    store.log_event(EventType.CHAPTER_EXECUTED, invocation.role,
         f"Chapter '{chapter.title}' -> score {score}, +{xp_earned} XP ({invocation.deployment}, {invocation.latency_s}s)",
         {"chapter_id": chapter.id, "score": score, "xp_earned": xp_earned, "latency_s": invocation.latency_s}
     )
@@ -344,10 +346,10 @@ def run_next_chapter():
     if all(ch.status == "completed" for ch in world.chapters):
         world.status = "completed"
         state.stage = "launched"
-        store.log_event("WORLD_COMPLETED", "system", "All chapters completed! Venture stage: launched.")
+        store.log_event(EventType.WORLD_COMPLETED, "system", "All chapters completed! Venture stage: launched.")
 
     store.save()
-    return {"state": state.model_dump(), "chapter": chapter.model_dump(), "invocation": invocation.model_dump()}
+    return chapter_response(state, chapter, invocation)
 
 
 @app.post("/api/world/autoplay")
@@ -360,7 +362,7 @@ def autoplay_world(payload: AutoplayRequest):
     state = store.initialize_new_company(
         name=company_name, pitch=brief, description="A venture forged in QuestForge."
     )
-    store.log_event("SESSION_START", "system", f"Autoplay session for: {company_name}")
+    store.log_event(EventType.SESSION_START, "system", f"Autoplay session for: {company_name}")
 
     chapters_data = design_world(brief)
     world = WorldGraph(
@@ -369,7 +371,7 @@ def autoplay_world(payload: AutoplayRequest):
         status="active",
     )
     state.world = world
-    store.log_event("WORLD_DESIGNED", "world_designer", f"Produced {len(world.chapters)} chapters.")
+    store.log_event(EventType.WORLD_DESIGNED, "world_designer", f"Produced {len(world.chapters)} chapters.")
 
     results = []
     for chapter, invocation, artifact, score in run_world(world, brief, auto_approve_threshold=threshold):
@@ -380,7 +382,7 @@ def autoplay_world(payload: AutoplayRequest):
         elif state.xp >= 100 and state.level < 3:
             state.level = 3
 
-        store.log_event("CHAPTER_EXECUTED", invocation.role,
+        store.log_event(EventType.CHAPTER_EXECUTED, invocation.role,
             f"Chapter '{chapter.title}' -> score {score}, +{xp_earned} XP",
             {"chapter_id": chapter.id, "score": score, "latency_s": invocation.latency_s}
         )
@@ -388,10 +390,10 @@ def autoplay_world(payload: AutoplayRequest):
 
     if world.status == "completed":
         state.stage = "launched"
-        store.log_event("WORLD_COMPLETED", "system", "Autoplay complete! All chapters done.")
+        store.log_event(EventType.WORLD_COMPLETED, "system", "Autoplay complete! All chapters done.")
 
     store.save()
-    return {"state": state.model_dump(), "results": results}
+    return state_response(state, surface="world_graph", results=results)
 
 
 @app.post("/api/reset")
@@ -403,7 +405,7 @@ def reset_game():
         except Exception:
             pass
     store.state = None
-    return {"success": True, "message": "State reset successfully."}
+    return reset_response()
 
 # Mount static folder for UI
 UI_DIRECTORY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui")
