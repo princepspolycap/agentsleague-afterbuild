@@ -42,11 +42,10 @@ DEMO_MODE = os.getenv("DEMO_MODE", "simulation").strip().lower()
 FOUNDRY_BASE_URL = os.getenv("FOUNDRY_BASE_URL", "").strip()
 FOUNDRY_API_KEY = os.getenv("FOUNDRY_API_KEY", "").strip()
 
-# Reliability net: a high-quota deployment to retry on when a role's primary
-# model is rate-limited (HTTP 429) or errors mid-demo. Set this to a deployment
-# that exists on your endpoint AND has quota headroom. Default gpt-5.5 (large
-# capacity on our endpoint); override via env. Leave blank to disable fallback.
-FOUNDRY_FALLBACK_MODEL = os.getenv("FOUNDRY_FALLBACK_MODEL", "gpt-5.5").strip()
+# Reliability net: a deployment to retry on when a role's primary model is
+# rate-limited (HTTP 429) or errors mid-demo. Set this to a deployment that
+# exists on your endpoint and has quota headroom. Blank disables fallback.
+FOUNDRY_FALLBACK_MODEL = os.getenv("FOUNDRY_FALLBACK_MODEL", "").strip()
 
 
 def is_live() -> bool:
@@ -123,10 +122,8 @@ def create_chat_completion(deployment, messages, *, max_completion_tokens=8000,
     """Run a chat completion with automatic resilience, returning the response.
 
     Two safety behaviors, both transparent to callers:
-      1. Cross-deployment fallback - if `deployment` errors (e.g. a 429 rate
-         limit because an open-source model is at 100% of its regional quota),
-         retry once on FOUNDRY_FALLBACK_MODEL, which is chosen to have quota
-         headroom. This is what keeps a live demo from breaking on quota.
+      1. Cross-deployment fallback - if `deployment` errors (for example, a
+         transient 429), retry once on FOUNDRY_FALLBACK_MODEL when configured.
       2. Temperature retry - gpt-5.x deployments reject a non-default
          temperature; on that specific error we drop it and retry the same
          deployment.
@@ -196,4 +193,3 @@ def reasoning_from_response(resp, preview_chars: int = 280) -> Dict[str, Any]:
     except Exception:
         preview = ""
     return {"reasoning_tokens": reasoning_tokens, "reasoning_preview": preview}
-

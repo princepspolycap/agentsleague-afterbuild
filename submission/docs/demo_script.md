@@ -45,7 +45,7 @@ then open the file.
 
 | Piece | The sentence | Point at |
 |---|---|---|
-| Reasoning models | "Every worker is a live Foundry deployment - narrator on gpt-5.5, and the org binds each chapter to a worker whose deployment_hint picks its model class; you watched a 56-second real reasoning run." | `agents/model_config.py` (AGENT_MODELS), rail's deploy label |
+| Reasoning models | "Every worker runs on the configured Microsoft Foundry deployment for its role, and the org binds each chapter to a worker whose deployment_hint picks the right model class." | `agents/model_config.py` (AGENT_MODELS), rail's deploy label |
 | Agent Framework | "Each worker runs as a real Microsoft Agent Framework Agent - FoundryChatClient on the project Responses endpoint when FOUNDRY_PROJECT_ENDPOINT is set, OpenAIChatClient as the compatibility net - and the rail names which client carried the run." | `agents/maf_runtime.py`, requirements (`agent-framework-foundry`), Agent Framework rail panel |
 | Rubric evaluator | "The gate score is a Foundry rubric evaluation - four weighted dimensions judged per artifact by the narrator deployment - and the deterministic validators are the floor it can never fall below." | `agents/worker_factory.py` (`rubric_evaluate`), gate panel bars |
 | Toolbox | "Workers draw tools from one MCP-shaped catalog - tools/list and tools/call - which passes through to a managed Foundry Toolbox when TOOLBOX_URL is set; the chips in the rail are the tools it actually drew." | `tools/toolbox.py`, `/api/toolbox`, rail tool chips |

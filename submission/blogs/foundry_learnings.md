@@ -37,7 +37,7 @@ flowchart TD
     F --> G
     G --> H[Human verification gate]
     H --> I[State update and XP]
-    I --> J[Phaser world and replay log]
+    I --> J[Story view and replay log]
 ```
 
 Core layers:
@@ -45,7 +45,7 @@ Core layers:
 - Reasoning and orchestration: Microsoft Foundry agents
 - Validation and scoring: deterministic code interpreter wrappers
 - State and API: FastAPI + Pydantic
-- Runtime UX: Phaser 3
+- Runtime UX: FastAPI-served vanilla JS story view
 
 ## New priority: LLM-first org chart generation for any business
 
@@ -172,7 +172,7 @@ We treated forkability as a hard requirement. That forced useful discipline:
 - Simulation mode always available without cloud credentials
 - No secrets in repository
 - No private model identifiers exposed in UI logs
-- Fallback visuals when local sprite assets are missing
+- No required private art assets in the release path
 
 This gave us reproducible demos and safer collaboration. It also reduced the "works on my machine" gap before live runs.
 
@@ -203,7 +203,7 @@ We hit a subtle bug where autoplay could stall forever.
 
 Cause:
 
-- Movement awaited Phaser tween completion
+- Movement/beat transitions awaited browser animation completion
 - Hidden or backgrounded tabs can pause animation timing
 - Completion callback never fired
 

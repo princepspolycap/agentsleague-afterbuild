@@ -203,7 +203,7 @@ Small reliability details matter when the agent is live, visible, and timed.
 
 The repo has to be forkable. That means the reasoning path cannot depend on private credentials, private services, or protected art assets.
 
-The game uses procedural fallback characters by default. If local pixel-art sprites exist on disk, the game loads them. If they are missing, Phaser draws simple characters and the demo still runs.
+The release game uses generated portraits, geometric diagrams, and procedural visuals by default. Local art can exist on a maintainer machine, but the public path does not depend on protected asset packs.
 
 That choice sounds cosmetic, but it reflects a broader architecture principle:
 

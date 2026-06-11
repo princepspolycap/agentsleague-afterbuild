@@ -9,12 +9,13 @@
 > in `submission/docs/` is the mechanism; this is the meaning.
 
 Related docs:
-[PROJECT_NARRATIVE.md](../../PROJECT_NARRATIVE.md) (origin strategy) -
+[PROJECT_NARRATIVE.md](../../PROJECT_NARRATIVE.md) (public narrative) -
 [agents_league_alignment.md](agents_league_alignment.md) (Battle #2 mapping + Azure ecosystem) -
 [architecture.md](architecture.md) (system shape) -
 [game_loop.md](game_loop.md) (the loop) -
 [org_designer_and_digital_workforce.md](org_designer_and_digital_workforce.md) (Layer 1) -
 [world_designer_and_worker_factory.md](world_designer_and_worker_factory.md) (Layer 2) -
+[microsoft_platform_references.md](microsoft_platform_references.md) (Microsoft links + optional surfaces) -
 the maintainer's demo-readiness checklist (gitignored `submission/private/`) -
 [rubric_mapping.md](rubric_mapping.md) (how it scores).
 
@@ -258,7 +259,7 @@ Eras at a glance:
 | 0 | Starter kit -> our build | Fantasy Game Master reskin for business. |
 | 1 | Quest -> org | Input becomes an org: one human + a digital workforce. |
 | 2 | Org -> venture | The designed workers actually build the venture. |
-| 3 | Sprites -> geometry | Drop licensed art; geometric-first, MIT-clean. |
+| 3 | Licensed art -> geometry | Drop restricted assets; geometric-first, MIT-clean. |
 | 4 | Tool -> meaning | Lore, CEO frame, missions, fair-data, Poly-maps-itself. |
 | 5 | Geometry -> generated art | Foundry MAI-Image-2e paints the game's own art - MIT, pluggable. |
 | Next | Demo -> doorway | Templates + LLM front-routing: a stranger starts in 30s. |
@@ -269,7 +270,7 @@ The project began as a direct reskin of the canonical Game Master example in
 [live_battle_challenge.md](../../starter-kits/2-reasoning-agents/live_battle_challenge.md):
 a Master Narrator decomposes a business pitch into a quest line, and specialist
 character agents (Strategist, Designer, Marketer) produce artifacts the player
-approves at verification gates. The strategy is captured in
+approves at verification gates. The public narrative is captured in
 [PROJECT_NARRATIVE.md](../../PROJECT_NARRATIVE.md), and the original agent shape
 still shows in [architecture.md](architecture.md). The core pattern -
 orchestrator + character agents + tools + shared state + human gates - has been
@@ -297,20 +298,18 @@ interpreter, gated by a human. See
 This is where the three required Foundry primitives all became visible in one
 loop.
 
-### Phase 3 - The presentation pivot: geometric-first, sprites out
+### Phase 3 - The presentation pivot: generated-art-first
 
-An early direction used licensed sprite/tileset art for game-feel. The licensing
-would not let the repo be cleanly open-sourced under MIT, so the build pivoted to
-a **geometric-first** renderer (Phaser shapes plus a narrated story view) and
-synthesized audio - no licensed assets in the public path. See the presentation
-boundaries in [architecture.md](architecture.md), the game-feel rationale in
-[game_loop.md](game_loop.md), and [sprite_game_mechanics.md](sprite_game_mechanics.md)
-for the legacy sprite notes. The dark, narrated **story view (`/story`) is the
-single hero surface** we present and ship. The retired `/geometric` prototype was
-removed to keep one clean path. The legacy sprite view has been removed
-entirely - the story view is the single UI. Its Limezu art was never committed
-(license forbids redistribution), and the repo remains fully procedural plus
-Foundry-generated portraits after `git clone`.
+An early direction used licensed third-party game art for game-feel. The
+licensing would not let the repo be cleanly open-sourced under MIT, so the build
+pivoted to a **geometric and generated-art-first** presentation with synthesized
+audio - no licensed assets in the public path. See the presentation boundaries in
+[architecture.md](architecture.md) and the release loop in
+[game_loop.md](game_loop.md). The dark, narrated **story view (`/story`) is the
+single hero surface** we present and ship. The retired geometric prototype and
+legacy visual prototype were removed from the public path to keep one clean
+release surface. Restricted art was never committed, and the repo remains fully
+procedural plus Foundry-generated portraits after `git clone`.
 
 Naming the genre honestly: what this is now is a **narrated management RPG** -
 visual-novel-style lore and choices, tycoon-style company building, and RPG
@@ -321,20 +320,17 @@ graphics, so the genre makes reasoning visible instead of hiding it.
 
 ### Phase 5 - The game paints itself: Foundry-generated art
 
-The licensing review closed one door (third-party sprite packs cannot be
+The licensing review closed one door (third-party art packs cannot be
 redistributed under MIT) and the official spec opened a better one: image
 generation is an explicitly recommended tool in
 [live_battle_challenge.md](../../starter-kits/2-reasoning-agents/live_battle_challenge.md)
-("portraits, monsters, artifacts, maps"). So the build now uses **Microsoft's
-MAI-Image-2e** (deployed and verified on a Foundry account) to generate the
-game's own art - worker portraits, mission key-art - in the game's dark
-navy/teal style. The thesis closes a loop: *the game generates its own art the
-same way it generates its own org.* The Org Designer invents a worker; the image
-model paints that worker's face. Why 2e specifically: it has the **highest RPM
-quota of the MAI family** and ~4x the efficiency of MAI-Image-2 - not
-best-in-class quality, and that is the deliberate trade for generated game art
-at scale. Generated outputs are ours to commit under MIT, and the whole thing is
-**pluggable**: three env vars (`IMAGE_ENDPOINT`, `IMAGE_DEPLOYMENT`,
+("portraits, monsters, artifacts, maps"). So the build can use a Microsoft
+Foundry image deployment to generate the game's own art - worker portraits,
+mission key-art - in the game's dark navy/teal style. The thesis closes a loop:
+*the game generates its own art the same way it generates its own org.* The Org
+Designer invents a worker; the image model paints that worker's face. Generated
+outputs are ours to commit under MIT, and the whole thing is **pluggable**:
+three env vars (`IMAGE_ENDPOINT`, `IMAGE_DEPLOYMENT`,
 `IMAGE_API_KEY`) and a documented one-command deployment let any forker test
 with their own model. See [.env.example](../.env.example) and
 [agents_league_alignment.md](agents_league_alignment.md) section 4.

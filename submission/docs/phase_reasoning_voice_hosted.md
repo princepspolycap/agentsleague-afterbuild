@@ -20,7 +20,7 @@ The rubric rewards visible multi-step reasoning. We now capture the model's
 - `tools/server.py` - the SSE stream's `invoke_done` phase now carries
   `reasoning_tokens` + `reasoning_preview`, and both execute paths persist them
   into the replay log (`STEP_COMPLETED_REASONING` payload).
-- `ui/game.js` - the streamed trace prints a `thinking>` line with the
+- `ui/game/story.js` - the streamed trace prints a `thinking>` line with the
   scrubbed chain-of-thought excerpt when the deployment exposes one. The story
   view already rendered this for chapters (`setReasoning`).
 

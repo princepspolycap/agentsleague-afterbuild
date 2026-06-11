@@ -1,7 +1,7 @@
 # Agents League Alignment - What We Are Doing, and Doing Well
 
 > The bridge document. It connects our build to the official Battle #2 concepts,
-> names the exact Azure / Foundry ecosystem we run on, scripts how we explain all
+> names the Azure / Foundry ecosystem we run on, scripts how we explain all
 > of it in the 10 minutes we get, and calls out what else we highlight beyond the
 > rubric. Read this with the maintainer's demo-readiness checklist (kept in the
 > gitignored `submission/private/`) (the
@@ -12,6 +12,8 @@ Source of truth for the challenge:
 Event: Battle #2 - Reasoning Agents with Microsoft Foundry
 ([Reactor event](https://developer.microsoft.com/en-us/reactor/events/26733)),
 June 10, 2026.
+Microsoft platform reference links are collected in
+[microsoft_platform_references.md](microsoft_platform_references.md).
 
 ---
 
@@ -77,18 +79,22 @@ This is the "what are we actually working with" answer. Everything in the
 reasoning core is a **Microsoft Foundry deployment**; non-Foundry vendors appear
 only as optional tools, never in the reasoning path (the hard rule).
 
-### Models we use (real deployments, verified in our Foundry projects)
+### Model bindings
 
-| Purpose | Deployment | Where |
+The public repo documents model roles, not private deployment names. Forkers bind
+their own Microsoft Foundry deployments through `submission/.env`.
+
+| Purpose | Env binding | Where |
 |---|---|---|
-| All agent reasoning (Narrator, workers) | **gpt-5.5** (with gpt-5.4 / mini / nano as cost-tier fallbacks) | our Foundry projects |
-| Foundry IQ embeddings (production retrieval) | **text-embedding-3-large** | our Foundry projects |
-| Voice (production upgrade path) | **gpt-realtime-1.5**, **gpt-audio-1.5**, **gpt-4o-transcribe** | our Foundry projects |
-| Image generation (game art + artifact visuals) | **MAI-Image-2e** (Microsoft MAI; deployed + verified) - pluggable, see below | a separate eastus deployment |
+| Narrator/world reasoning | `NARRATOR_MODEL` | Microsoft Foundry deployment |
+| Strategy/deep reasoning | `STRATEGIST_MODEL` | Microsoft Foundry deployment |
+| Design/creative artifact work | `DESIGNER_MODEL` | Microsoft Foundry deployment |
+| Marketing/ops execution | `MARKETER_MODEL`, `OPS_MODEL` | Microsoft Foundry deployment |
+| Fast NPC/dialogue reactions | `NPC_FAST_MODEL` | Microsoft Foundry deployment |
+| Voice and image generation | `TTS_*`, `IMAGE_*` | Optional Microsoft Foundry/Azure deployments |
 
-> We deliberately keep DeepSeek, Kimi, and grok deployments **out** of the
-> reasoning path. They exist in the project catalog but the rule is clear:
-> reasoning is Foundry-native. If we ever call them, it is as a sandboxed tool.
+Reasoning must stay Foundry-native. Non-Foundry providers, if ever used, belong
+outside the core reasoning path as optional tools.
 
 ### Azure services and patterns in play
 
@@ -106,19 +112,9 @@ only as optional tools, never in the reasoning path (the hard rule).
   Foundry Agent Service Memory is the managed version.
 - **Voice Live** - browser TTS/STT is the forkable equivalent we demo; the
   `gpt-realtime` / `gpt-audio` deployments are the production upgrade we name.
-- **MAI image models (pluggable)** - we use **MAI-Image-2e**, Microsoft's
-  efficient image model: the highest RPM quota of the MAI family (18-180 RPM by
-  tier vs 9-90 for MAI-Image-2) and ~4x more efficient. Not best-in-class
-  quality, and that is the deliberate trade: plenty of quota for generated game
-  art, and a model anyone can afford to test. The spec explicitly lists image
-  generation as a recommended tool ("portraits, monsters, artifacts, maps").
-  Forkers plug in their own deployment via three env vars (`IMAGE_ENDPOINT`,
-  `IMAGE_DEPLOYMENT`, `IMAGE_API_KEY`); the API route is
-  `POST {endpoint}/mai/v1/images/generations`. Supported regions: East US, West
-  Central US, West US, West Europe, Sweden Central, South India, UAE North.
-  Generated outputs are ours to commit under MIT - unlike licensed sprite packs,
-  generated art is redistributable, so forkers get both the art *and* the
-  generator. Swappable for MAI-Image-2.5/Flash (adds image edits) or gpt-image.
+- **Image models (pluggable)** - optional artifact visuals and portraits are
+  generated through env-configured image deployments. Forkers can leave image
+  generation blank and still get the committed generated assets.
 
 ### The honesty line (say this)
 
@@ -161,7 +157,7 @@ These are the differentiators that make the build memorable after the scorecard:
   chat box or a literal fantasy RPG. The player verb is *decide*: pitch, choose a
   front, approve or reject what your workforce builds. The reasoning artifacts
   (org charts, decompositions, scores) ARE the graphics - the genre that makes
-  reasoning visible instead of hiding it behind sprite movement.
+  reasoning visible instead of hiding it behind decorative movement.
 - **The fair-data thesis.** The digital-worker platform is also a fair-data
   engine - real people paid evenly for real work, a human at the root even of a
   superintelligence. The ethical spine under the mechanic.
@@ -181,7 +177,7 @@ These are the differentiators that make the build memorable after the scorecard:
 
 We took the Battle #2 role-play reasoning spec - Game Master, character agents,
 tools, shared state, human-in-the-loop, Foundry IQ - and reskinned it into a
-business dungeon where you play the CEO. A Microsoft Foundry workforce (gpt-5.x)
+business dungeon where you play the CEO. A Microsoft Foundry workforce
 designs your org, decomposes your venture, grounds each step with Foundry IQ,
 checks it with a code interpreter, and ships nothing until you approve it at a
 verification gate. It is forkable, MIT-licensed, based on our own real platform,

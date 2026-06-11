@@ -8,8 +8,10 @@ Read it before making changes. Highlights:
 - All reasoning agents must run on **Microsoft Foundry models**.
 - All new code lives under `submission/`. Never modify `starter-kits/` (upstream Microsoft).
 - Reuse Foundry credentials from a local Foundry `.env` (path kept off this public repo).
-- Reuse Phaser-compatible game assets from a local Phaser asset library (kept off this public repo; verify license before committing any art).
-- Working branch: `feat/dungeon-engine-scaffold`.
+- Release UI is `submission/ui/story.html` plus `submission/ui/game/*.js`; old game-art prototype notes are private history.
+- Keep local art, video exports, deployment notes, quota notes, and demo logistics out of the public repo.
+- Base branch: `main`.
+- Current feature branch: `feat/important-next-phase`.
 
 Run the end-to-end simulator (no Azure needed):
 

@@ -6,7 +6,7 @@ Context for any AI coding agent working in this repo. Read this before making ch
 
 A submission for **Microsoft Agents League · Battle #2 — Reasoning Agents with Microsoft Foundry**, live battle on **June 10, 2026, 9 AM PT** at Microsoft Reactor.
 
-**Concept:** "Your Company Is the Dungeon" — a side-scrolling, multi-agent RPG where the player pitches a business idea, a Foundry Master Narrator decomposes it into a quest line, and specialist character agents (Strategist, Designer, Marketer) produce real artifacts the player approves at verification gates. Direct reskin of the canonical `live_battle_challenge.md` example with business stakes instead of fantasy.
+**Concept:** "Your Company Is the Dungeon" - a narrated management RPG where the player pitches a business idea, a Foundry Master Narrator decomposes it into a quest line, and specialist character agents produce real artifacts the player approves at verification gates. It maps the canonical `live_battle_challenge.md` Game Master pattern onto business stakes instead of fantasy combat.
 
 Authoritative narrative: [PROJECT_NARRATIVE.md](../PROJECT_NARRATIVE.md). Official spec to map against: [starter-kits/2-reasoning-agents/live_battle_challenge.md](../starter-kits/2-reasoning-agents/live_battle_challenge.md).
 
@@ -37,7 +37,7 @@ agentsleague-afterbuild/
     ├── quests/                   # YAML quest definitions
     ├── knowledge/                # Foundry IQ source docs
     ├── replay/                   # saved session logs
-    ├── ui/                       # Phaser side-scroller (not yet built)
+    ├── ui/                       # narrated story-view release UI
     └── docs/                     # architecture, demo script, rubric, pitch
 ```
 
@@ -54,11 +54,11 @@ agentsleague-afterbuild/
 - ✅ Foundry hosted agent scaffold (`submission/hosted_agent/` — invocations protocol, agent.yaml, Dockerfile)
 - ✅ Agent memory layer (`agents/memory.py`) — Foundry Agent Service memory store (`FOUNDRY_MEMORY_STORE`) with local `state/memory.json` fallback; user_profile / procedural / chat_summary kinds; injected into every worker brief (ContextProvider on MAF path) and written at gate decisions + chapter completion
 - ✅ Four proof points on every invocation (all paths incl. simulation): `iq_hits`, `memory_injected`, `tools_called`, `inference_usage` — in `CHAPTER_EXECUTED` replay events and the story UI evidence panels; `/api/memory` endpoint exposes the learning snapshot
-- ⏳ Wire agents to real Foundry SDK (currently mock returns)
-- ⏳ Foundry IQ knowledge base + retrieval client
-- ⏳ Phaser side-scroller UI shell
-- ⏳ Verification gate UI (currently auto-approves in CLI)
-- ⏳ Reasoning panel (visible decomposition tree + tool calls)
+- ⏳ Harden live Foundry-backed runs and eval coverage
+- ⏳ Expand Foundry IQ knowledge base + retrieval quality checks
+- ✅ Story-view UI shell (`submission/ui/story.html` + `submission/ui/game/`)
+- ✅ Verification gate UI
+- ✅ Reasoning panel and evidence rail
 - ⏳ Optional `deploy_landing_page` tool with simulation fallback
 
 ## Reusable resources (local-only, do not commit paths)
@@ -79,11 +79,11 @@ These exist on the maintainer's machine. Reference them when wiring features but
 
 - `az` is installed (`az --version` confirmed 2.67.0). Use it for any quota checks, deployment listings, or resource provisioning before writing new infra.
 
-### Game assets — reuse a local Phaser asset library
+### Game assets - generated-first, local-only enhancements
 
-- A private local Phaser project (path kept out of this public repo) holds reusable 32x32 tilesets and an asset catalog.
-- **Existing Phaser usage there** confirms our UI framework choice — Phaser, with 32x32 tilesets, preloader pattern, scene-per-room.
-- **When pulling assets into this repo**: verify the asset pack license allows redistribution under MIT before committing. Most paid packs (e.g. Limezu) forbid redistribution — in that case load locally only under `submission/ui/assets/local/` and keep them gitignored. The committed baseline ships geometric-first with no third-party art.
+- The release UI is `submission/ui/story.html` plus the browser modules under `submission/ui/game/`.
+- Old asset-heavy visual prototype notes belong in `submission/private/`, not public docs.
+- **When pulling assets into this repo**: verify the asset license allows redistribution under MIT before committing. Restricted art stays local under `submission/ui/assets/local/` and remains gitignored. The committed baseline ships generated-art-first with no third-party art.
 
 ## Development conventions
 
@@ -92,7 +92,7 @@ These exist on the maintainer's machine. Reference them when wiring features but
 - **Imports**: Local imports use module paths relative to `submission/` (the simulator extends `sys.path` for now; package-ify later).
 - **Tests**: when adding logic, add a `tools/` or `tests/` smoke script that runs without Azure credentials (simulation mode). The current `run_quest_simulation.py` is the pattern.
 - **Logging**: use `StateStore.log_event(event_type, actor, message, payload)` for any agent/tool action so it shows up in the replay log (rubric: Reasoning visibility).
-- **Branch naming**: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`. Working branch right now: `feat/dungeon-engine-scaffold`.
+- **Branch naming**: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`. Base branch: `main`. Current feature branch: `feat/important-next-phase`.
 - **Commits**: small, scoped, imperative subject (e.g., `add Foundry IQ retrieval client`).
 
 ## How to run things locally
@@ -114,11 +114,11 @@ cp submission/.env.example submission/.env
 
 20-min live demo on June 10:
 
-1. **0–3 min** — Hook: side-scroller title screen, tour the UI.
-2. **3–10 min** — Live play: type pitch → Narrator decomposes → 3 character agents execute → verification gates → XP.
-3. **10–15 min** — Code walkthrough: agent defs, IQ config, tool wrappers, state, replay log.
-4. **15–18 min** — Architecture reasoning: map to canonical Game Master pattern.
-5. **18–20 min** — Forkability close: `git clone`, YAML quest authoring.
+1. **0-3 min** - Hook: story-view intro, founder frame, and live UI tour.
+2. **3-10 min** - Live play: type pitch -> Narrator decomposes -> agents execute -> verification gates -> XP.
+3. **10-15 min** - Code walkthrough: agent defs, IQ config, tool wrappers, state, replay log.
+4. **15-18 min** - Architecture reasoning: map to canonical Game Master pattern.
+5. **18-20 min** - Forkability close: `git clone`, simulation mode, YAML quest authoring.
 
 Full script: [submission/docs/demo_script.md](../submission/docs/demo_script.md).
 
@@ -129,8 +129,8 @@ Full script: [submission/docs/demo_script.md](../submission/docs/demo_script.md)
 | Accuracy & Relevance     |    25% | Tighter mapping to `live_battle_challenge.md` primitives           |
 | Reasoning & Multi-step   |    25% | Visible decomposition, tool calls in replay log, multi-hop chains  |
 | Reliability & Safety     |    20% | Verification gates, simulation fallbacks, deterministic validators |
-| Creativity & Originality |    15% | Side-scroller game-feel, business-dungeon framing                  |
-| UX & Presentation        |    15% | Phaser polish, NPC dialogue, XP/level-up animations                |
+| Creativity & Originality |    15% | Business-dungeon framing, generated lore, dynamic workforce loop   |
+| UX & Presentation        |    15% | Story-view polish, narration, evidence rail, verification gates    |
 
 (Official weights from `live_battle_challenge.md` Evaluation Criteria; no community-vote criterion exists in the spec.)
 

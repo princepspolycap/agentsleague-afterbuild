@@ -110,7 +110,7 @@ can replace it with a workforce tailored to the pitched business.
 ## Presentation Boundaries
 
 - The shipped UI is a zero-build vanilla JS story mode (`ui/story.html` + `ui/game/`): cinematic lore intro, reasoning theater, evidence rail, verification and dilemma gates, narrated voice-over.
-- The visual style stays asset-light so the public repo remains forkable without private sprite or audio packs; key art is MAI-generated and committed under `ui/assets/generated/lore/`.
+- The visual style stays asset-light so the public repo remains forkable without private art or audio packs; key art is MAI-generated and committed under `ui/assets/generated/lore/`.
 - Mermaid renders agent artifacts such as org charts, OKRs, integration maps, and GTM channels directly from agent output.
 
 ## Shared State Shape
@@ -141,5 +141,5 @@ Where to read next, by question:
 | How do the Org Designer and digital workforce work? | [org_designer_and_digital_workforce.md](org_designer_and_digital_workforce.md) |
 | How do the World Designer and Worker Factory work? | [world_designer_and_worker_factory.md](world_designer_and_worker_factory.md) |
 | How does the game speak (TTS pipeline)? | [narration_pipeline.md](narration_pipeline.md) |
-| What do we show in the 20 minutes? | [demo_script.md](demo_script.md), [demo_constraints_and_film_plan.md](demo_constraints_and_film_plan.md) |
-| What was the day-of working state? | [coordination_final_mvp.md](coordination_final_mvp.md) |
+| What do we show in the demo? | [demo_script.md](demo_script.md) |
+| Which Microsoft docs, submission pages, and optional surfaces should we cite? | [microsoft_platform_references.md](microsoft_platform_references.md) |

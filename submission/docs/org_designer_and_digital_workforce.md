@@ -110,10 +110,9 @@ design-time reasoning (org) feeds run-time reasoning (chapters).
    content so the org design is grounded in the company's own words. Keep the
    stdlib fallback so a fork with no Azure still works.
 
-5. **Educational overlays - the vibe-coded -> business arc.** Surface the per-role
-   `why` and the operating model as teachable moments (the gap Lee called out in
-   [blogs/teaching_and_setup_plan.md](../blogs/teaching_and_setup_plan.md), 3.7).
-   The org screen is where "I have a prototype" becomes "I have a company."
+5. **Educational overlays - the prototype -> business arc.** Surface the
+   per-role `why` and the operating model as teachable moments. The org screen
+   is where "I have a prototype" becomes "I have a company."
 
 6. **Geometric view reads the same org graph.** Point the geometric canvas at
    `CompanyState.org` so rooms/agents are the *designed* workforce, not a fixed
