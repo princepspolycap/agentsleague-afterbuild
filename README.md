@@ -97,8 +97,10 @@ See each [starter kit](./starter-kits/) for track-specific IQ requirements.
 
 **Submission Deadline**: June 14, 2026
 
-<!-- TODO: Add project submission link -->
-Submit your project via the submission form (link coming soon).
+Submit through the current Agents League registration/submission flow:
+[aka.ms/agentsleague/aisf/register](https://aka.ms/agentsleague/aisf/register).
+Check the live form for final upload fields, video requirements, and any
+track-specific submission prompts.
 
 ⚠️ **Before submitting**:
 
@@ -129,27 +131,28 @@ If you have product feedback or errors while building visit:
 
 ### 🏆 Category Winners
 
-<!-- TODO: Add prize details -->
-- Prize details coming soon!
+- See the official registration/submission page for current prize details.
   - 🎨 Creative Apps
   - 🧠 Reasoning Agents
   - 💼 Enterprise Agents
 
 ### ⭐ Special Recognition
 
-<!-- TODO: Add special recognition details -->
-- Details coming soon!
+- See the official registration/submission page for current recognition details.
 
 ## Judging
 
 Projects are evaluated by experts and product teams using this rubric:
 
-- **Accuracy & Relevance (20%)** — Meets challenge requirements
-- **Reasoning & Multi-step Thinking (20%)** — Clear problem-solving approach
+- **Accuracy & Relevance (25%)** — Meets challenge requirements
+- **Reasoning & Multi-step Thinking (25%)** — Clear problem-solving approach
 - **Creativity & Originality (15%)** — Novel ideas or unexpected execution
 - **User Experience & Presentation (15%)** — Clear, polished, demoable
 - **Reliability & Safety (20%)** — Solid patterns, avoids obvious pitfalls
-- **Community vote (10%)** via the Discord poll available at https://aka.ms/agentsleague/discord
+
+Battle-specific rubrics can differ by track; the Reasoning Agents live-battle
+rubric is mirrored in
+[`starter-kits/2-reasoning-agents/live_battle_challenge.md`](./starter-kits/2-reasoning-agents/live_battle_challenge.md).
 
 ## Resources
 

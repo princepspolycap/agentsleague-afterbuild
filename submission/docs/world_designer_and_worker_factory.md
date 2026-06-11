@@ -13,7 +13,7 @@ Take **Your Company Is the Dungeon** from "decompose a pitch into 3 quest steps"
 
 The dungeon framing stays. What changes is the **fidelity of the artifacts**, the **autonomy of the agents** between gates, and the **world response** after each approval.
 
-The playable world should stay geometric-first for this demo pass. The World Designer should generate a venture graph and room metadata that Phaser renders as shapes: rooms, doors, agent nodes, route lines, artifact locks, KPI meters, and company-system diagrams.
+The playable world should stay story-view-first for this demo pass. The World Designer should generate a venture graph, chapter metadata, evidence, and artifact kinds that the browser renders as narrated beats, Mermaid diagrams, SVG artifacts, KPI meters, and company-system maps.
 
 ---
 
@@ -147,7 +147,7 @@ This is how graphics become more than decoration: every approved artifact change
 4. **`/api/autoplay`** endpoint + UI button next to the existing "Autoplay Demo" (already exists in the toolbar) - rewire it to hit the new endpoint instead of the canned mock loop.
 5. **Financial-plan validator**: new code-interpreter wrapper that checks MRR ramp monotonicity, breakeven math, burn vs runway.
 6. **Foundry IQ knowledge base**: seed with public bootstrapper playbooks (Indie Hackers posts, etc.) and wire a retrieval pass into the Strategist prompt.
-7. **Visual world renderer**: render `WorldGraph.room` and `artifact_kind` metadata into Phaser geometry.
+7. **Visual world renderer**: render `WorldGraph` and `artifact_kind` metadata into story-view diagrams, artifact panels, and evidence rails.
 8. **Artifact renderers**: add Mermaid and Chart.js support to make org charts, workflows, KPIs, and financial plans visible at gates.
 
 ---

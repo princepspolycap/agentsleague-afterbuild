@@ -6,7 +6,7 @@ Context for any AI coding agent working in this repo. Read this before making ch
 
 A submission for **Microsoft Agents League · Battle #2 — Reasoning Agents with Microsoft Foundry**, live battle on **June 10, 2026, 9 AM PT** at Microsoft Reactor.
 
-**Concept:** "Your Company Is the Dungeon" — a side-scrolling, multi-agent RPG where the player pitches a business idea, a Foundry Master Narrator decomposes it into a quest line, and specialist character agents (Strategist, Designer, Marketer) produce real artifacts the player approves at verification gates. Direct reskin of the canonical `live_battle_challenge.md` example with business stakes instead of fantasy.
+**Concept:** "Your Company Is the Dungeon" - a narrated management RPG where the player pitches a business idea, a Foundry Master Narrator decomposes it into a quest line, and specialist character agents produce real artifacts the player approves at verification gates. It maps the canonical `live_battle_challenge.md` Game Master pattern onto business stakes instead of fantasy combat.
 
 Authoritative narrative: [PROJECT_NARRATIVE.md](../PROJECT_NARRATIVE.md). Official spec to map against: [starter-kits/2-reasoning-agents/live_battle_challenge.md](../starter-kits/2-reasoning-agents/live_battle_challenge.md).
 
@@ -37,7 +37,7 @@ agentsleague-afterbuild/
     ├── quests/                   # YAML quest definitions
     ├── knowledge/                # Foundry IQ source docs
     ├── replay/                   # saved session logs
-    ├── ui/                       # Phaser side-scroller (not yet built)
+    ├── ui/                       # narrated story-view release UI
     └── docs/                     # architecture, demo script, rubric, pitch
 ```
 
@@ -49,39 +49,41 @@ agentsleague-afterbuild/
 - ✅ Code interpreter validators (`tools/code_interpreter_wrappers.py`) — positioning, landing page, marketing email
 - ✅ First quest definition (`quests/first_landing_page.yaml`)
 - ✅ End-to-end CLI simulator (`tools/run_quest_simulation.py`) — runs without Azure, all checks pass
-- ⏳ Wire agents to real Foundry SDK (currently mock returns)
-- ⏳ Foundry IQ knowledge base + retrieval client
-- ⏳ Phaser side-scroller UI shell
-- ⏳ Verification gate UI (currently auto-approves in CLI)
-- ⏳ Reasoning panel (visible decomposition tree + tool calls)
+- ✅ Thinking-token capture on all reasoning paths (`last_reasoning` sinks, SSE `invoke_done`, replay log) + secret scrubber (`scrub_secrets`)
+- ✅ Voice upgrade chain (`TTS_DEPLOYMENTS`: gpt-audio-1.5 family first, gpt-4o-mini-tts fallback, browser TTS net)
+- ✅ Foundry hosted agent scaffold (`submission/hosted_agent/` — invocations protocol, agent.yaml, Dockerfile)
+- ✅ Agent memory layer (`agents/memory.py`) — Foundry Agent Service memory store (`FOUNDRY_MEMORY_STORE`) with local `state/memory.json` fallback; user_profile / procedural / chat_summary kinds; injected into every worker brief (ContextProvider on MAF path) and written at gate decisions + chapter completion
+- ✅ Four proof points on every invocation (all paths incl. simulation): `iq_hits`, `memory_injected`, `tools_called`, `inference_usage` — in `CHAPTER_EXECUTED` replay events and the story UI evidence panels; `/api/memory` endpoint exposes the learning snapshot
+- ⏳ Harden live Foundry-backed runs and eval coverage
+- ⏳ Expand Foundry IQ knowledge base + retrieval quality checks
+- ✅ Story-view UI shell (`submission/ui/story.html` + `submission/ui/game/`)
+- ✅ Verification gate UI
+- ✅ Reasoning panel and evidence rail
 - ⏳ Optional `deploy_landing_page` tool with simulation fallback
 
 ## Reusable resources (local-only, do not commit paths)
 
 These exist on the maintainer's machine. Reference them when wiring features but do **not** hardcode absolute paths in committed code.
 
-### Azure / Foundry models — reuse Poly env
+### Azure / Foundry models — reuse a local Foundry env
 
-- **Source**: `/Users/princeps/Projects/Poly186/Poly/.env`
+- **Source**: a private Foundry `.env` on the maintainer's machine (path kept out of this public repo).
 - Contains private Foundry credentials, deployment names, embedding deployments, and image generation settings. Copy only the values needed into a gitignored `submission/.env`.
 - **Usage**: Copy the keys you need into `submission/.env` (gitignored). Map them onto our `AZURE_AI_PROJECT_ENDPOINT` / `AZURE_AI_MODEL_DEPLOYMENT` variables in [`.env.example`](../submission/.env.example).
 - **Recommended models for this build**:
-  - Master Narrator + character reasoning: `gpt-5` family deployment (use whatever is current in Poly env)
-  - Embeddings for Foundry IQ: `text-embedding-3-large` deployment from Poly env
-- **Constraint**: The runtime code path must still target a Microsoft Foundry deployment (the rule above). Poly env just supplies the credentials/endpoint — don't introduce non-Foundry model routes into the reasoning core.
+  - Master Narrator + character reasoning: `gpt-5` family deployment (use whatever is current in the local Foundry env)
+  - Embeddings for Foundry IQ: `text-embedding-3-large` deployment from the local Foundry env
+- **Constraint**: The runtime code path must still target a Microsoft Foundry deployment (the rule above). The local env just supplies the credentials/endpoint — don't introduce non-Foundry model routes into the reasoning core.
 
 ### Azure CLI
 
 - `az` is installed (`az --version` confirmed 2.67.0). Use it for any quota checks, deployment listings, or resource provisioning before writing new infra.
 
-### Game assets — reuse Polyverse
+### Game assets - generated-first, local-only enhancements
 
-- **Asset catalog**: `/Users/princeps/Projects/Poly186/Polyverse/docs/asset_catalog.md`
-- **Asset sources**:
-  - `Modern Interiors RPG Tileset.zip` and `Modern Office Revamped v1.2.zip` (in `Polyverse/docs/`)
-  - Extracted PNGs: `/Users/princeps/Projects/Poly186/Polyverse/frontend/public/assets/raw/office/` and `.../interiors/`
-- **Existing Phaser usage in Polyverse** confirms our UI framework choice — Phaser, with 32x32 tilesets, preloader pattern, scene-per-room.
-- **When pulling assets into this repo**: copy needed sprites into `submission/ui/assets/` and verify the asset pack license allows redistribution under MIT before committing. If licenses are restrictive, load locally only and add to `.gitignore`.
+- The release UI is `submission/ui/story.html` plus the browser modules under `submission/ui/game/`.
+- Old asset-heavy visual prototype notes belong in `submission/private/`, not public docs.
+- **When pulling assets into this repo**: verify the asset license allows redistribution under MIT before committing. Restricted art stays local under `submission/ui/assets/local/` and remains gitignored. The committed baseline ships generated-art-first with no third-party art.
 
 ## Development conventions
 
@@ -90,7 +92,7 @@ These exist on the maintainer's machine. Reference them when wiring features but
 - **Imports**: Local imports use module paths relative to `submission/` (the simulator extends `sys.path` for now; package-ify later).
 - **Tests**: when adding logic, add a `tools/` or `tests/` smoke script that runs without Azure credentials (simulation mode). The current `run_quest_simulation.py` is the pattern.
 - **Logging**: use `StateStore.log_event(event_type, actor, message, payload)` for any agent/tool action so it shows up in the replay log (rubric: Reasoning visibility).
-- **Branch naming**: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`. Working branch right now: `feat/dungeon-engine-scaffold`.
+- **Branch naming**: `feat/<slug>`, `fix/<slug>`, `docs/<slug>`. Base branch: `main`. Current feature branch: `feat/important-next-phase`.
 - **Commits**: small, scoped, imperative subject (e.g., `add Foundry IQ retrieval client`).
 
 ## How to run things locally
@@ -105,18 +107,18 @@ python3 submission/tools/run_quest_simulation.py --pitch "Your idea here"
 
 # to wire real Foundry calls
 cp submission/.env.example submission/.env
-# fill values from /Users/princeps/Projects/Poly186/Poly/.env (do NOT commit submission/.env)
+# fill values from your own local Foundry env (do NOT commit submission/.env)
 ```
 
 ## Demo flow (what we're optimizing for)
 
 20-min live demo on June 10:
 
-1. **0–3 min** — Hook: side-scroller title screen, tour the UI.
-2. **3–10 min** — Live play: type pitch → Narrator decomposes → 3 character agents execute → verification gates → XP.
-3. **10–15 min** — Code walkthrough: agent defs, IQ config, tool wrappers, state, replay log.
-4. **15–18 min** — Architecture reasoning: map to canonical Game Master pattern.
-5. **18–20 min** — Forkability close: `git clone`, YAML quest authoring.
+1. **0-3 min** - Hook: story-view intro, founder frame, and live UI tour.
+2. **3-10 min** - Live play: type pitch -> Narrator decomposes -> agents execute -> verification gates -> XP.
+3. **10-15 min** - Code walkthrough: agent defs, IQ config, tool wrappers, state, replay log.
+4. **15-18 min** - Architecture reasoning: map to canonical Game Master pattern.
+5. **18-20 min** - Forkability close: `git clone`, simulation mode, YAML quest authoring.
 
 Full script: [submission/docs/demo_script.md](../submission/docs/demo_script.md).
 
@@ -124,12 +126,13 @@ Full script: [submission/docs/demo_script.md](../submission/docs/demo_script.md)
 
 | Criterion                | Weight | What helps                                                         |
 | ------------------------ | -----: | ------------------------------------------------------------------ |
-| Accuracy & Relevance     |    20% | Tighter mapping to `live_battle_challenge.md` primitives           |
-| Reasoning & Multi-step   |    20% | Visible decomposition, tool calls in replay log, multi-hop chains  |
+| Accuracy & Relevance     |    25% | Tighter mapping to `live_battle_challenge.md` primitives           |
+| Reasoning & Multi-step   |    25% | Visible decomposition, tool calls in replay log, multi-hop chains  |
 | Reliability & Safety     |    20% | Verification gates, simulation fallbacks, deterministic validators |
-| Creativity & Originality |    15% | Side-scroller game-feel, business-dungeon framing                  |
-| UX & Presentation        |    15% | Phaser polish, NPC dialogue, XP/level-up animations                |
-| Community Vote           |    10% | Pending confirmation from Carlotta                                 |
+| Creativity & Originality |    15% | Business-dungeon framing, generated lore, dynamic workforce loop   |
+| UX & Presentation        |    15% | Story-view polish, narration, evidence rail, verification gates    |
+
+(Official weights from `live_battle_challenge.md` Evaluation Criteria; no community-vote criterion exists in the spec.)
 
 Full breakdown: [submission/docs/rubric_mapping.md](../submission/docs/rubric_mapping.md).
 

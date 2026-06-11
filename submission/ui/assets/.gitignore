@@ -10,3 +10,19 @@ local/
 *.json
 !asset_manifest.example.json
 !README.md
+# Foundry MAI-generated art is ours and ships under MIT (see generated/CREDITS.md).
+!generated/
+!generated/*.png
+!generated/CREDITS.md
+!generated/lore/
+!generated/lore/*.png
+# Baked narration takes (tools/generate_narration.py) ship committed - the
+# directed cinematic voice is the baseline every fork hears, no keys needed.
+!generated/lore/narration/
+!generated/lore/narration/*.mp3
+# Veo motion clips are a local-only progressive enhancement - too heavy to
+# commit. The committed MAI stills are the baseline every fork gets.
+generated/lore/video/
+*.mp4
+*.webm
+*.mov
