@@ -1930,34 +1930,98 @@ function orgBlueprintMermaid(org) {
     return def;
 }
 
-function renderConsequenceEffect(consequence) {
+// The dilemma receipt: the core game mechanic made legible as ONE card.
+// A CEO choice fires a deterministic chain - decision -> consequence (metrics,
+// org, economics) -> procedural memory the workers learn -> the next worker's
+// binding brief. The four steps render as a single connected receipt so the
+// player sees cause and effect, not four disconnected updates. Built entirely
+// from the /api/decision response (real state), never fabricated.
+function renderDilemmaReceipt(receipt) {
     const host = $("diagram");
+    const consequence = receipt && receipt.consequence;
     if (!host || !consequence) return;
     const before = consequence.before || {};
     const after = consequence.after || {};
     const orgDelta = consequence.org_delta || {};
-    const rows = [
+    const option = receipt.option || consequence.summary || "your decision";
+    const tradeoff = receipt.tradeoff || "";
+    const memory = receipt.memory || null;
+    const nextBrief = receipt.nextBrief || null;
+
+    // Only surface metric rows that actually moved - keeps the receipt compact
+    // and makes the consequence of THIS choice unmistakable.
+    const candidates = [
         ["Digital workers", before.digital_worker_count, after.digital_worker_count],
-        ["Monthly burn", fmtMoney(before.monthly_burn_usd), fmtMoney(after.monthly_burn_usd)],
-        ["Leverage", `${before.leverage_ratio || 0}x`, `${after.leverage_ratio || 0}x`],
+        ["Monthly burn", before.monthly_burn_usd, after.monthly_burn_usd, fmtMoney],
+        ["Leverage", before.leverage_ratio, after.leverage_ratio, (v) => `${v || 0}x`],
         ["Proof", before.proof, after.proof],
         ["Trust", before.trust, after.trust],
         ["Velocity", before.velocity, after.velocity],
         ["Autonomy", before.autonomy, after.autonomy],
         ["Burn pressure", before.burn_pressure, after.burn_pressure],
     ];
-    host.innerHTML = `<div class="consequence-board fade-scene">`
-        + `<div class="consequence-kicker">Consequence rule &middot; ${esc(consequence.rule_id || "decision")}</div>`
-        + `<h2>${esc(consequence.summary || "The company changes.")}</h2>`
-        + (orgDelta.added_role_title ? `<div class="consequence-role">Org graph gains: <b>${esc(orgDelta.added_role_title)}</b> (${fmtMoney(orgDelta.monthly_cost_usd)}/mo)</div>` : "")
-        + `<div class="effect-grid">${rows.map(([label, a, b]) => `
-            <div class="effect-row">
+    const changed = candidates.filter(([, a, b]) => a !== undefined && b !== undefined && String(a) !== String(b));
+    const rows = (changed.length ? changed : candidates.slice(0, 4));
+    const effectGrid = rows.map(([label, a, b, fmt]) => {
+        const fa = fmt ? fmt(a) : a;
+        const fb = fmt ? fmt(b) : b;
+        const moved = String(a) !== String(b);
+        return `<div class="effect-row${moved ? " moved" : ""}">
                 <span>${esc(label)}</span>
-                <b>${esc(a)}</b>
+                <b>${esc(fa)}</b>
                 <i>&rarr;</i>
-                <strong>${esc(b)}</strong>
-            </div>`).join("")}</div>`
-        + `</div>`;
+                <strong>${esc(fb)}</strong>
+            </div>`;
+    }).join("");
+
+    const memOrigin = memory && memory.origin ? memory.origin : "local-memory";
+    const memText = memory && memory.text
+        ? memory.text
+        : `The workforce remembers you chose "${String(option).slice(0, 80)}".`;
+
+    const nextStep = nextBrief
+        ? `<div class="receipt-step next">
+                <div class="receipt-step-head"><span class="receipt-num">4</span> Next brief
+                    ${nextBrief.adapted ? `<em class="receipt-adapted">world adapted</em>` : ""}</div>
+                <div class="receipt-next">
+                    <b>${esc(nextBrief.title || "Next stage")}</b>
+                    ${nextBrief.assigned_worker_title ? `<span>&#9851; <em>${esc(nextBrief.assigned_worker_title)}</em> executes this with your decision as binding direction</span>` : `<span>carries your decision as binding direction</span>`}
+                </div>
+            </div>`
+        : `<div class="receipt-step next">
+                <div class="receipt-step-head"><span class="receipt-num">4</span> Next brief</div>
+                <div class="receipt-next"><span>This was the final gate - the decision colors the finale.</span></div>
+            </div>`;
+
+    host.innerHTML = `<div class="consequence-board fade-scene">`
+        + `<div class="consequence-kicker">Decision receipt &middot; ${esc(consequence.rule_id || "decision")}</div>`
+        + `<div class="receipt-chain">`
+        // Step 1: the decision
+        + `<div class="receipt-step decision">
+                <div class="receipt-step-head"><span class="receipt-num">1</span> You decided</div>
+                <div class="receipt-decision">&ldquo;${esc(option)}&rdquo;</div>
+                ${tradeoff ? `<div class="receipt-tradeoff">tradeoff accepted: ${esc(tradeoff)}</div>` : ""}
+            </div>`
+        + `<div class="receipt-arrow">&darr;</div>`
+        // Step 2: the consequence
+        + `<div class="receipt-step consequence">
+                <div class="receipt-step-head"><span class="receipt-num">2</span> Consequence applied</div>
+                <h2>${esc(consequence.summary || "The company changes.")}</h2>
+                ${orgDelta.added_role_title ? `<div class="consequence-role">Org graph gains: <b>${esc(orgDelta.added_role_title)}</b> (${fmtMoney(orgDelta.monthly_cost_usd)}/mo)</div>` : ""}
+                ${orgDelta.removed_role_title ? `<div class="consequence-role">Org graph retires: <b>${esc(orgDelta.removed_role_title)}</b></div>` : ""}
+                <div class="effect-grid">${effectGrid}</div>
+            </div>`
+        + `<div class="receipt-arrow">&darr;</div>`
+        // Step 3: the memory the workers learn
+        + `<div class="receipt-step memory">
+                <div class="receipt-step-head"><span class="receipt-num">3</span> Workers learned
+                    <em class="receipt-origin">&#9851; ${esc(memOrigin)}</em></div>
+                <div class="receipt-memory">${esc(memText)}</div>
+            </div>`
+        + `<div class="receipt-arrow">&darr;</div>`
+        // Step 4: the next brief
+        + nextStep
+        + `</div></div>`;
     if (A.chime) { try { A.chime(); } catch (_) {} }
 }
 
@@ -3525,6 +3589,7 @@ async function runDilemmaGate(stage) {
         document.querySelectorAll("#dilemma-options .dilemma-opt, #dilemma-own-btn, #dilemma-own-go").forEach((el) => { el.disabled = true; });
         setActionHint("Committing decision to company state...");
         let consequence = null;
+        let receiptMemory = null, receiptNext = null;
         try {
             const res = await api("/api/decision", {
                 stage_id: stage.id, option, tradeoff: tradeoff || "",
@@ -3536,6 +3601,8 @@ async function runDilemmaGate(stage) {
             $("dilemma-overlay").hidden = true;
             state.decisions = res.decisions || state.decisions;
             consequence = res.consequence || (res.recorded && res.recorded.consequence) || null;
+            receiptMemory = res.memory || null;
+            receiptNext = res.next_brief || null;
             if (res.state) {
                 state.org = res.state.org || state.org;
                 state.stages = (res.state.world && res.state.world.stages) || state.stages;
@@ -3556,7 +3623,7 @@ async function runDilemmaGate(stage) {
         if (consequence) {
             setSceneHead("Decision effect", "The company changes",
                 "\u2692 deterministic consequence rule updated state, org, and economics");
-            renderConsequenceEffect(consequence);
+            renderDilemmaReceipt({ option, tradeoff, consequence, memory: receiptMemory, nextBrief: receiptNext });
             lens("reliability", `${consequence.rule_id} applied: org and economics mutated before the next chapter`);
             await narrate(`Decided: ${option}. ${summary}`);
             if (state.org) {

@@ -1804,10 +1804,31 @@ def record_decision(payload: DecisionRequest):
     store.log_event("KNOWLEDGE_STRUCTURED", "iq_sync",
         f"Structured {len(state.knowledge_records)} generated Search document(s) after CEO choice.",
         {"choice_id": choice_record.id, "day_index": choice_record.day_index})
+
+    # The next-brief target closes the decision receipt: name the stage (and the
+    # worker who owns it) that now inherits this choice as binding direction, so
+    # the UI can show decision -> consequence -> memory -> next brief as one chain.
+    next_brief = None
+    if stage in world.stages:
+        nidx = world.stages.index(stage) + 1
+        if nidx < len(world.stages):
+            ns = world.stages[nidx]
+            next_brief = {
+                "stage_id": ns.id,
+                "title": ns.title,
+                "goal": ns.goal,
+                "owner_role": ns.owner_role,
+                "assigned_worker_title": ns.assigned_worker_title,
+                "adapted": ns.id in (adapted_ids or []),
+            }
+
     store.save()
     return {
         "recorded": entry,
         "decisions": world.decisions,
+        "memory": mem_entry,
+        "next_brief": next_brief,
+        "antagonist_move": antagonist_move.model_dump() if antagonist_move else None,
         "choice": choice_record.model_dump(),
         "days": [d.model_dump() for d in state.days],
         "consequence": consequence,
