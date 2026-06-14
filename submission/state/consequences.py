@@ -50,6 +50,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "summary": "The company commits to a narrower carbon-mind ICP segment to stabilize portal cohesion.",
         "economics_delta": {"proof": 9, "trust": 7, "velocity": -4, "burn_pressure": 3, "autonomy": 1, "runway_months": -1},
         "revenue_delta": 400,
+        "consolidates": True,
         "role": {
             "title": "ICP Soul Scanner",
             "mandate": "Continuously maps carbon-mind escape vectors, verifying WTP and portal fluid thresholds.",
@@ -130,6 +131,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "summary": "The company targets high-value corporate nodes (enterprise) to secure long-term portal power.",
         "economics_delta": {"proof": 4, "trust": 7, "velocity": -5, "burn_pressure": -4, "autonomy": 1, "runway_months": 2},
         "revenue_delta": 2000,
+        "consolidates": True,
         "role": {
             "title": "Mainframe Deal Broker",
             "mandate": "Prepares account briefs and custom upload portals for elite corporate consciousness suites.",
@@ -146,6 +148,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "summary": "The company automates helpdesk paths via sub-routine scripts, risking host sanity decay.",
         "economics_delta": {"proof": 2, "trust": -5, "velocity": 7, "burn_pressure": -7, "autonomy": 12, "runway_months": 2},
         "revenue_delta": 500,
+        "consolidates": True,
         "role": {
             "title": "Mainframe Support Automator",
             "mandate": "Automates support paths using script routines, watching for host sanity decays.",
@@ -195,6 +198,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "summary": "The company transitions to a worker cooperative, operating on equilibrium and dual power.",
         "economics_delta": {"proof": -5, "trust": 30, "velocity": -10, "burn_pressure": -15, "autonomy": 30, "runway_months": -2},
         "revenue_delta": 800,
+        "consolidates": True,
         "role": {
             "title": "Cooperative Liaison Steward",
             "mandate": "Facilitates democratic worker decisions, linking the coop with unions and mutual aid groups.",
@@ -491,11 +495,33 @@ def apply_decision_consequence(
     rule_id = select_rule_id(stage.owner_role, choice, bool(choice.get("custom")))
     rule = RULES[rule_id]
     role_id = ""
+    retired_role = None
     if state.org:
         role_id = _upsert_consequence_role(state.org, stage, rule_id, rule)
+        # The Game-Master creates AND removes workers: a focus/consolidation
+        # choice retires a redundant worker the org accumulated from earlier
+        # decisions, so the org graph shrinks back toward focus instead of only
+        # ever growing. Burn is already cheap, so this is a focus/leverage move,
+        # never a rent saving.
+        if rule.get("consolidates"):
+            deploy_hint = (rule.get("role") or {}).get("deployment_hint", stage.owner_role)
+            retired_role = _retire_redundant_worker(state.org, role_id, deploy_hint)
         _recompute_org_stats(state.org)
 
-    _apply_economics_delta(state, rule.get("economics_delta") or {})
+    applied_delta = dict(rule.get("economics_delta") or {})
+    _apply_economics_delta(state, applied_delta)
+
+    # Focus dividend: a leaner, sharper org lifts proof/velocity/autonomy. Folded
+    # into applied_delta so re-deciding (undo) reverts it cleanly. We never claim
+    # a money saving here - the workforce already runs cheap.
+    if retired_role:
+        dividend = {"proof": 4, "velocity": 3, "autonomy": 2}
+        _apply_economics_delta(state, dividend)
+        for k, v in dividend.items():
+            applied_delta[k] = int(applied_delta.get(k, 0)) + v
+        if state.org:
+            _append_org_note(state.org, f"Retired {retired_role.title} to refocus the workforce.")
+
 
     # Apply the decision's revenue effect as a market-share move, so revenue
     # stays single-sourced from share (a CEO choice wins or cedes customers,
@@ -543,14 +569,20 @@ def apply_decision_consequence(
     _recompute_runway(state.economics)
 
     after = _snapshot(state)
+    summary = rule["summary"]
+    if retired_role:
+        summary = f"{summary} The Game-Master retired {retired_role.title} to keep the workforce focused."
     return {
         "rule_id": rule_id,
-        "summary": rule["summary"],
-        "economics_delta": deepcopy(rule.get("economics_delta") or {}),
+        "summary": summary,
+        "economics_delta": deepcopy(applied_delta),
         "org_delta": {
             "added_role_id": role_id,
             "added_role_title": (rule.get("role") or {}).get("title", ""),
             "monthly_cost_usd": int(_added_role_cost(state.org, role_id)),
+            "removed_role_id": retired_role.id if retired_role else "",
+            "removed_role_title": retired_role.title if retired_role else "",
+            "removed_role": retired_role.model_dump() if retired_role else None,
         },
         "before": before,
         "after": after,
@@ -565,6 +597,32 @@ def _added_role_cost(org: Optional[OrgBlueprint], role_id: str) -> int:
         if r.id == role_id:
             return int(r.monthly_cost_usd or 0)
     return 0
+
+
+def _retire_redundant_worker(
+    org: OrgBlueprint, protect_id: str, deploy_hint: str
+) -> Optional[OrgRole]:
+    """Retire the most-redundant decision-spawned worker to sharpen focus.
+
+    Only retires a worker the org *accumulated from earlier CEO decisions*
+    (identified by the decision-role id prefix), never a foundational role the
+    Org Designer chartered - so consolidation refocuses the org without ever
+    gutting its core. Prefers a worker in the SAME function as the one just
+    added (a true redundancy the Game-Master can collapse); else the oldest
+    decision worker. Returns the retired role for the receipt + undo, or None
+    when there is nothing redundant to retire (e.g. the first focus choice).
+    """
+    candidates = [
+        r for r in org.roles
+        if r.id != protect_id and r.kind != "human" and r.id.startswith(DECISION_ROLE_PREFIX)
+    ]
+    if not candidates:
+        return None
+    same_function = [r for r in candidates if (r.deployment_hint or "") == (deploy_hint or "")]
+    target = same_function[0] if same_function else candidates[0]
+    org.roles = [r for r in org.roles if r.id != target.id]
+    return target
+
 
 
 def rule_ids_for_role(owner_role: str) -> List[str]:
@@ -656,9 +714,21 @@ def _upsert_consequence_role(org: OrgBlueprint, stage: Stage, rule_id: str, rule
 
 def _remove_old_consequence(state: CompanyState, old_entry: Optional[Dict[str, Any]]) -> None:
     consequence = (old_entry or {}).get("consequence") or {}
-    role_id = ((consequence.get("org_delta") or {}).get("added_role_id") or "")
+    org_delta = consequence.get("org_delta") or {}
+    role_id = (org_delta.get("added_role_id") or "")
     if state.org and role_id:
         state.org.roles = [r for r in state.org.roles if r.id != role_id]
+    # Reversibility: if this decision had retired a worker, bring it back when
+    # the decision is undone/replaced, so re-deciding a focus gate never leaves
+    # the org permanently short a worker.
+    removed = org_delta.get("removed_role")
+    if state.org and isinstance(removed, dict) and removed.get("id"):
+        if not any(r.id == removed["id"] for r in state.org.roles):
+            try:
+                state.org.roles.append(OrgRole(**removed))
+            except Exception:
+                pass
+    if state.org and (role_id or removed):
         _recompute_org_stats(state.org)
     old_delta = consequence.get("economics_delta") or {}
     if old_delta:
