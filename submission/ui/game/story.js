@@ -1107,12 +1107,16 @@ function maybeShowRunOver(game) {
 
     const treasury = Math.max(0, Math.round(Number(econ.points || 0)));
     const days = Math.round(Number(econ.days_elapsed || game.day_index || 0));
+    const share = Number(econ.market_share || 0);
+    const revMonth = Math.round(Number(econ.monthly_revenue_usd || 0));
     const stats = $("run-over-stats");
     if (stats) {
         stats.innerHTML = [
             ["Stages shipped", `${done}/${stages.length || 8}`],
-            ["Days survived", days.toLocaleString()],
+            ["Market share", `${share.toFixed(1)}%`],
+            ["Revenue", `$${revMonth.toLocaleString()}/mo`],
             ["Treasury", `$${treasury.toLocaleString()}`],
+            ["Days survived", days.toLocaleString()],
             ["Rival threat", `${Math.round(Number(arc.threat_level || 0))}/100`],
         ].map(([k, v]) => `<div class="run-over-stat"><span>${esc(k)}</span><b>${esc(String(v))}</b></div>`).join("");
     }
