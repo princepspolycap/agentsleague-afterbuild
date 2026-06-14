@@ -261,7 +261,8 @@ class OrgRole(BaseModel):
     deployment_hint: str = ""     # which Foundry model class fits this worker
     lifecycle_stage: str = ""     # discovery|positioning|mvp|gtm|retention|ops
     seniority: str = "ic"         # lead | ic
-    monthly_cost_usd: int = 0     # simple budget mechanic input
+    monthly_cost_usd: int = 0     # what we pay this digital worker per month
+    human_median_usd: int = 0     # present-world median salary for this seat
     why: str = ""                 # educational: why this role must exist
 
 
@@ -275,6 +276,8 @@ class OrgBlueprint(BaseModel):
     digital_worker_count: int = 0
     human_count: int = 0
     monthly_burn_usd: int = 0
+    human_equivalent_usd: int = 0  # what this team would cost as humans
+    monthly_savings_usd: int = 0   # human median - digital burn
     leverage_ratio: float = 0.0   # digital workers per human operator
     source: str = "pitch"         # pitch | url
     source_ref: str = ""          # the originating url or pitch text
@@ -297,6 +300,9 @@ class CompanyEconomics(BaseModel):
     runway_months: int = 9
     digital_worker_count: int = 0
     leverage_ratio: float = 0.0
+    monthly_revenue_usd: int = 0
+    net_profit_usd: int = 0
+    points: int = 10000
 
 
 # ---------------------------------------------------------------------------

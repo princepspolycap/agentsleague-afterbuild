@@ -51,6 +51,7 @@ Design the org as JSON:
       "lifecycle_stage": "ops",
       "seniority": "lead",
       "monthly_cost_usd": 0,
+      "human_median_usd": 0,
       "why": "plain-language reason this role exists"
     }}
   ]
@@ -62,11 +63,20 @@ Rules:
 - reports_to must reference another role id (the operator or a lead).
 - lifecycle_stage is one of: discovery, positioning, mvp, gtm, retention, ops.
 - deployment_hint is one of: reasoning, fast, creative, n/a.
-- monthly_cost_usd is a realistic monthly run cost (humans cost more; digital workers are cheap).
+- monthly_cost_usd: realistic monthly RUN cost of this digital worker (model
+  inference + tooling). Reason it from the role's actual workload for THIS
+  company - a heavy reasoning lead costs more than a light fast worker. Set 0
+  for the human operator.
+- human_median_usd: what a HUMAN doing THIS exact role would cost per month
+  today (fully-loaded market salary / 12) for this company's domain, region,
+  and seniority. Reason it from the real job market for this specific seat, not
+  a generic average. Set 0 for the human operator (the founder takes no salary).
 - Keep `why` concrete and educational.
 """
 
-# Stage -> default monthly cost for a digital worker (compute + tooling).
+# Stage -> default monthly cost for a digital worker (compute + tooling). Used
+# ONLY as a simulation/fallback when the model did not reason a per-role cost
+# (e.g. no Foundry credentials). Live runs use the model's own per-role numbers.
 _STAGE_COST = {
     "discovery": 120,
     "positioning": 140,
@@ -75,6 +85,31 @@ _STAGE_COST = {
     "retention": 160,
     "ops": 150,
 }
+
+# Present-world human median: a FALLBACK estimate of what a person in this seat
+# would cost per month (fully-loaded market salary / 12), used only when the
+# model did not supply human_median_usd. Live runs let the agent reason the
+# real per-role salary for the specific company/domain on the fly. Keyed by
+# lifecycle stage, then nudged up for a "lead" seat.
+_HUMAN_MEDIAN_USD = {
+    "discovery": 7000,
+    "positioning": 11000,
+    "mvp": 10500,
+    "gtm": 7500,
+    "retention": 6500,
+    "ops": 8500,
+}
+_LEAD_MEDIAN_MULTIPLIER = 1.4
+
+
+def _human_median_for(stage: str, seniority: str, kind: str) -> int:
+    """Fallback median monthly salary for this seat when the model gives none."""
+    if kind == "human":
+        return 0  # the founder/operator takes no salary in this model
+    base = _HUMAN_MEDIAN_USD.get(stage, 8000)
+    if (seniority or "").lower() == "lead":
+        base = int(base * _LEAD_MEDIAN_MULTIPLIER)
+    return base
 
 
 def _short_label(brief: str, words: int = 6) -> str:
@@ -258,6 +293,19 @@ def _normalize_role(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
     reports_to = raw.get("reports_to")
     reports_to = _slugify(str(reports_to)) if reports_to else None
 
+    # Prefer the agent's own per-role human-equivalent salary (reasoned on the
+    # fly for this specific company/domain/seat). Only fall back to the coarse
+    # stage estimate when the model gave nothing usable.
+    if kind == "human":
+        human_median = 0
+    else:
+        try:
+            human_median = int(raw.get("human_median_usd"))
+            if human_median <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            human_median = _human_median_for(stage, str(raw.get("seniority") or "ic"), kind)
+
     return {
         "id": role_id,
         "title": title,
@@ -270,6 +318,7 @@ def _normalize_role(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
         "lifecycle_stage": stage,
         "seniority": str(raw.get("seniority") or "ic").lower(),
         "monthly_cost_usd": max(0, cost),
+        "human_median_usd": human_median,
         "why": str(raw.get("why") or ""),
     }
 
@@ -320,6 +369,11 @@ def _finalize(blueprint: Dict[str, Any], brief: str, source: str, source_ref: st
     burn = sum(r["monthly_cost_usd"] for r in roles)
     leverage = round(len(digital) / max(1, human_count), 1)
 
+    # Present-world benchmark: what this same team would cost as humans, and the
+    # savings the digital workforce buys. This is the "burn vs median" story.
+    human_equivalent = sum(r.get("human_median_usd", 0) for r in roles)
+    monthly_savings = max(0, human_equivalent - burn)
+
     return {
         "company_summary": summary_hint.strip() or str(blueprint.get("company_summary") or f"A venture built around {_short_label(brief)}."),
         "operating_model": str(blueprint.get("operating_model")
@@ -329,6 +383,8 @@ def _finalize(blueprint: Dict[str, Any], brief: str, source: str, source_ref: st
         "digital_worker_count": len(digital),
         "human_count": human_count,
         "monthly_burn_usd": burn,
+        "human_equivalent_usd": human_equivalent,
+        "monthly_savings_usd": monthly_savings,
         "leverage_ratio": leverage,
         "source": source,
         "source_ref": (source_ref or "")[:500],

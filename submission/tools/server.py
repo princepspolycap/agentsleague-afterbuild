@@ -2095,6 +2095,31 @@ def run_next_stage():
     stage.status = "completed" if score >= 80 else "needs-review"
     record_stage_encounter(state, stage)
 
+    if state.economics is None:
+        state.economics = initialize_economics_from_org(state.org)
+
+    if score >= 80:
+        base_rev = {
+            "strategist": 500,
+            "designer": 1200,
+            "marketer": 2500,
+            "ops": 3500
+        }.get(stage.owner_role, 1000)
+        rev_gain = int(base_rev * (score / 100))
+        state.economics.monthly_revenue_usd += rev_gain
+        gate_bonus = score * 10
+    else:
+        gate_bonus = 0
+
+    net_profit = state.economics.monthly_revenue_usd - state.economics.monthly_burn_usd
+    state.economics.points = max(0, state.economics.points + net_profit + gate_bonus)
+    state.economics.net_profit_usd = net_profit
+    
+    if net_profit >= 0:
+        state.economics.runway_months = 36
+    else:
+        state.economics.runway_months = max(1, min(36, state.economics.points // max(1, abs(net_profit))))
+
     xp_earned = 10 + (score // 10)
     state.xp += xp_earned
     if state.xp >= 50 and state.level < 2:
@@ -2203,6 +2228,32 @@ def autoplay_world(payload: AutoplayRequest):
     results = []
     for stage, invocation, artifact, score in run_world(world, brief, auto_approve_threshold=threshold, org=state.org):
         record_stage_encounter(state, stage)
+
+        if state.economics is None:
+            state.economics = initialize_economics_from_org(state.org)
+
+        if score >= 80:
+            base_rev = {
+                "strategist": 500,
+                "designer": 1200,
+                "marketer": 2500,
+                "ops": 3500
+            }.get(stage.owner_role, 1000)
+            rev_gain = int(base_rev * (score / 100))
+            state.economics.monthly_revenue_usd += rev_gain
+            gate_bonus = score * 10
+        else:
+            gate_bonus = 0
+
+        net_profit = state.economics.monthly_revenue_usd - state.economics.monthly_burn_usd
+        state.economics.points = max(0, state.economics.points + net_profit + gate_bonus)
+        state.economics.net_profit_usd = net_profit
+        
+        if net_profit >= 0:
+            state.economics.runway_months = 36
+        else:
+            state.economics.runway_months = max(1, min(36, state.economics.points // max(1, abs(net_profit))))
+
         xp_earned = 10 + (score // 10)
         state.xp += xp_earned
         if state.xp >= 50 and state.level < 2:

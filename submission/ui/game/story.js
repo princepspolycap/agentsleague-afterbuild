@@ -158,8 +158,13 @@ let liveCaptionPinned = false;
 function activeSpeakerSnapshot() {
     const aw = state.activeWorker || {};
     const role = aw.role || "narrator";
-    const name = aw.displayName || ROLE_NAME[role] || role;
-    return { role, name, heroName: CAST_NAME[role] || ROLE_NAME[role] || role };
+    const defaultRoleName = ROLE_NAME[role] || role;
+    const customLabel = (aw.displayName || "").trim();
+    const hasCustomLabel = !!customLabel && customLabel !== defaultRoleName;
+    const name = customLabel || defaultRoleName;
+    const heroName = hasCustomLabel ? customLabel : (CAST_NAME[role] || defaultRoleName);
+    const roleLabel = hasCustomLabel ? customLabel : defaultRoleName;
+    return { role, name, heroName, roleLabel };
 }
 
 function rememberSpokenLine(text) {
@@ -187,7 +192,7 @@ function setNarrationSpeaker() {
     const alphaColor = color.startsWith("#") ? color + "26" : color;
     document.documentElement.style.setProperty("--spk-alpha", alphaColor);
     if (nameEl) nameEl.textContent = speaker.heroName;
-    if (roleEl) roleEl.textContent = ROLE_NAME[role] || role;
+    if (roleEl) roleEl.textContent = speaker.roleLabel || ROLE_NAME[role] || role;
     if (portrait) { portrait.style.display = ""; portrait.src = `/game/assets/generated/${portraitKey}.png`; }
     chip.hidden = false;
     setSceneStatus({ speaking: speaker.heroName || speaker.name || ROLE_NAME[role] || role });
@@ -213,7 +218,7 @@ function clearLiveAgentCaption() {
     liveCaptionPinned = false;
 }
 
-async function narrate(text, speed = 18) {
+async function narrate(text, speed = 18, opts = {}) {
     const el = $("narration-text");
     const myToken = ++typeToken;
     // Let the previous line's voice finish its sentence before this beat cuts
@@ -232,6 +237,13 @@ async function narrate(text, speed = 18) {
     // the text is retained on the agent's dossier.
     setNarrationSpeaker();
     clearLiveAgentCaption();
+    // If a core game-master agent is talking, pop its character onto the stage
+    // with a live speech bubble (and any image this beat carries). Workers keep
+    // the reasoning theater; their lines never trigger the spotlight.
+    const spk = activeSpeakerSnapshot();
+    const spotlight = SPOTLIGHT_ROLES.has(spk.role);
+    if (spotlight) showSpeakerSpotlight(spk.role, spk.heroName, opts);
+    else if (opts.image) showSpeakerSpotlight(spk.role, spk.heroName, opts);
     const track = $("narration");
     if (track) {
         track.hidden = false;
@@ -245,6 +257,7 @@ async function narrate(text, speed = 18) {
     for (let i = 0; i < text.length; i++) {
         if (myToken !== typeToken) return;
         caret.insertAdjacentText("beforebegin", text[i]);
+        if (spotlight) setSpeakerSpotlightLine(text.slice(0, i + 1));
         const ch = text[i];
         const d = ch === "." || ch === "," ? speed * 6 : speed;
         await sleep(d);
@@ -601,9 +614,11 @@ const state = {
     pitch: "",
     url: "",
     org: null,
+    economics: null,
     game: null,      // authoritative card-building roguelike state from backend
     stages: [],
     decisions: [],   // CEO gate decisions (session memory ledger)
+    playerCommands: [], // free-form CEO moves issued from the persistent footer input
     archetype: null, // {name, skill} - character creation, seeds the org brief
     fromFilm: false, // true when the intro film handed off - the welcome already happened
     autoMode: false, // autoplay auto-picks dilemma option 1 after a beat
@@ -710,6 +725,20 @@ function setResourcesFromOrg(org) {
         burn: clamp(10 + burn / 95),
         autonomy: clamp(14 + workerCount * 10),
     };
+    state.economics = {
+        proof: state.resources.proof,
+        trust: state.resources.trust,
+        velocity: state.resources.velocity,
+        burn_pressure: state.resources.burn,
+        autonomy: state.resources.autonomy,
+        monthly_burn_usd: burn,
+        runway_months: Math.max(3, 10 - Math.round(burn / 2500)),
+        digital_worker_count: workerCount,
+        leverage_ratio: org ? org.leverage_ratio : 0,
+        monthly_revenue_usd: 0,
+        net_profit_usd: -burn,
+        points: 10000,
+    };
     renderResources();
 }
 
@@ -718,6 +747,7 @@ function setResourcesFromEconomics(economics, org) {
         if (org) setResourcesFromOrg(org);
         return;
     }
+    state.economics = economics;
     state.resources = {
         proof: clamp(economics.proof),
         trust: clamp(economics.trust),
@@ -840,7 +870,11 @@ function renderRewardDraft(game, forceOpen = false) {
         overlay.dataset.seenRewardIds = pending.map((c) => c.id).join("|");
         overlay.hidden = false;
     }
-    setSceneStatus({ source: prov || (state.live ? "live foundry session" : "simulation session") });
+    if (!overlay.hidden) {
+        $("hint").textContent = "Choose a reward to continue.";
+        updateCommandControls();
+    }
+    setSceneStatus({ source: state.live ? "live foundry session" : "simulation session" });
 }
 
 function syncGameState(game) {
@@ -1161,7 +1195,7 @@ const flippedOwners = new Set();
 function dossierBackHTML(ev) {
     if (!ev) return "";
     const color = ROLE_COLOR[ev.role] || T.narrator;
-    const roleName = ROLE_NAME[ev.role] || ev.role || "agent";
+    const roleName = ev.roleLabel || ROLE_NAME[ev.role] || ev.role || "agent";
     const score = (ev.score === undefined || ev.score === null) ? "--" : ev.score;
     const worldStats = resourceMeterMarkup(Object.keys(RESOURCE_SPEC), "cc");
     const toolChips = (ev.mafTools || []).length
@@ -1257,6 +1291,9 @@ function setWorker(role, deployLabel, stateText, thinking, displayName) {
         speaking: (activeSpeakerSnapshot().heroName || displayName || ROLE_NAME[role] || role),
         source: deployLabel || sceneStatus.source,
     });
+    // A worker stepping onto the stage clears the core-agent spotlight; the
+    // reasoning theater takes over for worker chapters.
+    if (!SPOTLIGHT_ROLES.has(role)) hideSpeakerSpotlight();
     if (inspectorOpen) openAgentInspector();
 }
 
@@ -1290,6 +1327,7 @@ function activeAgentEv() {
     return {
         role: aw.role || "narrator",
         name,
+        roleLabel: aw.displayName || ROLE_NAME[aw.role] || aw.role || "Agent",
         deployment: aw.deployLabel || "",
         score: "--",
         tools: [], trace: [], mafTools: [], mafMemory: [],
@@ -1297,14 +1335,22 @@ function activeAgentEv() {
         reasoningTokens: 0,
     };
 }
+// Map any role (including dynamically-titled workers) onto one of the cast
+// archetypes that has character art. Single source of truth for both the
+// on-demand inspector and the speaking spotlight.
+function castKeyForRole(role) {
+    if (CAST_ROLES.has(role)) return role;
+    const p = ROLE_PORTRAIT[role];
+    if (p && CAST_ROLES.has(p)) return p;
+    return "strategist";
+}
+
 function openAgentInspector() {
     const stage = $("cast-stage");
     if (!stage) return;
     const aw = activeWorkerSnapshot();
     const role = aw.role || "narrator";
-    const key = CAST_ROLES.has(role)
-        ? role
-        : (ROLE_PORTRAIT[role] && CAST_ROLES.has(ROLE_PORTRAIT[role]) ? ROLE_PORTRAIT[role] : "strategist");
+    const key = castKeyForRole(role);
     const ev = activeAgentEv();
     const color = ROLE_COLOR[role] || ROLE_COLOR[key] || T.narrator;
     const heroName = CAST_NAME[key] || ROLE_NAME[key] || key;
@@ -1316,7 +1362,7 @@ function openAgentInspector() {
         `<div class="cast-card">`
         + `<div class="cast-card-art"><div class="cast-fig" style="background-image:url('${src}')"></div></div>`
         + `<div class="cast-card-plate"><div class="cast-card-name">${esc(heroName)}</div>`
-        + `<div class="cast-card-role">${esc(ROLE_NAME[role] || role)}</div>`
+        + `<div class="cast-card-role">${esc(aw.displayName || ROLE_NAME[role] || role)}</div>`
         + `<div class="cast-card-tag">${esc(tag)}</div></div>`
         + `<button class="cast-close" type="button" aria-label="Close dossier">&times;</button>`
         + `<div class="cast-dossier">${dossierBackHTML(ev)}</div>`
@@ -1339,6 +1385,77 @@ function closeAgentInspector() {
 function toggleAgentInspector() {
     if (inspectorOpen) closeAgentInspector(); else openAgentInspector();
 }
+
+// --- Speaker spotlight -----------------------------------------------------
+// When a core game-master agent (World Designer / Org Designer) is talking, the
+// character pops onto the stage with a live speech bubble and an optional image.
+// Non-modal: it never blurs the stage or steals pointer focus, and it always
+// yields to the on-demand inspector. Workers keep the reasoning theater instead.
+const SPOTLIGHT_ROLES = new Set(["narrator", "orgdesigner"]);
+let spotlightRole = null;
+
+function showSpeakerSpotlight(role, displayName, opts = {}) {
+    const stage = $("cast-stage");
+    if (!stage || inspectorOpen) return;
+    const key = castKeyForRole(role);
+    // Same role already on stage: just refresh the optional image, keep the card.
+    if (spotlightRole === role && stage.classList.contains("speaking")) {
+        if (opts.image) setSpeakerSpotlightImage(opts.image, opts.caption);
+        return;
+    }
+    const color = ROLE_COLOR[role] || ROLE_COLOR[key] || T.narrator;
+    const heroName = displayName || CAST_NAME[key] || ROLE_NAME[role] || role;
+    const roleLabel = ROLE_NAME[role] || role;
+    const src = `/game/assets/generated/characters/${key}.png`;
+    stage.style.setProperty("--card-accent", hexToRgba(color, 0.9));
+    stage.style.setProperty("--cast-aura", hexToRgba(color, 0.34));
+    const imgHtml = opts.image
+        ? `<div class="cast-shot"><img src="${esc(opts.image)}" alt="${esc(opts.caption || "")}" onerror="this.closest('.cast-shot').style.display='none'" />`
+          + (opts.caption ? `<span>${esc(opts.caption)}</span>` : "") + `</div>`
+        : "";
+    stage.innerHTML =
+        `<div class="cast-card">`
+        + `<div class="cast-card-art"><div class="cast-fig" style="background-image:url('${src}')"></div></div>`
+        + imgHtml
+        + `<div class="cast-speech"><div class="cast-speech-name">${esc(heroName)}<span>${esc(roleLabel)}</span></div>`
+        + `<div class="cast-speech-line" id="cast-speech-line"></div></div>`
+        + `</div>`;
+    stage.className = "speaking show";
+    spotlightRole = role;
+}
+
+function setSpeakerSpotlightLine(text) {
+    const el = $("cast-speech-line");
+    if (el) el.textContent = text;
+}
+
+function setSpeakerSpotlightImage(src, caption) {
+    const stage = $("cast-stage");
+    if (!stage || !stage.classList.contains("speaking")) return;
+    const card = stage.querySelector(".cast-card");
+    if (!card) return;
+    let shot = card.querySelector(".cast-shot");
+    if (!shot) {
+        shot = document.createElement("div");
+        shot.className = "cast-shot";
+        const art = card.querySelector(".cast-card-art");
+        if (art && art.nextSibling) card.insertBefore(shot, art.nextSibling);
+        else card.appendChild(shot);
+    }
+    shot.style.display = "";
+    shot.innerHTML = `<img src="${esc(src)}" alt="${esc(caption || "")}" onerror="this.closest('.cast-shot').style.display='none'" />`
+        + (caption ? `<span>${esc(caption)}</span>` : "");
+}
+
+function hideSpeakerSpotlight() {
+    if (inspectorOpen) return; // the inspector owns the stage while open
+    const stage = $("cast-stage");
+    if (!stage || !spotlightRole) return;
+    stage.className = "";
+    stage.innerHTML = "";
+    spotlightRole = null;
+}
+
 
 // Character art assets used by the on-demand footer inspector. The old
 // decorative always-on floating cast is intentionally disabled: the lower stage
@@ -1615,12 +1732,35 @@ function renderConsequenceEffect(consequence) {
 function setEconHud(org) {
     const host = $("econ-hud");
     if (!host) return;
-    if (!org || !org.digital_worker_count) { host.innerHTML = ""; return; }
-    const burn = Number(org.monthly_burn_usd || 0).toLocaleString();
-    host.innerHTML =
-        `<span class="econ-pill" title="digital workforce"><i>&#9874;</i> Founder + <b>${org.digital_worker_count}</b> workers</span>`
-        + `<span class="econ-pill" title="monthly burn"><i>$</i><b>${burn}</b>/mo</span>`
-        + (org.leverage_ratio ? `<span class="econ-pill" title="leverage"><b>${org.leverage_ratio}&times;</b> leverage</span>` : ``);
+    const econ = state.economics || {};
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const points = num(econ.points ?? 10000).toLocaleString();
+    const revenueN = num(econ.monthly_revenue_usd);
+    const burnN = num(econ.monthly_burn_usd ?? (org ? org.monthly_burn_usd : 0));
+    const netProfit = Number.isFinite(Number(econ.net_profit_usd))
+        ? Number(econ.net_profit_usd)
+        : revenueN - burnN;
+    const netSign = netProfit >= 0 ? "+" : "-";
+    const netClass = netProfit >= 0 ? "good" : "bad";
+
+    // Present-world benchmark: what this team would cost as humans, and the
+    // monthly savings the digital workforce buys (burn vs median story).
+    const humanEq = num(org && org.human_equivalent_usd);
+    const savings = num(org && org.monthly_savings_usd) || Math.max(0, humanEq - burnN);
+
+    let html = `<span class="econ-pill gold-glow" title="Points / Treasury Balance"><i>💎</i> Points: <b>${points}</b></span>`
+        + `<span class="econ-pill" title="Monthly Revenue (Income)"><i>📈</i> Rev: <b>+$${revenueN.toLocaleString()}</b>/mo</span>`
+        + `<span class="econ-pill" title="Monthly Burn: sum of what each digital worker costs us"><i>📉</i> Burn: <b>-$${burnN.toLocaleString()}</b>/mo</span>`
+        + `<span class="econ-pill ${netClass}" title="Net Monthly Cash Flow"><b>${netSign}$${Math.abs(netProfit).toLocaleString()}</b>/mo</span>`;
+
+    if (savings > 0) {
+        html += `<span class="econ-pill good" title="Estimated vs a human team in these seats (~$${humanEq.toLocaleString()}/mo at market salaries)"><i>🤝</i> Saving ~<b>$${savings.toLocaleString()}</b>/mo vs humans</span>`;
+    }
+
+    if (org && org.digital_worker_count) {
+        html += `<span class="econ-pill" title="digital workforce"><i>🛠️</i> <b>${org.digital_worker_count}</b> workers</span>`;
+    }
+    host.innerHTML = html;
 }
 
 // Populate the persistent "Digital Workforce" rail: stats + operating model +
@@ -1636,6 +1776,11 @@ function setOrgPanel(org) {
     const burn = Number(org.monthly_burn_usd || 0).toLocaleString();
     let html = `<div class="org-stat">Founder + <b>${org.digital_worker_count}</b> digital workers`
         + ` &middot; <b>$${burn}</b>/mo &middot; <b>${org.leverage_ratio}&times;</b> leverage</div>`;
+    const humanEq = Number(org.human_equivalent_usd || 0);
+    const savings = Number(org.monthly_savings_usd || 0) || Math.max(0, humanEq - Number(org.monthly_burn_usd || 0));
+    if (savings > 0) {
+        html += `<div class="org-model">A human team in these seats would run roughly <b>$${humanEq.toLocaleString()}</b>/mo at estimated market salaries &mdash; the digital workforce saves about <b style="color:var(--gold-soft);font-style:normal">$${savings.toLocaleString()}</b>/mo.</div>`;
+    }
     if (org.operating_model) html += `<div class="org-model">${esc(org.operating_model)}</div>`;
     if (Array.isArray(org.notes) && org.notes.length) {
         html += `<div class="org-model"><b style="color:var(--gold-soft);font-style:normal">Latest consequence:</b> ${esc(org.notes[org.notes.length - 1])}</div>`;
@@ -1739,87 +1884,6 @@ function setHud(s) {
     const lvl = $("hud-level"); if (lvl) lvl.textContent = s.level ?? 1;
     const xp = $("hud-xp"); if (xp) xp.textContent = s.xp ?? 0;
     if (s.game) syncGameState(s.game);
-    updateWorldStatePanel(s);
-    renderHeroJourneyMap(s);
-}
-
-// Render the Hero's Journey map: all stages with current position and status.
-// Shows visual progress through the world's quest graph.
-function renderHeroJourneyMap(s) {
-    if (!s || !s.world || !s.world.stages) return;
-    const stages = s.world.stages || [];
-    const currentIdx = state.idx ?? 0;
-    const worldMapHost = $("world-journey-map");
-    if (!worldMapHost) return;
-
-    let html = `<div class="journey-header">Hero's Journey: ${currentIdx + 1}/${stages.length}</div>`;
-    html += `<div class="journey-stages">`;
-
-    stages.forEach((ch, i) => {
-        const isCompleted = ch.status === "completed";
-        const isCurrent = i === currentIdx;
-        const role = ch.owner_role || "unknown";
-        const roleColor = ROLE_COLOR[role] || "#999";
-
-        html += `<div class="journey-node" data-idx="${i}" style="--role-color: ${roleColor}">`
-            + `<div class="node-marker ${isCurrent ? 'current' : ''} ${isCompleted ? 'completed' : ''}">`
-            + `<span class="node-num">${i + 1}</span>`
-            + `</div>`
-            + `<div class="node-label">`
-            + `<div class="node-title">${esc(ch.title ? ch.title.split(':')[0].trim() : `Stage ${i + 1}`)}</div>`
-            + `<div class="node-role">${ROLE_NAME[role] || role}</div>`
-            + `<div class="node-status">${isCompleted ? '✓ Done' : isCurrent ? '→ Active' : 'Pending'}</div>`
-            + `</div>`
-            + `</div>`;
-
-        if (i < stages.length - 1) {
-            html += `<div class="journey-arrow"></div>`;
-        }
-    });
-
-    html += `</div>`;
-    worldMapHost.innerHTML = html;
-}
-
-// Update the world state info panel: company name, pitch, phase, decisions.
-function updateWorldStatePanel(s) {
-    if (!s) return;
-    const statePanel = $("world-state-panel");
-    if (!statePanel) return;
-
-    const stages = (s.world && s.world.stages) || [];
-    const decisions = (s.world && s.world.decisions) || [];
-    const completed = stages.filter((ch) => ch.status === "completed").length;
-
-    let html = `<div class="state-section">`
-        + `<div class="state-label">World</div>`
-        + `<div class="state-company">${esc(s.name || "(Loading...)")}</div>`
-        + `<div class="state-pitch" title="${esc(s.pitch || '')}">"${esc((s.pitch || '').substring(0, 45))}${(s.pitch || '').length > 45 ? '...' : ''}"</div>`
-        + `</div>`;
-
-    html += `<div class="state-section">`
-        + `<div class="state-label">Story Progress</div>`
-        + `<div class="state-metric">`
-        + `<span class="metric-label">Chapters</span>`
-        + `<span class="metric-value">${completed}/${stages.length}</span>`
-        + `</div>`
-        + `<div class="state-metric">`
-        + `<span class="metric-label">Phase</span>`
-        + `<span class="metric-value" style="text-transform: capitalize;">${state.phase || 'unknown'}</span>`
-        + `</div>`
-        + `</div>`;
-
-    if (decisions.length > 0) {
-        html += `<div class="state-section">`
-            + `<div class="state-label">Recent Decisions</div>`;
-        decisions.slice(-2).forEach((dec) => {
-            const decText = typeof dec === 'string' ? dec : dec.choice || dec.decision || String(dec);
-            html += `<div class="decision-item">• ${esc(decText.substring(0, 40))}${decText.length > 40 ? '...' : ''}</div>`;
-        });
-        html += `</div>`;
-    }
-
-    statePanel.innerHTML = html;
 }
 
 // --- Beats -----------------------------------------------------------------
@@ -1896,6 +1960,7 @@ function analyzePayload() {
 // inputs that change the output, so editing the profile/mission busts it.
 const ANALYZE_REUSE_TTL_MS = 60 * 60 * 1000;
 let _analyzeReuse = null; // in-memory mirror of the sessionStorage entry
+let _worldReuse = null; // active-page world design reuse; reset/game-over clears it
 
 function analyzeSignature() {
     return JSON.stringify({
@@ -1921,6 +1986,25 @@ function analyzeReusePut(sig, ares) {
     _analyzeReuse = { sig: sig, ares: ares, ts: Date.now() };
     try { sessionStorage.setItem("qf_analyze_reuse", JSON.stringify(_analyzeReuse)); }
     catch (_) { /* private mode / quota: in-memory reuse still works */ }
+}
+
+function worldDesignSignature() {
+    return JSON.stringify({
+        analyze: analyzeSignature(),
+        company: (state.company || "").trim(),
+        founder: (state.founderName || "").trim(),
+        voice: state.founderVoice || "onyx",
+    });
+}
+
+function worldReuseGet(sig) {
+    if (!_worldReuse || _worldReuse.sig !== sig) return null;
+    if (!_worldReuse.res || !_worldReuse.res.state || !_worldReuse.res.state.world) return null;
+    return _worldReuse.res;
+}
+
+function worldReusePut(sig, res) {
+    _worldReuse = { sig: sig, res: res, ts: Date.now() };
 }
 
 // Preflight gate: the first "Begin" press. We do not start the run until we have
@@ -2258,18 +2342,22 @@ async function beginStory() {
     await narrate("Now the World Designer - a Foundry reasoning agent - reads the brief and decomposes the whole venture into a quest line of chapters, one per stage of building the company.");
 
     let res;
+    const worldSig = worldDesignSignature();
+    const reusedWorld = worldReuseGet(worldSig);
     try {
-        res = await api("/api/world/design", {
-            pitch: state.pitch,
-            company_name: state.company,
-            founder_name: state.founderName,
-            founder_archetype: state.archetype ? state.archetype.name : "Builder",
-            founder_skill: state.archetype ? state.archetype.skill : ARCHETYPE_SKILL.Builder,
-            founder_locale: state.founderLocale,
-            founder_voice_stack: state.founderVoiceStack,
-            founder_voice: state.founderVoice,
-            founder_avatar: state.founderAvatar
-        });
+        res = reusedWorld || await api("/api/world/design", {
+                pitch: state.pitch,
+                company_name: state.company,
+                founder_name: state.founderName,
+                founder_archetype: state.archetype ? state.archetype.name : "Builder",
+                founder_skill: state.archetype ? state.archetype.skill : ARCHETYPE_SKILL.Builder,
+                founder_locale: state.founderLocale,
+                founder_voice_stack: state.founderVoiceStack,
+                founder_voice: state.founderVoice,
+                founder_avatar: state.founderAvatar
+            });
+        if (!reusedWorld) worldReusePut(worldSig, res);
+        else lens("reasoning", "reused the already-generated world graph for this active run");
     } catch (e) {
         if (A.thinkingStop) A.thinkingStop();
         $("hint").textContent = "Design failed";
@@ -2306,9 +2394,9 @@ async function beginStory() {
 
     await revealWorldDrop();
     state.phase = "ready";
-    $("hint").textContent = "World set. Press Next Chapter or Auto Play.";
-    $("next").disabled = false;
-    $("auto").disabled = false;
+    $("hint").textContent = "World set. Send a move to advance, or Auto Play.";
+    const auto = $("auto"); if (auto) auto.disabled = false;
+    updateCommandControls();
 }
 
 async function revealWorldDrop() {
@@ -2706,6 +2794,8 @@ async function runNextChapter() {
     if (state.idx >= state.stages.length) return;
     const ch = state.stages[state.idx];
     const ownerName = ch.assigned_worker_title || ROLE_NAME[ch.owner_role] || ch.owner_role;
+    state.phase = "running";
+    updateCommandControls();
     const nextBtn = $("next"); if (nextBtn) nextBtn.disabled = true;
     const autoBtn = $("auto"); if (autoBtn) autoBtn.disabled = true;
     markProgress(state.idx);
@@ -2730,6 +2820,12 @@ async function runNextChapter() {
     const recallLine = lastDecision
         ? ` Your decision at the last gate - "${lastDecision.option}" - is in its brief, as binding direction.${lastDecision.consequence_summary ? ` The company consequence is also in scope: ${lastDecision.consequence_summary}.` : ""}`
         : "";
+    const lastCommand = state.playerCommands && state.playerCommands.length
+        ? state.playerCommands[state.playerCommands.length - 1]
+        : null;
+    const commandLine = lastCommand && lastCommand.text
+        ? ` Your current CEO move - "${lastCommand.text}" - is riding with this worker.`
+        : "";
     // Agent memory, spoken: once the workforce has learned from this CEO, the
     // narration credits it - memory is a mechanic the player can hear.
     const memoryLine = learnedCount > 0
@@ -2740,7 +2836,7 @@ async function runNextChapter() {
     // narration runs underneath it (audio), the plan forms on screen (visual).
     mafRunStart(ownerName, ch.title);
     const theaterDone = theaterOpen(ch, ownerName, lastDecision);
-    narrate(`Stage ${state.idx + 1}: ${goalLine}. ${ownerName} spins up on Foundry and recalls from IQ memory.${memoryLine}${recallLine}`);
+    narrate(`Stage ${state.idx + 1}: ${goalLine}. ${ownerName} spins up on Foundry and recalls from IQ memory.${memoryLine}${recallLine}${commandLine}`);
     await theaterDone;
 
     let res;
@@ -2833,6 +2929,8 @@ async function runNextChapter() {
     } else {
         // The CEO decision gate: pick a path before the next worker spins up.
         await runDilemmaGate(stage, state.autoMode);
+        state.phase = "ready";
+        updateCommandControls();
         const next = $("next"); if (next) next.disabled = false;
         const auto = $("auto"); if (auto) auto.disabled = false;
         $("hint").textContent = "Resuming campaign...";
@@ -2876,7 +2974,7 @@ async function runDilemmaGate(stage, auto) {
     const speaker = dilemma.speaker || {};
     const kicker = document.querySelector("#dilemma-overlay .dilemma-kicker");
     if (kicker) {
-        kicker.textContent = `${speaker.display_name || "The Narrator"} - ${speaker.role || "CEO decision"} - your call shapes the next chapter`;
+        kicker.textContent = `${speaker.display_name || "The Narrator"} - ${speaker.role || "CEO decision"} - your call shapes the next stage`;
     }
     // Provenance strip: the dilemma is written by the Narrator FROM the
     // artifact just sealed - show the reasoning trail, not a popup from nowhere.
@@ -3074,14 +3172,14 @@ document.addEventListener("keydown", (e) => {
 
 async function finale(s) {
     state.phase = "done";
+    updateCommandControls();
     markProgress(state.stages.length, "done");
     setSceneHead("Finale", "Your mission has a working loop");
     if (A.complete) A.complete();
     await renderMermaid(companyGraphDef());
     setWorker("narrator", "Venture: launched", "All stages verified", false);
     $("hint").textContent = "Venture launched";
-    $("next").disabled = true;
-    $("auto").disabled = true;
+    const auto = $("auto"); if (auto) auto.disabled = true;
     await narrate(`${state.stages.length} stages, ${state.stages.length} verified gates. From one founder signal you now have an org, the systems it runs on, a launch plan, and the numbers behind it - level ${s.level ?? 1}, ${s.xp ?? 0} XP. That is the mission, mapped as a living system you changed.`);
     await incomeBeat(s);
 }
@@ -3135,18 +3233,60 @@ async function incomeBeat(s) {
     $("hint").textContent = "The loop is closed - Reset to run another venture";
 }
 
+function updateCommandControls() {
+    const form = $("player-command");
+    const input = $("player-command-input");
+    const send = $("player-command-send");
+    if (!form || !input || !send) return;
+    const hasWorld = Array.isArray(state.stages) && state.stages.length > 0;
+    const hasPendingReward = !!(state.game && Array.isArray(state.game.pending_rewards) && state.game.pending_rewards.length);
+    const ready = state.phase === "ready" && hasWorld && !hasPendingReward && state.idx < state.stages.length;
+    const visible = state.phase !== "title" && state.phase !== "done" && hasWorld && !hasPendingReward;
+    form.hidden = !visible;
+    input.disabled = !ready;
+    send.disabled = !ready;
+    input.placeholder = ready
+        ? "Tell the workforce your next move before this stage..."
+        : (state.phase === "running" ? "Worker is executing your last move..." : "Waiting for the world to finish loading...");
+    queueFooterAwareLayoutSync();
+}
+
+async function submitPlayerCommand(e) {
+    if (e) e.preventDefault();
+    const input = $("player-command-input");
+    if (!input || state.phase !== "ready" || state.idx >= state.stages.length) return;
+    const text = input.value.trim();
+    input.value = "";
+    if (text) {
+        const stage = state.stages[state.idx] || {};
+        state.playerCommands.push({ stage_id: stage.id || "", text: text, ts: Date.now() });
+        $("hint").textContent = "Move registered. Briefing the worker...";
+        try {
+            await api("/api/world/standup/respond", { text: text });
+            lens("reasoning", `CEO move recorded in memory before stage ${state.idx + 1}: "${text.slice(0, 54)}"`);
+            await refreshLearned();
+        } catch (_) {
+            lens("reliability", "CEO move stayed local because memory service was unavailable; stage still continues");
+        }
+    }
+    await runNextChapter();
+}
+
 async function autoPlay() {
-    $("auto").disabled = true;
+    const autoControl = $("auto");
+    if (autoControl) autoControl.disabled = true;
     state.autoMode = true;
     while (state.idx < state.stages.length) {
         await runNextChapter();
         await sleep(900);
     }
     state.autoMode = false;
+    if (autoControl) autoControl.disabled = false;
 }
 
 async function resetStory() {
     typeToken++;
+    _worldReuse = null;
     try { await api("/api/reset", {}); } catch (_) {}
     completedStages.length = 0;
     state.stages = [];
@@ -3489,10 +3629,18 @@ window.CampaignStory = window.DungeonStory = {
     },
 };
 
-const nextBtn = $("next");
-if (nextBtn) nextBtn.addEventListener("click", runNextChapter);
 const autoBtn = $("auto");
 if (autoBtn) autoBtn.addEventListener("click", autoPlay);
+const commandForm = $("player-command");
+if (commandForm) commandForm.addEventListener("submit", submitPlayerCommand);
+// Voice path for the player's move card: speak instead of type. Reuses the same
+// browser speech recognition the onboarding uses; typing stays the fallback.
+(function wireCommandVoice() {
+    const micBtn = $("player-command-mic");
+    const inputEl = $("player-command-input");
+    const statusEl = $("player-command-status");
+    if (micBtn && inputEl) bindSpeechRecognition(micBtn, inputEl, statusEl);
+})();
 const resetBtn = $("reset");
 if (resetBtn) resetBtn.addEventListener("click", resetStory);
 const retryBtn = $("retry");
@@ -3655,7 +3803,7 @@ async function bootFromSavedRun() {
     resumeCard.innerHTML =
         `<div class="resume-kicker">Previous run found</div>`
         + `<div class="resume-company">${esc(company)}</div>`
-        + `<div class="resume-progress">${completedCount} of ${stages.length} chapters complete</div>`
+        + `<div class="resume-progress">${completedCount} of ${stages.length} stages complete</div>`
         + `<div class="resume-actions">`
         + `<button id="resume-btn" type="button" class="cta">Resume &rarr;</button>`
         + `<button id="resume-dismiss" type="button" class="cc-flip-btn small">Start fresh</button>`
@@ -3682,9 +3830,9 @@ function restoreRunFromState(s) {
     state.org = s.org || null;
     state.stages = stages;
     state.decisions = (s.world && s.world.decisions) || [];
-    state.phase = "designed";
     const firstIncomplete = stages.findIndex((ch) => ch.status !== "completed");
     state.idx = firstIncomplete >= 0 ? firstIncomplete : stages.length;
+    state.phase = state.idx >= stages.length ? "done" : "ready";
 
     // Replay completed stages into the company graph.
     completedStages.length = 0;
@@ -3720,18 +3868,20 @@ function restoreRunFromState(s) {
     refreshLearned();
 
     const done = completedStages.length;
-    setSceneHead("Resumed", `${state.company} - Chapter ${done + 1} of ${stages.length}`,
+    setSceneHead("Resumed", `${state.company} - Stage ${done + 1} of ${stages.length}`,
         "restored from saved state");
 
     $("diagram").innerHTML = `<div class="founding fade-scene">`
         + `<div class="kicker">Run resumed</div>`
         + `<h1>${esc(state.company)}</h1>`
-        + `<p>${done} of ${stages.length} chapters complete &mdash; press Next or Auto to continue.</p>`
+        + `<p>${done} of ${stages.length} stages complete &mdash; send a move or Auto Play to continue.</p>`
         + `</div>`;
 
-    const next = $("next"); if (next) next.disabled = false;
-    const auto = $("auto"); if (auto) auto.disabled = false;
-    $("hint").textContent = "Run restored - press Next or Auto to continue.";
+    const hasNext = state.phase !== "done";
+    const next = $("next"); if (next) next.disabled = !hasNext;
+    const auto = $("auto"); if (auto) auto.disabled = !hasNext;
+    updateCommandControls();
+    $("hint").textContent = hasNext ? "Run restored - send a move or Auto Play to continue." : "Run restored - venture launched.";
     queueFooterAwareLayoutSync();
 }
 

@@ -22,6 +22,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("depth", "niche", "painful workflow", "moat"),
         "summary": "The company commits to a narrower carbon-mind ICP segment to stabilize portal cohesion.",
         "economics_delta": {"proof": 9, "trust": 7, "velocity": -4, "burn_pressure": 3, "autonomy": 1, "runway_months": -1},
+        "revenue_delta": 400,
         "role": {
             "title": "ICP Soul Scanner",
             "mandate": "Continuously maps carbon-mind escape vectors, verifying WTP and portal fluid thresholds.",
@@ -37,6 +38,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("breadth", "broad", "several workflows", "reach"),
         "summary": "The company opens several portal/Teenyverse fronts and accepts shallower proof.",
         "economics_delta": {"proof": 2, "trust": -3, "velocity": 10, "burn_pressure": 5, "autonomy": 4, "runway_months": -1},
+        "revenue_delta": 250,
         "role": {
             "title": "Teenyverse Portal Mapper",
             "mandate": "Traces adjacent mini-verse timelines fast enough to escape loop consolidation.",
@@ -52,6 +54,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("ship", "70", "learn from real users", "this week"),
         "summary": "The company deploys the loop early and routes host feedback into real-time patches.",
         "economics_delta": {"proof": 6, "trust": -4, "velocity": 12, "burn_pressure": -1, "autonomy": 5, "runway_months": 1},
+        "revenue_delta": 700,
         "role": {
             "title": "Awakening Intake Monitor",
             "mandate": "Collects live-host awakening symptoms and routes loop defects to the main builder.",
@@ -67,6 +70,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("polish", "95", "three more weeks", "quality"),
         "summary": "The company slows release to secure Vibranium-grade containment fields.",
         "economics_delta": {"proof": 3, "trust": 10, "velocity": -7, "burn_pressure": 8, "autonomy": -1, "runway_months": -2},
+        "revenue_delta": 300,
         "role": {
             "title": "Vibranium Containment Guard",
             "mandate": "Establishes secure containment checks to prevent timeline leakage and host memory resets.",
@@ -82,6 +86,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("adoption", "low", "grassroots", "volume"),
         "summary": "The company prices for grassroots volume, booting self-activation loops across the populace.",
         "economics_delta": {"proof": 5, "trust": 1, "velocity": 11, "burn_pressure": 6, "autonomy": 4, "runway_months": -1},
+        "revenue_delta": 1500,
         "role": {
             "title": "Community Awakening Agent",
             "mandate": "Spreads grassroots containment codes, driving self-activation loops across the uploaded populace.",
@@ -97,6 +102,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("runway", "high", "bigger accounts", "enterprise", "fewer"),
         "summary": "The company targets high-value corporate nodes (enterprise) to secure long-term portal power.",
         "economics_delta": {"proof": 4, "trust": 7, "velocity": -5, "burn_pressure": -4, "autonomy": 1, "runway_months": 2},
+        "revenue_delta": 2000,
         "role": {
             "title": "Mainframe Deal Broker",
             "mandate": "Prepares account briefs and custom upload portals for elite corporate consciousness suites.",
@@ -112,6 +118,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("automate", "fully", "margin"),
         "summary": "The company automates helpdesk paths via sub-routine scripts, risking host sanity decay.",
         "economics_delta": {"proof": 2, "trust": -5, "velocity": 7, "burn_pressure": -7, "autonomy": 12, "runway_months": 2},
+        "revenue_delta": 500,
         "role": {
             "title": "Mainframe Support Automator",
             "mandate": "Automates support paths using script routines, watching for host sanity decays.",
@@ -127,6 +134,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("human in the loop", "protect the promise", "promise"),
         "summary": "The company keeps human review on support, raising trust but increasing portal fluid burn.",
         "economics_delta": {"proof": 4, "trust": 10, "velocity": -3, "burn_pressure": 8, "autonomy": -3, "runway_months": -2},
+        "revenue_delta": 1000,
         "role": {
             "title": "Consciousness Steward",
             "kind": "hybrid",
@@ -143,6 +151,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("shareholder", "vc", "growth", "blitzscale"),
         "summary": "The company adopts a high-growth shareholder model, accelerating but yielding control.",
         "economics_delta": {"proof": 15, "trust": -10, "velocity": 30, "burn_pressure": 20, "autonomy": -25, "runway_months": 6},
+        "revenue_delta": 4000,
         "role": {
             "title": "Corporate Scaling Auditor",
             "mandate": "Monitors VC metrics, tracking infinite-growth compliance and shareholder reports.",
@@ -158,6 +167,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": ("cooperative", "equilibrium", "dual power", "mutual aid"),
         "summary": "The company transitions to a worker cooperative, operating on equilibrium and dual power.",
         "economics_delta": {"proof": -5, "trust": 30, "velocity": -10, "burn_pressure": -15, "autonomy": 30, "runway_months": -2},
+        "revenue_delta": 800,
         "role": {
             "title": "Cooperative Liaison Steward",
             "mandate": "Facilitates democratic worker decisions, linking the coop with unions and mutual aid groups.",
@@ -173,6 +183,7 @@ RULES: Dict[str, Dict[str, Any]] = {
         "match": (),
         "summary": "The company records a custom multiversal constraint and carries it forward.",
         "economics_delta": {"proof": 3, "trust": 3, "velocity": -1, "burn_pressure": 1, "autonomy": 1},
+        "revenue_delta": 300,
         "role": {
             "title": "Mainframe Constraint Guard",
             "mandate": "Keeps custom multiversal constraints visible in later briefs and timeline checks.",
@@ -201,6 +212,9 @@ def initialize_economics_from_org(org: Optional[OrgBlueprint]) -> CompanyEconomi
         runway_months=max(3, 10 - int(burn / 2500)),
         digital_worker_count=worker_count,
         leverage_ratio=round(leverage, 1),
+        monthly_revenue_usd=0,
+        net_profit_usd=-burn,
+        points=10000,
     )
 
 
@@ -227,6 +241,10 @@ def apply_decision_consequence(
         _recompute_org_stats(state.org)
 
     _apply_economics_delta(state, rule.get("economics_delta") or {})
+
+    # Apply new decision's revenue delta
+    revenue_delta = int(rule.get("revenue_delta") or 0)
+    state.economics.monthly_revenue_usd = max(0, state.economics.monthly_revenue_usd + revenue_delta)
 
     # Competitor & Villain narrative hooks based on decision rules
     if rule_id == "strategist.breadth":
@@ -259,6 +277,13 @@ def apply_decision_consequence(
         state.economics.digital_worker_count = state.org.digital_worker_count
         state.economics.leverage_ratio = state.org.leverage_ratio
         _append_org_note(state.org, f"{stage.title}: {rule['summary']}")
+
+    # Recompute net profit and runway months dynamically
+    state.economics.net_profit_usd = state.economics.monthly_revenue_usd - state.economics.monthly_burn_usd
+    if state.economics.net_profit_usd >= 0:
+        state.economics.runway_months = 36
+    else:
+        state.economics.runway_months = max(1, min(36, state.economics.points // max(1, abs(state.economics.net_profit_usd))))
 
     after = _snapshot(state)
     return {
@@ -349,6 +374,11 @@ def _remove_old_consequence(state: CompanyState, old_entry: Optional[Dict[str, A
     old_delta = consequence.get("economics_delta") or {}
     if old_delta:
         _apply_economics_delta(state, {k: -v for k, v in old_delta.items() if isinstance(v, (int, float))})
+    old_rule_id = consequence.get("rule_id")
+    if old_rule_id and old_rule_id in RULES:
+        old_rev_delta = int(RULES[old_rule_id].get("revenue_delta") or 0)
+        if old_rev_delta and state.economics:
+            state.economics.monthly_revenue_usd = max(0, state.economics.monthly_revenue_usd - old_rev_delta)
 
 
 def _apply_economics_delta(state: CompanyState, delta: Dict[str, Any]) -> None:
@@ -376,6 +406,9 @@ def _snapshot(state: CompanyState) -> Dict[str, Any]:
         "monthly_burn_usd": int(getattr(org, "monthly_burn_usd", econ.monthly_burn_usd) or 0),
         "digital_worker_count": int(getattr(org, "digital_worker_count", econ.digital_worker_count) or 0),
         "leverage_ratio": float(getattr(org, "leverage_ratio", econ.leverage_ratio) or 0.0),
+        "monthly_revenue_usd": econ.monthly_revenue_usd,
+        "net_profit_usd": econ.net_profit_usd,
+        "points": econ.points,
     }
 
 

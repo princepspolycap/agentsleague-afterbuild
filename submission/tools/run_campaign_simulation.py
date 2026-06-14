@@ -112,6 +112,32 @@ def run_campaign_simulation(pitch: str, url: str | None = None) -> None:
         stage.validation_score = score
         stage.status = "completed" if score >= 80 else "needs-review"
         
+        if state.economics is None:
+            from state.consequences import initialize_economics_from_org
+            state.economics = initialize_economics_from_org(state.org)
+
+        if score >= 80:
+            base_rev = {
+                "strategist": 500,
+                "designer": 1200,
+                "marketer": 2500,
+                "ops": 3500
+            }.get(stage.owner_role, 1000)
+            rev_gain = int(base_rev * (score / 100))
+            state.economics.monthly_revenue_usd += rev_gain
+            gate_bonus = score * 10
+        else:
+            gate_bonus = 0
+
+        net_profit = state.economics.monthly_revenue_usd - state.economics.monthly_burn_usd
+        state.economics.points = max(0, state.economics.points + net_profit + gate_bonus)
+        state.economics.net_profit_usd = net_profit
+        
+        if net_profit >= 0:
+            state.economics.runway_months = 36
+        else:
+            state.economics.runway_months = max(1, min(36, state.economics.points // max(1, abs(net_profit))))
+
         # Award XP
         xp_earned = 10 + (score // 10)
         state.xp += xp_earned
@@ -189,7 +215,10 @@ def run_campaign_simulation(pitch: str, url: str | None = None) -> None:
     print(f"  * Trust Score:      {state.economics.trust}/100")
     print(f"  * Velocity Score:   {state.economics.velocity}/100")
     print(f"  * Burn Pressure:    {state.economics.burn_pressure}/100")
+    print(f"  * Monthly Revenue:  ${state.economics.monthly_revenue_usd:,}/mo")
     print(f"  * Monthly Burn:     ${state.economics.monthly_burn_usd:,}/mo")
+    print(f"  * Net Profit:       ${state.economics.net_profit_usd:,}/mo")
+    print(f"  * Treasury Points:  {state.economics.points}")
     print(f"  * Runway Months:    {state.economics.runway_months} months")
     print(f"  * Digital Workers:  {state.economics.digital_worker_count}")
     print("=" * 70)
