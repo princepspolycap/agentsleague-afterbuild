@@ -2,8 +2,11 @@ import os
 import sys
 import json
 import time
+import uuid
 import yaml
 import random
+import hashlib
+import threading
 import urllib.request
 import urllib.error
 from html import escape as html_escape
@@ -29,33 +32,43 @@ from state.schema import (
     AntagonistState,
     CharacterRuntimeState,
     ChoiceRecord,
+    WorldCouncilDeliberation,
 )
 from state.consequences import (
     apply_decision_consequence,
     apply_stage_outcome,
+    fire_worker,
+    hire_worker,
+    hireable_options,
     initialize_economics_from_org,
     preview_decision_consequence,
+    principle_for_rule,
     rule_ids_for_role,
     select_rule_id,
     tick_economy,
     world_snapshot,
 )
-from state.api_contract import state_response, step_response, stage_response, reset_response
+from state.api_contract import refresh_venture_model, state_response, step_response, stage_response, reset_response
 from state.game_state import (
+    advance_route_after_stage,
     choose_next_room,
     claim_reward_card,
     end_player_turn,
+    ensure_active_run,
     initialize_game_run,
     play_card,
+    reconcile_run_status,
     record_choice_game_state,
     record_stage_encounter,
     start_player_turn,
+    sync_party_from_org,
     _invocation_for_stage as latest_invocation_for_stage,
 )
 from state.knowledge_records import profile_from_payload, record_world_day, refresh_session_knowledge
 from agents.foundry_agents import MasterNarrator, StrategistAgent, DesignerAgent, MarketerAgent, generate_lore
 from agents.model_config import model_for, is_live, runtime_mode, get_foundry_client, create_chat_completion
-from agents.world_designer import design_world, design_world_named, adapt_remaining_stages, derive_run_name, PLACEHOLDER_RUN_NAMES
+from agents.world_designer import design_world, design_world_named, adapt_remaining_stages, derive_run_name, worker_report_clause, PLACEHOLDER_RUN_NAMES
+from agents.world_council import convene_world_council
 from agents.worker_factory import run_world, execute_stage, bind_world_to_org
 from agents.org_designer import design_org
 from agents.retrieval import retrieve, brief_from_url
@@ -65,7 +78,7 @@ from agents.antagonist_generator import generate_antagonist, analyze_archetype_g
 from tools.code_interpreter_wrappers import validate_positioning, validate_landing_page, validate_marketing_email
 from tools.toolbox import tools_list, tools_call, tools_for_role
 from tools.export_org_blueprint import org_to_workforce_bundle
-from tools.dilemma_generator import generate_dilemma as generate_story_dilemma, suggest_dilemma_for_stage
+from tools.dilemma_generator import build_stage_dilemma
 
 app = FastAPI(
     title="World Improvement Agent Game - Server",
@@ -88,6 +101,12 @@ app.add_middleware(
 STATE_FILE = os.environ.get("CAMPAIGN_STATE_FILE") or os.environ.get("DUNGEON_STATE_FILE") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "state.json")
 store = StateStore(filepath=STATE_FILE)
+
+
+def _state_dump(state: CompanyState) -> dict:
+    """Return state JSON with derived display contracts refreshed."""
+    refresh_venture_model(state)
+    return state.model_dump()
 
 class PitchRequest(BaseModel):
     pitch: str
@@ -114,6 +133,35 @@ def parse_founder(payload: Any) -> Optional[FounderState]:
     )
 
 
+def ensure_run_id(state: CompanyState) -> str:
+    """Assign a stable run_id once a run becomes real, so it persists as a slot.
+
+    Derived from the company name plus a short random suffix for a readable,
+    collision-safe slot filename. Idempotent: an existing run_id is never
+    reused or overwritten.
+    """
+    existing = (getattr(state, "run_id", "") or "").strip()
+    if existing:
+        if state.game and state.game.run_id != existing:
+            state.game.run_id = existing
+        return existing
+    base = "".join(c.lower() if c.isalnum() else "-" for c in (state.name or "run")).strip("-")
+    base = "-".join(p for p in base.split("-") if p)[:32] or "run"
+    state.run_id = f"{base}-{uuid.uuid4().hex[:6]}"
+    if state.game and (not state.game.run_id or state.game.run_id == "run_default" or state.game.run_id.startswith("run_")):
+        state.game.run_id = state.run_id
+    return state.run_id
+
+
+def remember_for_run(state: CompanyState, kind: str, text: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Write agent memory scoped to the active save slot."""
+    scoped_payload = dict(payload or {})
+    run_id = ensure_run_id(state)
+    if run_id and "run_id" not in scoped_payload:
+        scoped_payload["run_id"] = run_id
+    return remember(kind, text, scoped_payload)
+
+
 def forge_antagonist(state: CompanyState, *, mission_brief: str = "", target_customer: str = "") -> None:
     """Forge the competitive foil (villain) from the founder's archetype.
 
@@ -128,6 +176,49 @@ def forge_antagonist(state: CompanyState, *, mission_brief: str = "", target_cus
         mission_brief=mission_brief or state.pitch or "",
         target_customer=target_customer,
     )
+    client = get_foundry_client()
+    deployment = model_for("antagonist")
+    if client and deployment and is_live():
+        try:
+            resp = create_chat_completion(
+                deployment,
+                [
+                    {"role": "system", "content": (
+                        "You are the Antagonist Director for a business-building strategy game. "
+                        "Create a memorable rival that pressure-tests the founder's mission. "
+                        "The rival should feel like a company/system with a concrete business model, "
+                        "not a generic villain. Return ONLY JSON with keys: name, threat_type, "
+                        "threat_description, signature_tactic, strengths (array), strategy, motivation, "
+                        "organization_name, organization_model, organization_roles (array), active_operation."
+                    )},
+                    {"role": "user", "content": (
+                        f"Founder archetype: {founder.archetype}\n"
+                        f"Founder skill: {founder.skill}\n"
+                        f"Mission brief: {(mission_brief or state.pitch or '')[:1200]}\n"
+                        f"Target customer: {target_customer or 'unknown'}\n"
+                        f"Deterministic fallback rival: {antagonist.model_dump()}"
+                    )},
+                ],
+                max_completion_tokens=1800,
+                response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content or ""
+            parsed = json.loads(content[content.index("{"):content.rindex("}") + 1])
+            patch = {k: v for k, v in parsed.items() if k in {
+                "name", "threat_type", "threat_description", "signature_tactic",
+                "strengths", "strategy", "motivation", "organization_name",
+                "organization_model", "organization_roles", "active_operation"
+            }}
+            if patch.get("name") and patch.get("signature_tactic"):
+                base = antagonist.model_dump()
+                base.update(patch)
+                antagonist = AntagonistState(**base)
+        except Exception as exc:
+            store.log_event(
+                "ANTAGONIST_LIVE_ERROR", "antagonist",
+                f"Live antagonist generation failed; deterministic rival retained: {type(exc).__name__}",
+                {"deployment": deployment},
+            )
     state.antagonist = AntagonistState(**antagonist.model_dump())
     archetype_gap = analyze_archetype_gap(founder.archetype)
     store.log_event(
@@ -165,14 +256,66 @@ def _advance_clock(state) -> dict:
                 "days_elapsed": round(float(getattr(state.economics, "days_elapsed", 0) or 0), 2),
             },
         )
+    # Forced contraction: the clock laid off a worker because the company can't
+    # sustain its burn. Persist it as a replay event AND a procedural memory so
+    # the workforce "learns" the pressure (the Foundry memory/IQ layer), and the
+    # next worker brief carries it - tying money pressure into the reasoning loop.
+    contraction = result.get("contraction") or {}
+    if contraction.get("laid_off_title"):
+        sync_party_from_org(state)
+        store.log_event(
+            "WORKFORCE_CONTRACTED", "system",
+            f"Laid off {contraction['laid_off_title']} - unprofitable. "
+            f"Burn ${contraction['burn_before_usd']:,}/mo -> ${contraction['burn_after_usd']:,}/mo, "
+            f"{contraction['worker_count_after']} workers, {contraction['runway_days']}d runway.",
+            contraction,
+        )
+        mem_entry = remember_for_run(
+            state,
+            "procedural",
+            f"Had to lay off {contraction['laid_off_title']} on day {contraction['day']} "
+            f"because the company was unprofitable (burn exceeded revenue). Burn fell to "
+            f"${contraction['burn_after_usd']:,}/mo. The workforce must win revenue faster than it spends.",
+            {"event": "workforce_contraction", "laid_off": contraction["laid_off_id"]},
+        )
+        if mem_entry:
+            store.log_event(
+                "MEMORY_WRITTEN", "memory",
+                f"Procedural memory stored ({mem_entry.get('origin', 'local-memory')}): workforce contraction",
+                {"kind": "procedural", "origin": mem_entry.get("origin", "")},
+            )
     store.save()
     return result
+
+
+def _reconcile_loaded_game(state) -> bool:
+    """Repair lifecycle drift in older saved runs before returning state."""
+    if not state or not state.game:
+        return False
+    before = (
+        state.stage,
+        state.game.run_status,
+        state.game.victory_reason,
+        state.world.status if state.world else "",
+    )
+    reconcile_run_status(state)
+    after = (
+        state.stage,
+        state.game.run_status,
+        state.game.victory_reason,
+        state.world.status if state.world else "",
+    )
+    if before != after:
+        store.save()
+        return True
+    return False
 
 
 @app.get("/api/state")
 def get_state():
     """Gets the current company state from disk."""
     state = store.load()
+    _reconcile_loaded_game(state)
     if state and state.economics and state.org:
         _advance_clock(state)
     return state_response(state)
@@ -210,6 +353,7 @@ def get_game_state():
     state = store.load()
     if not state:
         raise HTTPException(status_code=404, detail="No active game session.")
+    _reconcile_loaded_game(state)
     if state.economics and state.org:
         _advance_clock(state)
     return {
@@ -230,12 +374,13 @@ def start_game_turn(payload: StartTurnRequest):
     state = store.load()
     if not state:
         raise HTTPException(status_code=400, detail="No active game session.")
+    _reconcile_loaded_game(state)
     try:
         move = start_player_turn(state, stage_id=payload.stage_id or "")
         refresh_session_knowledge(state)
         store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
         store.save()
-        return {"move": move.model_dump(), "state": state.model_dump()}
+        return {"move": move.model_dump(), "state": _state_dump(state)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -252,6 +397,7 @@ def play_game_card(payload: PlayCardRequest):
     state = store.load()
     if not state:
         raise HTTPException(status_code=400, detail="No active game session.")
+    _reconcile_loaded_game(state)
     try:
         move = play_card(
             state,
@@ -262,7 +408,7 @@ def play_game_card(payload: PlayCardRequest):
         refresh_session_knowledge(state)
         store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
         store.save()
-        return {"move": move.model_dump(), "state": state.model_dump()}
+        return {"move": move.model_dump(), "state": _state_dump(state)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -277,12 +423,13 @@ def claim_game_reward(payload: ClaimRewardRequest):
     state = store.load()
     if not state:
         raise HTTPException(status_code=400, detail="No active game session.")
+    _reconcile_loaded_game(state)
     try:
         move = claim_reward_card(state, payload.card_id)
         refresh_session_knowledge(state)
         store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
         store.save()
-        return {"move": move.model_dump(), "state": state.model_dump()}
+        return {"move": move.model_dump(), "state": _state_dump(state)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -293,12 +440,13 @@ def end_game_turn(payload: StartTurnRequest):
     state = store.load()
     if not state:
         raise HTTPException(status_code=400, detail="No active game session.")
+    _reconcile_loaded_game(state)
     try:
         move = end_player_turn(state, stage_id=payload.stage_id or "")
         refresh_session_knowledge(state)
         store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
         store.save()
-        return {"move": move.model_dump(), "state": state.model_dump()}
+        return {"move": move.model_dump(), "state": _state_dump(state)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -313,12 +461,13 @@ def choose_game_room(payload: ChooseRoomRequest):
     state = store.load()
     if not state:
         raise HTTPException(status_code=400, detail="No active game session.")
+    _reconcile_loaded_game(state)
     try:
         move = choose_next_room(state, payload.room_id)
         refresh_session_knowledge(state)
         store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
         store.save()
-        return {"move": move.model_dump(), "state": state.model_dump()}
+        return {"move": move.model_dump(), "state": _state_dump(state)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -332,7 +481,9 @@ def get_memory():
     stage summaries. Backed by the Foundry Agent Service memory store when
     FOUNDRY_MEMORY_STORE is configured, local ledger otherwise.
     """
-    return memory_snapshot()
+    state = store.load()
+    run_id = (getattr(state, "run_id", "") or "") if state else ""
+    return memory_snapshot(run_id=run_id or None)
 
 
 @app.get("/api/mode")
@@ -377,6 +528,9 @@ if TTS_DEPLOYMENT and TTS_DEPLOYMENT not in TTS_DEPLOYMENTS:
 TTS_API_KEY = os.getenv("TTS_API_KEY", "").strip()
 TTS_VOICE = os.getenv("TTS_VOICE", "onyx").strip()
 TTS_API_VERSION = os.getenv("TTS_API_VERSION", "2025-03-01-preview").strip()
+TTS_CACHE_SECONDS = max(0, int(float(os.getenv("TTS_CACHE_SECONDS", "3600") or 3600)))
+_TTS_CACHE: Dict[str, Tuple[float, bytes, str]] = {}
+_TTS_CACHE_LOCK = threading.RLock()
 
 CORE_VOICE_PROFILES = [
     {"id": "onyx", "label": "Onyx", "locale": "en-US", "tone": "deep, warm narrator", "stack": "core_openai"},
@@ -398,6 +552,35 @@ PLANNED_AZURE_SPEECH_PROFILES = [
 
 def tts_available() -> bool:
     return bool(TTS_ENDPOINT and TTS_API_KEY and TTS_DEPLOYMENTS)
+
+
+def _tts_cache_key(text: str, voice: str, instructions: str) -> str:
+    raw = json.dumps({"text": text, "voice": voice, "instructions": instructions}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _tts_cache_get(key: str) -> Optional[Tuple[bytes, str]]:
+    if not TTS_CACHE_SECONDS:
+        return None
+    with _TTS_CACHE_LOCK:
+        item = _TTS_CACHE.get(key)
+        if not item:
+            return None
+        expires, audio, deployment = item
+        if expires < time.time():
+            _TTS_CACHE.pop(key, None)
+            return None
+        return audio, deployment
+
+
+def _tts_cache_put(key: str, audio: bytes, deployment: str) -> None:
+    if not TTS_CACHE_SECONDS:
+        return
+    with _TTS_CACHE_LOCK:
+        if len(_TTS_CACHE) > 64:
+            oldest = min(_TTS_CACHE, key=lambda k: _TTS_CACHE[k][0])
+            _TTS_CACHE.pop(oldest, None)
+        _TTS_CACHE[key] = (time.time() + TTS_CACHE_SECONDS, audio, deployment)
 
 
 def azure_speech_available() -> bool:
@@ -466,6 +649,21 @@ def tts(payload: TTSRequest):
 
     # Keep latency sane: cap very long inputs (beats are short anyway).
     text = text[:1200]
+    voice = payload.voice or TTS_VOICE
+    instructions = (payload.instructions or "").strip()[:600]
+    cache_key = _tts_cache_key(text, voice, instructions)
+    cached = _tts_cache_get(cache_key)
+    if cached:
+        audio, deployment = cached
+        return Response(
+            content=audio,
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": f"private, max-age={TTS_CACHE_SECONDS}",
+                "X-TTS-Deployment": deployment,
+                "X-TTS-Cache": "hit",
+            },
+        )
     last_error = ""
     for deployment in TTS_DEPLOYMENTS:
         url = (f"{TTS_ENDPOINT}/openai/deployments/{deployment}"
@@ -473,12 +671,12 @@ def tts(payload: TTSRequest):
         body_data = {
             "model": deployment,
             "input": text,
-            "voice": (payload.voice or TTS_VOICE),
+            "voice": voice,
         }
         # Delivery direction (tone, pacing) - supported by current Azure
         # OpenAI-style TTS deployments and ignored by incompatible fallbacks.
-        if payload.instructions:
-            body_data["instructions"] = payload.instructions.strip()[:600]
+        if instructions:
+            body_data["instructions"] = instructions
         body = json.dumps(body_data).encode("utf-8")
         req = urllib.request.Request(
             url, data=body, method="POST",
@@ -487,12 +685,14 @@ def tts(payload: TTSRequest):
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 audio = resp.read()
+            _tts_cache_put(cache_key, audio, deployment)
             return Response(
                 content=audio,
                 media_type="audio/mpeg",
                 headers={
-                    "Cache-Control": "no-store",
+                    "Cache-Control": f"private, max-age={TTS_CACHE_SECONDS}" if TTS_CACHE_SECONDS else "no-store",
                     "X-TTS-Deployment": deployment,
+                    "X-TTS-Cache": "miss",
                 },
             )
         except Exception as exc:  # noqa: BLE001 - try next voice deployment
@@ -893,7 +1093,7 @@ def _stream_step_reasoning(state: CompanyState, quest: QuestState, step: QuestSt
     store.save()
 
     yield _sse("done", {
-        "state": state.model_dump(),
+        "state": _state_dump(state),
         "current_step": step.model_dump(),
     })
 
@@ -1185,7 +1385,8 @@ def analyze_founder(payload: AnalyzeRequest):
         )
         # Agent memory: what the workforce now knows about the founder/mission it
         # serves - the mapped profile persists into every later worker brief.
-        mem_entry = remember(
+        mem_entry = remember_for_run(
+            state,
             "user_profile",
             f"Profile mapped from {profile['host']}: {profile['company_summary']} "
             f"Capability: {profile.get('what_they_sell', '')[:120]}. "
@@ -1234,6 +1435,7 @@ def analyze_founder(payload: AnalyzeRequest):
         },
     )
 
+    ensure_run_id(state)
     initialize_game_run(state, mode=runtime_mode())
     refresh_session_knowledge(state)
     store.log_event(
@@ -1243,7 +1445,7 @@ def analyze_founder(payload: AnalyzeRequest):
     )
     store.save()
     return {
-        "state": state.model_dump(),
+        "state": _state_dump(state),
         "org": state.org.model_dump(),
         "profile": profile,
         "antagonist": state.antagonist.model_dump() if state.antagonist else None,
@@ -1280,6 +1482,102 @@ def export_org():
     )
 
 
+@app.get("/api/org/options")
+def org_hire_options():
+    """The hire menu: the seats the CEO can add mid-run and their monthly cost.
+
+    Cost math lives in consequences.hireable_options (single source), so the UI
+    renders the menu without re-deriving any price.
+    """
+    return {"options": hireable_options()}
+
+
+class HireRequest(BaseModel):
+    role_key: str
+
+
+@app.post("/api/org/hire")
+def org_hire(payload: HireRequest):
+    """CEO hires a digital worker: burn rises now, capacity (and for GTM seats,
+    market share) grows. Persists the org change, logs it, and writes a
+    procedural memory so later worker briefs reason against the new workforce.
+    """
+    state = store.load()
+    if not state:
+        raise HTTPException(status_code=400, detail="No active session.")
+    try:
+        receipt = hire_worker(state, payload.role_key)
+        sync_party_from_org(state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    store.log_event(
+        "WORKFORCE_HIRED", "founder",
+        f"Hired {receipt['hired_title']} - burn ${receipt['burn_before_usd']:,}/mo -> "
+        f"${receipt['burn_after_usd']:,}/mo, {receipt['worker_count_after']} workers, "
+        f"{receipt['runway_days']}d runway.",
+        receipt,
+    )
+    mem_entry = remember_for_run(
+        state,
+        "procedural",
+        f"Founder hired a {receipt['hired_title']} to grow the company. Burn rose to "
+        f"${receipt['burn_after_usd']:,}/mo for new capacity - this seat must earn it back "
+        f"by winning and keeping customers.",
+        {"event": "workforce_hire", "hired": receipt["hired_id"]},
+    )
+    if mem_entry:
+        store.log_event(
+            "MEMORY_WRITTEN", "memory",
+            f"Procedural memory stored ({mem_entry.get('origin', 'local-memory')}): workforce hire",
+            {"kind": "procedural", "origin": mem_entry.get("origin", "")},
+        )
+    refresh_session_knowledge(state)
+    store.save()
+    return {"receipt": receipt, "state": _state_dump(state)}
+
+
+class FireRequest(BaseModel):
+    role_id: str
+
+
+@app.post("/api/org/fire")
+def org_fire(payload: FireRequest):
+    """CEO lays off a digital worker by choice: burn falls, runway extends, and
+    the worker's pending stages reassign. Persists, logs, and remembers it.
+    """
+    state = store.load()
+    if not state:
+        raise HTTPException(status_code=400, detail="No active session.")
+    try:
+        receipt = fire_worker(state, payload.role_id)
+        sync_party_from_org(state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    store.log_event(
+        "WORKFORCE_CONTRACTED", "founder",
+        f"Founder laid off {receipt['laid_off_title']} - burn ${receipt['burn_before_usd']:,}/mo -> "
+        f"${receipt['burn_after_usd']:,}/mo, {receipt['worker_count_after']} workers, "
+        f"{receipt['runway_days']}d runway.",
+        receipt,
+    )
+    mem_entry = remember_for_run(
+        state,
+        "procedural",
+        f"Founder chose to lay off {receipt['laid_off_title']} to extend runway. Burn fell to "
+        f"${receipt['burn_after_usd']:,}/mo. The leaner workforce must still ship the remaining stages.",
+        {"event": "workforce_fire", "laid_off": receipt["laid_off_id"]},
+    )
+    if mem_entry:
+        store.log_event(
+            "MEMORY_WRITTEN", "memory",
+            f"Procedural memory stored ({mem_entry.get('origin', 'local-memory')}): founder layoff",
+            {"kind": "procedural", "origin": mem_entry.get("origin", "")},
+        )
+    refresh_session_knowledge(state)
+    store.save()
+    return {"receipt": receipt, "state": _state_dump(state)}
+
+
 @app.post("/api/world/design")
 def design_world_endpoint(payload: AutoplayRequest):
     """Uses the WorldDesigner to produce a full venture graph.
@@ -1306,8 +1604,15 @@ def design_world_endpoint(payload: AutoplayRequest):
     state = store.initialize_new_company(
         name=company_name, pitch=brief, description="A venture forged in QuestForge.", founder=founder
     )
+    # Continue the SAME run the analyze step started: carry its run_id forward
+    # BEFORE any memory write (remember_for_run assigns an id when missing), so
+    # the onboarding profile memory stays in scope and the save slot is the same
+    # file - not a second, orphaned slot with a fresh random suffix.
+    if prev and getattr(prev, "run_id", ""):
+        state.run_id = prev.run_id
+        state.game.run_id = prev.run_id
     # Agent memory (user profile): durable facts about this founder/company.
-    mem_entry = remember("user_profile", f"Founder is building: {company_name} - {brief[:280]}",
+    mem_entry = remember_for_run(state, "user_profile", f"Founder is building: {company_name} - {brief[:280]}",
              {"company": company_name})
     if mem_entry:
         store.log_event("MEMORY_WRITTEN", "memory",
@@ -1327,6 +1632,22 @@ def design_world_endpoint(payload: AutoplayRequest):
     else:
         state.founder_profile = profile_from_payload(
             None, source="pitch", source_ref=brief, pitch=brief, mode=runtime_mode())
+        # Cold start (world design called without a prior analyze session): there
+        # is no chartered org yet. Build one now from the pitch so the workforce,
+        # economics, and the hire/fire endpoints all have a real org to operate
+        # on - otherwise /api/org/hire fails with "No org to hire into yet."
+        cold_brief = (state.founder_profile.brief if state.founder_profile else "").strip() or brief
+        state.org = OrgBlueprint(**design_org(cold_brief, source="pitch", source_ref=brief))
+        state.economics = initialize_economics_from_org(state.org)
+        state.business_flags["org_chartered"] = True
+        store.log_event(
+            "ORG_CHARTERED", "org_designer",
+            f"Cold-start chartered a {state.org.headcount}-seat org: 1 operator + "
+            f"{state.org.digital_worker_count} digital workers.",
+            {"source": "pitch", "headcount": state.org.headcount,
+             "digital_worker_count": state.org.digital_worker_count,
+             "monthly_burn_usd": state.org.monthly_burn_usd},
+        )
         store.log_event("SESSION_START", "system", f"New world session for: {company_name}")
 
     # Ground the World Designer in the FOUNDER PROFILE, not the thin pitch/URL.
@@ -1386,6 +1707,9 @@ def design_world_endpoint(payload: AutoplayRequest):
             f"Bound {len(bindings)} stages to dynamically designed digital workers.",
             {"bindings": bindings},
         )
+    # The run is now real (world designed) - give it a stable id so it persists
+    # as its own save slot and can be resumed alongside other companies.
+    ensure_run_id(state)
     initialize_game_run(state, mode=runtime_mode())
     refresh_session_knowledge(state)
     store.log_event(
@@ -1395,53 +1719,6 @@ def design_world_endpoint(payload: AutoplayRequest):
     )
     store.save()
     return state_response(state, surface="world_graph")
-
-
-# Canned dilemmas per archetype role - the deterministic, demo-safe floor
-# (game_design.md section 5). The live path asks the narrator model instead.
-_CANNED_DILEMMAS = {
-    "strategist": {
-        "prompt": "Our escape portal path is bifurcating. Which vector do you prioritize?",
-        "options": [
-            {"id": "depth", "rule_id": "strategist.depth", "option": "ICP Scan: secure one consciousness segment end to end", "tradeoff": "stabilized loop, slower reach"},
-            {"id": "breadth", "rule_id": "strategist.breadth", "option": "Teenyverse: map adjacent mini-verse beachfronts quickly", "tradeoff": "wider escape nodes, shallower proof"},
-        ],
-    },
-    "designer": {
-        "prompt": "The mainframe prototype is at 70%. Deploy now or polish the containment field?",
-        "options": [
-            {"id": "ship", "rule_id": "designer.ship", "option": "Deploy the 70% loop and collect live host friction", "tradeoff": "host instability, faster learning"},
-            {"id": "polish", "rule_id": "designer.polish", "option": "Secure Vibranium-grade containment checking (3 weeks)", "tradeoff": "stabilized loop, higher burn"},
-        ],
-    },
-    "marketer": {
-        "prompt": "Upload pricing models are diverging. How do we charge?",
-        "options": [
-            {"id": "adoption", "rule_id": "marketer.adoption", "option": "Self-Activation: free grassroots access to boot loops", "tradeoff": "thin energy margins, support load"},
-            {"id": "runway", "rule_id": "marketer.runway", "option": "Mainframe Elite: target high-value corporate nodes", "tradeoff": "longer deal pipeline, secure runway"},
-        ],
-    },
-    "ops": {
-        "prompt": "Consciousness support queries are scaling. Automate via script?",
-        "options": [
-            {"id": "automate", "rule_id": "ops.automate", "option": "Auto-macro: automate helpdesk paths to protect margins", "tradeoff": "risk to host trust at edges"},
-            {"id": "human_loop", "rule_id": "ops.human_loop", "option": "Steward: keep human review on sensitive sanity cases", "tradeoff": "burn pressure, ethical alignment"},
-        ],
-    },
-    "final": {
-        "prompt": "The infinite-growth machine is offering the clean exit. What becomes the new normal?",
-        "options": [
-            {"id": "shareholder", "rule_id": "ops.shareholder", "option": "Take shareholder capital and scale the grid fast", "tradeoff": "speed gained, autonomy sold"},
-            {"id": "cooperative", "rule_id": "ops.cooperative", "option": "Form the worker-cooperative energy alliance", "tradeoff": "slower growth, durable trust"},
-        ],
-    },
-}
-
-
-def _canned_dilemma_for_stage(stage: Stage) -> Dict[str, Any]:
-    if stage.id == "stage_8_change" or "change" in stage.id.lower():
-        return _CANNED_DILEMMAS["final"]
-    return _CANNED_DILEMMAS.get(stage.owner_role) or _CANNED_DILEMMAS["strategist"]
 
 
 def _scene_speaker_for_stage(stage: Stage) -> Dict[str, str]:
@@ -1549,6 +1826,10 @@ def _enrich_dilemma_options(
             # nowhere. The rule's role determines the consequence; this names the
             # worker accountable for it.
             "proposed_by": _worker_for_rule(state, rule_id, stage.owner_role),
+            # The real business principle this path tests - names the concept the
+            # CEO is actually deciding (beachhead, blitzscale, build-measure-learn),
+            # so the gate teaches as it plays. Same source feeds the receipt.
+            "principle": principle_for_rule(rule_id),
             "spoken_summary": preview.get("summary", ""),
             "effect_line": _effect_line(preview),
             "effect_preview": preview,
@@ -1626,40 +1907,18 @@ def generate_dilemma(payload: DilemmaRequest):
                            "options": [{"option": str(o["option"])[:160],
                                         "tradeoff": str(o.get("tradeoff", ""))[:120]} for o in opts],
                            "source": "foundry"}
-        except Exception:
+        except Exception as e:
+            store.log_event(
+                "DILEMMA_LIVE_ERROR", "narrator",
+                f"Foundry dilemma generation failed for stage {stage.id}; falling back: {e}",
+            )
             dilemma = None
     if not dilemma:
-        generated = None
-        try:
-            founder = state.founder
-            suggested = suggest_dilemma_for_stage(
-                stage.id,
-                (founder.archetype if founder else "Builder"),
-            )
-            gd = generate_story_dilemma(
-                stage_id=stage.id,
-                stage_title=stage.title,
-                founder=founder,
-                antagonist=state.antagonist,
-                economics=state.economics,
-                suggested_template=suggested,
-            )
-            generated = {
-                "prompt": gd.context,
-                "options": [
-                    {"id": "a", "option": gd.option_a.get("label", "Option A"), "tradeoff": gd.option_a.get("description", "")},
-                    {"id": "b", "option": gd.option_b.get("label", "Option B"), "tradeoff": gd.option_b.get("description", "")},
-                ],
-                "source": "generated",
-            }
-        except Exception:
-            generated = None
-
-        if generated:
-            dilemma = generated
-        else:
-            canned = _canned_dilemma_for_stage(stage)
-            dilemma = {**canned, "source": "canned"}
+        # One deterministic, venture-aware fallback - the single dilemma source
+        # of truth in tools/dilemma_generator (replaces the old generator +
+        # _CANNED_DILEMMAS). Pure dict-building over known templates, so it never
+        # raises and is a safe last-resort floor.
+        dilemma = build_stage_dilemma(state, stage, next_stage)
     dilemma["options"] = _enrich_dilemma_options(state, stage, dilemma.get("options") or [])
     dilemma["scene_id"] = f"{stage.id}:dilemma"
     dilemma["speaker"] = _scene_speaker_for_stage(stage)
@@ -1787,11 +2046,15 @@ def record_decision(payload: DecisionRequest):
     state.choices = [c for c in state.choices if c.stage_id != stage.id]
     state.choices.append(choice_record)
     record_world_day(state, stage, choice_record)
-    antagonist_move = record_choice_game_state(state, stage, choice_record)
+    # The workforce's real field report, computed once (single source): both Game
+    # Masters answer what the digital workers brought back - the antagonist
+    # contests the wedge they found, and the World Designer bends pending stages.
+    worker_report = _worker_field_report(state, stage)
+    antagonist_move = record_choice_game_state(state, stage, choice_record, worker_report=worker_report)
 
     # Agent memory (procedural): the workers learn the CEO's operating pattern
     # from every gate decision - recalled in all later worker briefs.
-    mem_entry = remember("procedural",
+    mem_entry = remember_for_run(state, "procedural",
              f"CEO chose '{choice['option']}' at the '{stage.title}' gate"
              + (f" accepting tradeoff: {choice['tradeoff']}" if choice["tradeoff"] else "")
              + f". Consequence: {choice['consequence_summary']}",
@@ -1814,14 +2077,39 @@ def record_decision(payload: DecisionRequest):
             antagonist_move.model_dump())
 
     # Living world graph: bend the not-yet-played stages to the company that now
-    # exists after this decision, so the quest line visibly tracks the pivot.
+    # exists after this decision, so the quest line visibly tracks the pivot. The
+    # World Designer reacts to the SAME field report the antagonist just answered
+    # (computed once above), closing the worker -> Game Master loop on both sides.
     adapted_ids = adapt_remaining_stages(
         world, stage.id, _live_world_state(state),
-        decisions=world.decisions, brief=world.brief)
+        decisions=world.decisions, brief=world.brief, worker_report=worker_report)
+    adapted_reason = worker_report_clause(worker_report)
     if adapted_ids:
         store.log_event("WORLD_ADAPTED", "world_designer",
-            f"Adapted {len(adapted_ids)} pending stage(s) to the CEO choice and current company state.",
-            {"stage_ids": adapted_ids, "after": stage.id})
+            f"World Designer bent {len(adapted_ids)} pending stage(s) to the CEO choice"
+            + (f" and the workforce's finding: {adapted_reason}" if adapted_reason else "")
+            + ".",
+            {"stage_ids": adapted_ids, "after": stage.id, "worker_finding": adapted_reason})
+
+    # Game Master Council: the world-engine agents (World Designer, Antagonist
+    # Director, Org Designer) convene to RATIFY this move and lock the forward
+    # motion. It turns the world changes just made - the antagonist move and the
+    # stage adaptation, both computed once above - into a visible, persisted,
+    # multi-agent deliberation. The deterministic council runs on every move so
+    # the roguelike world keeps evolving across reloads; /api/world/council
+    # upgrades it to the live MAF group chat on demand. The council narrates and
+    # persists these moves; it never re-mutates the world.
+    council = convene_world_council(
+        state, stage=stage, decision=entry, antagonist_move=antagonist_move,
+        adapted_stage_ids=adapted_ids, worker_report=worker_report, live=False)
+    _record_world_council(state, council)
+    store.log_event("WORLD_COUNCIL", "world_council",
+        f"Game Masters ratified forward motion after '{stage.title}': {council.forward_motion[:120]}",
+        {"stage_id": stage.id, "trigger": council.trigger, "source": council.source,
+         "adapted_stage_ids": council.adapted_stage_ids,
+         "antagonist_move_id": council.antagonist_move_id,
+         "threat_before": council.threat_before, "threat_after": council.threat_after,
+         "turns": [t.model_dump() for t in council.turns]})
 
     refresh_session_knowledge(state)
     store.log_event("KNOWLEDGE_STRUCTURED", "iq_sync",
@@ -1843,6 +2131,7 @@ def record_decision(payload: DecisionRequest):
                 "owner_role": ns.owner_role,
                 "assigned_worker_title": ns.assigned_worker_title,
                 "adapted": ns.id in (adapted_ids or []),
+                "adapted_reason": adapted_reason if ns.id in (adapted_ids or []) else "",
             }
 
     store.save()
@@ -1855,7 +2144,14 @@ def record_decision(payload: DecisionRequest):
         "choice": choice_record.model_dump(),
         "days": [d.model_dump() for d in state.days],
         "consequence": consequence,
-        "state": state.model_dump(),
+        # The business principle this choice tested - so the commit-time receipt
+        # can name the lesson (same source as the option button showed).
+        "principle": principle_for_rule(consequence["rule_id"]),
+        # The Game Master council that ratified this move - the engine-tier group
+        # chat (World Designer + Antagonist Director + Org Designer) that locked
+        # the forward motion. Rendered with the same turn shape as the standup.
+        "world_council": _council_packet(state, council),
+        "state": _state_dump(state),
     }
 
 
@@ -2073,6 +2369,58 @@ def _attach_speaker_profiles(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return enriched
 
 
+def _record_world_council(state: CompanyState, deliberation: WorldCouncilDeliberation) -> None:
+    """Persist one council deliberation into the run log (idempotent per stage).
+
+    The latest deliberation for a stage replaces any earlier one (a live upgrade
+    supersedes the deterministic pass), so the roguelike council history stays
+    one-entry-per-move and bounded while remaining cumulative across the run.
+    """
+    if not state.game:
+        return
+    log = [d for d in (state.game.council_log or []) if d.stage_id != deliberation.stage_id]
+    log.append(deliberation)
+    state.game.council_log = log[-16:]
+
+
+def _council_packet(state: CompanyState, deliberation: WorldCouncilDeliberation) -> Dict[str, Any]:
+    """Render a persisted GM council deliberation in the standup turn shape.
+
+    Reuses the standup renderer's contract (speaker profiles + character_state)
+    so the Game Master group chat shows through the existing components - one
+    renderer, two tiers (worker standup vs. engine council), never a fork.
+    """
+    turns = [{
+        "speaker": t.speaker,
+        "role": t.role,
+        "worker_id": t.worker_id,
+        "tool_call": {"tool": t.tool or "agent_turn", "status": "completed"},
+        "message": t.message,
+        "handoff_to": t.handoff_to,
+        "source": t.source,
+        "framework": t.framework,
+    } for t in deliberation.turns]
+    turns = _attach_speaker_profiles(turns)
+    return {
+        "stage_id": deliberation.stage_id,
+        "tier": "game_master",
+        "source": deliberation.source,
+        "orchestration": {
+            "pattern": "sequential_group_chat",
+            "framework_target": "Microsoft Agent Framework Agent loop",
+            "manager": "world_council",
+            "council": ["world_designer", "antagonist", "org_designer"],
+        },
+        "trigger": {"label": deliberation.trigger, "summary": deliberation.summary},
+        "threat": {"before": deliberation.threat_before, "after": deliberation.threat_after},
+        "adapted_stage_ids": deliberation.adapted_stage_ids,
+        "antagonist_move_id": deliberation.antagonist_move_id,
+        "forward_motion": deliberation.forward_motion,
+        "characters": [t.get("character_state") for t in turns if t.get("character_state")],
+        "turns": turns,
+    }
+
+
 def _standup_selection_mode(value: Optional[str]) -> str:
     mode = str(value or "round_robin").strip().lower().replace("-", "_")
     return mode if mode in {"round_robin", "random"} else "round_robin"
@@ -2133,9 +2481,9 @@ def _build_standup_turns(
         brought = ""
     if brought:
         owner_message = (
-            f"Back to you, CEO - I brought {brought}. "
-            f"Reading your call as '{option}': {summary} "
-            f"{next_title if next_stage else 'CEO'}, which constraint are you carrying instead of resetting?"
+            f"Field report: I brought {brought}. "
+            f"Reading the CEO call as '{option}': {summary} "
+            f"{next_title if next_stage else 'CEO'}, name the constraint you will carry instead of resetting."
         )
     else:
         owner_message = (
@@ -2154,16 +2502,36 @@ def _build_standup_turns(
         )
     ]
 
+    next_goal = (getattr(next_stage, "goal", "") or "the next stage brief") if next_stage else "the continuation loop"
+    next_metric = (getattr(next_stage, "success_metric", "") or "the next success metric") if next_stage else "the next operating metric"
+    turns.append(_standup_turn(
+        speaker="World Designer",
+        role="narrator",
+        worker_id="world_designer",
+        tool="adapt_remaining_stages",
+        message=(
+            f"I rewrote the pending world from that choice. Next beat: {next_title}. "
+            f"Its brief now starts from: {next_goal[:150]} Success now means: {next_metric[:150]}"
+        ),
+        handoff_to="Org Designer",
+    ))
+
     added_title = org_delta.get("added_role_title")
-    if added_title:
+    removed_title = org_delta.get("removed_role_title")
+    if added_title or removed_title:
+        org_line = []
+        if added_title:
+            org_line.append(f"added {added_title} as a capability, not another copy of the same speaker")
+        if removed_title:
+            org_line.append(f"retired {removed_title} so the org stays focused")
         turns.append(_standup_turn(
-            speaker=added_title,
-            role=stage.owner_role,
-            worker_id=str(org_delta.get("added_role_id") or added_title).lower().replace(" ", "_"),
+            speaker="Org Designer",
+            role="orgdesigner",
+            worker_id="org_designer",
             tool="render_org_graph",
             message=(
-                f"I am now on the org graph, and I disagree with treating '{option}' as flavor. "
-                f"{owner_title}, give me the evidence gap the old party could not close."
+                f"I changed the workforce: {'; '.join(org_line)}. "
+                f"The next worker still owns execution, but the org now remembers what capacity changed and why."
             ),
             handoff_to=next_title if next_stage else "",
         ))
@@ -2183,16 +2551,21 @@ def _build_standup_turns(
 
     if state.economics:
         share = float(getattr(state.economics, "market_share", 0.0) or 0.0)
-        share_line = f"{share:.1f}% market share, " if share > 0 else ""
+        customers = int(getattr(state.economics, "paying_customers", 0) or 0)
+        rev = int(getattr(state.economics, "monthly_revenue_usd", 0) or 0)
+        if customers > 0:
+            money_line = f"{customers} paying customers at {share:.1f}% share = ${rev:,}/mo revenue, "
+        else:
+            money_line = "zero paying customers yet - no revenue until we win share, "
         turns.append(_standup_turn(
             speaker="Runway Steward",
             role="ops",
             worker_id="runway_steward",
             tool="watch_burn",
             message=(
-                f"Numbers moved: {share_line}{state.economics.digital_worker_count} workers, "
+                f"Numbers moved: {money_line}{state.economics.digital_worker_count} workers, "
                 f"${state.economics.monthly_burn_usd:,}/mo burn, {state.economics.runway_months} months runway. "
-                f"{owner_title}, I back the plan only if the next artifact wins share faster than it burns."
+                f"{owner_title}, I back the plan only if the next artifact wins customers faster than it burns."
             ),
             handoff_to=next_title if next_stage else "",
         ))
@@ -2203,22 +2576,14 @@ def _build_standup_turns(
     # beat (Dan Harmon) and naming the counterplay it dares them to use. This is
     # how the villain lives across the multi-agent conversation.
     arc = state.game.antagonist_arc if state.game else None
-    if arc and arc.threat_level >= 20 and (arc.current_pressure or arc.antagonist_name):
-        rival = arc.antagonist_name or "The rival"
-        beat, beat_gloss = _story_beat_for_state(state)
-        tactic = (state.antagonist.signature_tactic if state.antagonist else "") or "relentless pressure"
-        counter = (arc.open_counterplays[-1] if arc.open_counterplays
-                   else "Answer me before your next gate.")
+    rival_line = _rival_standup_line(state, round_index=0)
+    if rival_line:
         turns.insert(1, _standup_turn(
-            speaker=rival,
+            speaker=arc.antagonist_name or "The rival",
             role="antagonist",
             worker_id="antagonist",
             tool="press_advantage",
-            message=(
-                f"[{beat}] While you debate {beat_gloss}, I move: {tactic}. "
-                f"Threat {arc.threat_level}/100 and climbing. "
-                f"You think '{counter[0].lower() + counter[1:]}' saves you? Try it."
-            ),
+            message=rival_line,
             handoff_to=owner_title,
         ))
 
@@ -2233,6 +2598,231 @@ def _build_standup_turns(
         "story_beat": _story_beat_for_state(state)[0],
     }
     return turns[:5], context
+
+
+# CEO directive intents - lets the offline standup actually REACT to what the
+# CEO said (its meaning), not echo a fixed template. Defined just above its
+# only callers in the history-based standup builder.
+_DIRECTIVE_INTENTS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("dominance", ("dominate", "competit", "rival", "beat", "crush", "outpace", "overtake", "market leader", "win the market")),
+    ("hiring", ("hire", "headcount", "recruit", "staff", "talent", "bring on", "new worker", "add a worker", "add a seat")),
+    ("runway", ("cost", "runway", "burn", "save", "cheap", "efficien", "budget", "lean", "cash", "spend")),
+    ("retention", ("loyal", "retain", "retention", "churn", "keep", "stick", "renew", "nps", "relationship")),
+    ("proof", ("proof", "quality", "validate", "evidence", "credib", "trust", "reliab", "rigor")),
+    ("speed", ("fast", "speed", "quick", "ship", "velocity", "accelerat", "urgent", "rapid", "move fast")),
+    ("focus", ("focus", "narrow", "simplify", "cut scope", "prioriti")),
+    # Acquisition last: its keys ("customer", "grow", "user") are generic and
+    # appear inside other directives ("build loyalty with our customers"), so the
+    # specific intents above win first.
+    ("acquisition", ("customer", "acqui", "grow", "growth", "sales", "lead", "user", "signup", "sign up", "demand", "pipeline", "traction", "market share")),
+]
+
+
+def _classify_ceo_directive(text: str) -> str:
+    """Classify the CEO's free-text standup directive into an intent key so the
+    offline workers can react to its MEANING, not echo it verbatim."""
+    t = (text or "").lower()
+    for intent, keys in _DIRECTIVE_INTENTS:
+        if any(k in t for k in keys):
+            return intent
+    return "general"
+
+
+def _standup_directive_reaction(
+    intent: str, round_index: int, *, owner_title: str, next_title: str,
+    user_name: str, user_msg: str, econ: Any, rival_name: str,
+) -> Tuple[str, str]:
+    """Two intent-aware standup lines (owner worker, then the next worker).
+
+    Distinct per intent and rotated by round so repeated directives never read
+    identically; grounded in live economics so the numbers move with the run.
+    """
+    ceo = (user_msg or "").strip()[:46]
+    share = round(float(getattr(econ, "market_share", 0.0) or 0.0), 1) if econ else 0.0
+    burn = int(getattr(econ, "monthly_burn_usd", 0) or 0) if econ else 0
+    runway = int(getattr(econ, "runway_months", 0) or 0) if econ else 0
+    share_txt = f"{share}%" if share else "an early"
+
+    owner_by_intent = {
+        "acquisition": [
+            f"On '{ceo}' - I'm pointing the wedge at demand, {next_title}. We hold {share_txt} share; the next artifact has to open ONE repeatable acquisition channel, not a broader story.",
+            f"'{ceo}' lands, {next_title}. Keep the ICP narrow and make every new customer a referenceable proof - growth without scope creep.",
+        ],
+        "retention": [
+            f"'{ceo}' - good. {next_title}, retention compounds: I'd rather deepen the {share_txt} we hold than thin it chasing new logos.",
+            f"On loyalty, {next_title}: build the habit loop into the next artifact so churn drops before we scale spend.",
+        ],
+        "dominance": [
+            f"'{ceo}' - aggressive, I like it. {next_title}, but we beat {rival_name} on a sharper wedge, not a wider front. {share_txt} now; let's take their flank.",
+            f"To outpace {rival_name}, {next_title}: concentrate force on the one segment we can win outright before widening.",
+        ],
+        "speed": [
+            f"'{ceo}' - speed it is. {next_title}, I'll cut the next artifact to its core so we ship this week, not scope it for a month.",
+            f"Moving fast, {next_title}: take the quickest line and accept some fatigue - velocity is our edge at {share_txt} share.",
+        ],
+        "runway": [
+            f"'{ceo}' - discipline. {next_title}, every move from here defends runway; we're at ${burn:,}/mo burn, {runway} months left.",
+            f"Protecting cash, {next_title}: no new headcount until the next artifact proves it pays for itself.",
+        ],
+        "proof": [
+            f"'{ceo}' - right call. {next_title}, the next artifact has to clear the gate clean; trust is how we hold {share_txt} under pressure.",
+            f"On quality, {next_title}: one verified proof beats three unproven swings.",
+        ],
+        "hiring": [
+            f"'{ceo}' - we can add a worker, {next_title}, but it lifts burn above ${burn:,}/mo. It only pays if it wins share faster than it costs.",
+            f"On hiring, {next_title}: name the missing function - sales, retention, ops - and we add exactly that seat, not a generalist.",
+        ],
+        "focus": [
+            f"'{ceo}' - narrowing. {next_title}, I'll cut everything that isn't the wedge and hand you one sharp artifact.",
+            f"Focus accepted, {next_title}: one segment, one proof, no scope creep.",
+        ],
+        "general": [
+            f"'{ceo}' - noted, {next_title}. I'll fold that into the next brief without widening scope, holding {share_txt} share.",
+            f"{next_title}, the CEO said '{ceo}'. Let's translate it into one concrete artifact, not a theme.",
+        ],
+    }
+    responder_by_intent = {
+        "acquisition": [
+            f"{owner_title}, I'll take acquisition - but I need one proof artifact to convert against first, {user_name}.",
+            f"Understood, {owner_title}. I close faster on trust than on reach; give me the social proof and I'll turn '{ceo}' into booked customers.",
+        ],
+        "retention": [
+            f"{owner_title}, I'll protect the base - but loyalty needs a proof of value, {user_name}. Tell me the retention metric I'm defending.",
+            f"Agreed, {owner_title}. I'll wire an onboarding-to-renewal loop; it keeps burn flat while it lifts NPS.",
+        ],
+        "dominance": [
+            f"{owner_title}, I'll push hard - give me one undeniable proof artifact and I'll take share from {rival_name}, {user_name}.",
+            f"On it, {owner_title}. Domination is a counter-position, not a feature race - I need the differentiator locked first.",
+        ],
+        "speed": [
+            f"{owner_title}, I'll move - but fast still needs a proof gate or we ship noise, {user_name}.",
+            f"Got it, {owner_title}. I'll trade polish for tempo and let the gate catch what matters.",
+        ],
+        "runway": [
+            f"{owner_title}, lean works for me - but I need proof the cheap path still wins share, {user_name}.",
+            f"Understood, {owner_title}. I'll optimize the loop the workforce already runs before we spend a dollar more.",
+        ],
+        "proof": [
+            f"{owner_title}, I'll raise the bar - tell me the metric the gate scores and I'll hit it, {user_name}.",
+            f"Agreed, {owner_title}. A proof artifact is exactly what converts AND what answers {rival_name}.",
+        ],
+        "hiring": [
+            f"{owner_title}, a new hire needs a mandate and a proof target on day one, or it's pure burn, {user_name}.",
+            f"Understood, {owner_title}. I'll scope the role to the gap the current party can't close - and watch the runway.",
+        ],
+        "focus": [
+            f"{owner_title}, narrow is good - name the one metric we're optimizing and I'll defend it, {user_name}.",
+            f"On it, {owner_title}. Less surface, more depth - that's how we hold share.",
+        ],
+        "general": [
+            f"{owner_title}, I accept the direction - but I need one proof artifact before I take it into my room, {user_name}.",
+            f"Understood, {owner_title}. I'll turn '{ceo}' into something the gate can score.",
+        ],
+    }
+    owners = owner_by_intent.get(intent, owner_by_intent["general"])
+    responders = responder_by_intent.get(intent, responder_by_intent["general"])
+    return owners[round_index % len(owners)], responders[round_index % len(responders)]
+
+
+# The rival's standup voice is sourced from the EVOLVING arc - its current
+# escalation stage, the latest move's target metric, the open counterplay, and
+# the live threat - NOT a fixed signature tactic (which made every taunt read
+# identically, round after round). Rotating the skeleton by round means even an
+# unchanged threat reads fresh. One helper, used by BOTH standup builders:
+# single source for the villain's voice (no duplicated taunt code).
+_RIVAL_STAGE_ACTION = {
+    "watching": "circling your market for the opening",
+    "probing": "probing where your proof is thinnest",
+    "contesting": "contesting every account you touch",
+    "crisis": "in open war - undercutting price and poaching while you stall",
+    "endgame": "at the gates; one unanswered move and the market is mine",
+}
+_RIVAL_METRIC_JAB = {
+    "proof": "your proof is thin and I can see it",
+    "trust": "your customers do not trust you yet",
+    "velocity": "you are too slow to hold this",
+    "burn_pressure": "your costs are the crack I widen",
+    "autonomy": "lose control and the market is mine",
+}
+# How the CEO's chosen lever looks from the rival's side (follow-up rounds only).
+_RIVAL_INTENT_JAB = {
+    "acquisition": "chasing customers while I lock them in",
+    "dominance": "trying to dominate me - I move first",
+    "retention": "loyalty will not hold them once I move",
+    "speed": "rushing into the mistakes I exploit",
+    "runway": "pinching pennies just slows you",
+    "proof": "polishing proof while I take the market",
+    "hiring": "growing your burn, not your moat",
+    "focus": "narrowing - leaving the rest of the board to me",
+}
+
+
+def _rival_standup_line(
+    state: CompanyState, *, round_index: int = 0, ceo_line: str = "", intent: str = "",
+) -> Optional[str]:
+    """The villain's standup line, built from LIVE arc state. None = stay silent.
+
+    Cites the rival's current escalation stage, what its latest move is
+    attacking, the live threat, and the counterplay to use - all of which evolve
+    as the run progresses - so the taunt advances the story instead of repeating
+    a fixed tactic. The skeleton rotates by round so repeats never read the same.
+    """
+    arc = state.game.antagonist_arc if state.game else None
+    if not arc or arc.threat_level < 20 or not (arc.current_pressure or arc.antagonist_name):
+        return None
+    beat, beat_gloss = _story_beat_for_state(state)
+    stage_name = arc.escalation_stage or "probing"
+    action = _RIVAL_STAGE_ACTION.get(stage_name, "pressing my advantage")
+    moves = [m for m in (arc.moves or []) if not getattr(m, "resolved", False)]
+    latest = moves[-1] if moves else ((arc.moves or [])[-1] if arc.moves else None)
+    metric = getattr(latest, "target_metric", "") if latest else ""
+    rival_role = getattr(latest, "rival_role_title", "") if latest else ""
+    rival_lane = getattr(latest, "rival_pressure_lane", "") if latest else ""
+    role_clause = f"{rival_role} on {rival_lane}: " if rival_role and rival_lane else (f"{rival_role}: " if rival_role else "")
+    jab = _RIVAL_INTENT_JAB.get(intent) or _RIVAL_METRIC_JAB.get(metric) \
+        or "the market does not wait for your standup"
+    counter = (arc.open_counterplays[-1] if arc.open_counterplays
+               else "answer me before your next gate").rstrip(".").lower()
+    jab_cap = jab[:1].upper() + jab[1:]  # capitalize first letter only (keep 'I')
+    n = arc.threat_level
+    ceo = (ceo_line or "").strip()[:46]
+    ceo_clause = f"'{ceo}' - " if ceo else ""
+    skeletons = [
+        f"[{beat}] {role_clause}{ceo_clause}I am {action}. Threat {n}/100, {stage_name}. {jab_cap}.",
+        f"[{beat}] {role_clause}While you weigh {beat_gloss}, I am {action}. {n}/100 and {stage_name} - counter me ({counter}) or cede it.",
+        f"[{beat}] {role_clause}{jab_cap}. I am {action}. Threat {n}/100, {stage_name}.",
+        f"[{beat}] {role_clause}I am {action} while you talk. {n}/100, {stage_name}. {ceo_clause}it will not hold.",
+    ]
+    return skeletons[round_index % len(skeletons)]
+
+
+# Which archetype seat actually OWNS each business lever. This is the answer
+# to "who brings in the money": the growth/marketer seat owns customers and
+# revenue, ops owns runway and retention, designer owns build/speed. When the
+# CEO pushes a lever, that worker - not whoever happens to own the current
+# stage - speaks first and names the money.
+_LEVER_OWNER_ROLE = {
+    "acquisition": "marketer",
+    "dominance": "marketer",
+    "retention": "ops",
+    "runway": "ops",
+    "hiring": "ops",
+    "speed": "designer",
+    "proof": "designer",
+}
+
+
+def _worker_for_role(state: CompanyState, role: str) -> Tuple[str, str, str]:
+    """Return (title, role, worker_id) for the worker who owns an archetype role.
+
+    Reuses the title already bound to a stage of that archetype so the standup
+    names the same worker the org graph shows; falls back to the display name."""
+    world = getattr(state, "world", None)
+    for s in (world.stages if world else []):
+        if (s.owner_role or "") == role:
+            return (s.assigned_worker_title or _ROLE_DISPLAY.get(role, role),
+                    role, s.assigned_worker_id or role)
+    return (_ROLE_DISPLAY.get(role, role.title()), role, role)
 
 
 def _build_standup_turns_for_history(
@@ -2252,21 +2842,59 @@ def _build_standup_turns_for_history(
     user_msg = last_user_turn.get("message", "") if last_user_turn else "Let's optimize our next steps."
     user_name = last_user_turn.get("speaker", "CEO") if last_user_turn else "CEO"
 
-    owner_title = _worker_title_for_stage(stage)
     next_title = _worker_title_for_stage(next_stage)
     next_role = next_stage.owner_role if next_stage else "narrator"
+
+    # React to WHAT the CEO actually said, not a fixed template. The directive
+    # is classified into an intent; each worker answers in a distinct, role- and
+    # economics-aware voice, and the line rotates by round so repeated rounds
+    # never read identically. This is the seam that makes the standup adapt.
+    intent = _classify_ceo_directive(user_msg)
+    round_index = sum(
+        1 for t in history
+        if t.get("role") == "founder" or t.get("worker_id") == "founder"
+    )
+    econ = state.economics
+
+    # Route the directive to the worker who actually OWNS that lever, so the
+    # revenue/customer owner self-identifies instead of whoever holds the
+    # current stage. This makes "who makes the money" visible on screen.
+    lever_role = _LEVER_OWNER_ROLE.get(intent)
+    if lever_role:
+        owner_title, first_role, first_wid = _worker_for_role(state, lever_role)
+    else:
+        owner_title = _worker_title_for_stage(stage)
+        first_role = stage.owner_role
+        first_wid = stage.assigned_worker_id or stage.owner_role
+
+    rival_name = (state.game.antagonist_arc.antagonist_name
+                  if state.game and state.game.antagonist_arc else None) \
+        or (state.antagonist.name if state.antagonist else "the rival")
+    owner_msg, responder_msg = _standup_directive_reaction(
+        intent, round_index,
+        owner_title=owner_title, next_title=next_title,
+        user_name=user_name, user_msg=user_msg, econ=econ, rival_name=rival_name,
+    )
+
+    # For customer/revenue levers, prepend an explicit ownership clause naming
+    # the share->revenue this seat is accountable for - the on-screen answer to
+    # "how am I making money and who is responsible for it".
+    if intent in ("acquisition", "dominance", "retention"):
+        share = round(float(getattr(econ, "market_share", 0.0) or 0.0), 1) if econ else 0.0
+        rev = int(getattr(econ, "monthly_revenue_usd", 0) or 0) if econ else 0
+        held = (f"we hold {share}% share = ${rev:,}/mo recurring"
+                if share > 0 else "we hold no market yet, so this is where revenue starts")
+        owner_msg = (f"I'm the seat that turns work into paying customers - {held}. "
+                     + owner_msg)
 
     # Offline simulated turns reacting to history:
     turns = [
         _standup_turn(
             speaker=owner_title,
-            role=stage.owner_role,
-            worker_id=stage.assigned_worker_id or stage.owner_role,
+            role=first_role,
+            worker_id=first_wid,
             tool="read_memory",
-            message=(
-                f"{next_title}, the CEO said '{user_msg}'. I challenge you to preserve that direction "
-                "without widening scope."
-            ),
+            message=owner_msg,
             handoff_to=next_title if next_stage else "",
         ),
         _standup_turn(
@@ -2274,10 +2902,7 @@ def _build_standup_turns_for_history(
             role=next_role,
             worker_id=(next_stage.assigned_worker_id if next_stage else "narrator") or next_role,
             tool="read_memory",
-            message=(
-                f"{owner_title}, I accept the constraint, but I need one proof artifact from you before "
-                f"I take it into my room, {user_name}."
-            ),
+            message=responder_msg,
             handoff_to="runway_steward",
         ),
     ]
@@ -2285,21 +2910,18 @@ def _build_standup_turns_for_history(
     consequence = decision.get("consequence") or {}
     summary = consequence.get("summary") or "The CEO choice is now binding direction."
     # Keep the villain in the room across follow-up rounds: if it is pressing,
-    # it answers the CEO's latest line in its own voice at the current beat.
+    # it answers the CEO's latest line in its own voice, countering the SPECIFIC
+    # intent the CEO just expressed at the current Story Circle beat.
     arc = state.game.antagonist_arc if state.game else None
-    if arc and arc.threat_level >= 20 and (arc.current_pressure or arc.antagonist_name):
-        rival = arc.antagonist_name or "The rival"
-        beat, beat_gloss = _story_beat_for_state(state)
-        tactic = (state.antagonist.signature_tactic if state.antagonist else "") or "relentless pressure"
+    rival_line = _rival_standup_line(
+        state, round_index=round_index, ceo_line=user_msg, intent=intent)
+    if rival_line:
         turns.append(_standup_turn(
-            speaker=rival,
+            speaker=arc.antagonist_name or "The rival",
             role="antagonist",
             worker_id="antagonist",
             tool="press_advantage",
-            message=(
-                f"[{beat}] '{user_msg[:48]}' - cute. I am still moving: {tactic}. "
-                f"Threat {arc.threat_level}/100. The market does not wait for your standup, {user_name}."
-            ),
+            message=rival_line,
             handoff_to=owner_title,
         ))
     context = {
@@ -2422,8 +3044,66 @@ def world_standup(payload: StandupRequest):
     return packet
 
 
+class WorldCouncilRequest(BaseModel):
+    stage_id: Optional[str] = None
+
+
+@app.post("/api/world/council")
+def world_council(payload: WorldCouncilRequest):
+    """Convene the Game Master council and (in live mode) upgrade it to MAF.
+
+    The engine-tier counterpart to /api/world/standup. The deterministic council
+    already ran inside /api/decision and persisted to state.game.council_log;
+    this endpoint re-runs the same deliberation over the facts that move already
+    produced - the antagonist move (resolved from the arc, never recomputed) and
+    the stage ids the World Designer bent - and in live mode rephrases the GM
+    turns through the Microsoft Agent Framework group chat. Returns the
+    standup-shaped packet so the existing renderer shows it. Never re-mutates
+    the world.
+    """
+    state = store.load()
+    if not state or not state.world:
+        raise HTTPException(status_code=400, detail="No world graph.")
+    world = state.world
+    if not world.decisions:
+        raise HTTPException(status_code=400, detail="No move to ratify yet.")
+    decision = None
+    if payload.stage_id:
+        decision = next((d for d in reversed(world.decisions) if d.get("stage_id") == payload.stage_id), None)
+    decision = decision or world.decisions[-1]
+    stage = next((s for s in world.stages if s.id == decision.get("stage_id")), None)
+    if not stage:
+        raise HTTPException(status_code=404, detail=f"Unknown stage: {decision.get('stage_id')}")
+
+    arc = state.game.antagonist_arc if state.game else None
+    prior = next((d for d in (state.game.council_log or []) if d.stage_id == stage.id), None) if state.game else None
+    adapted_ids = list(prior.adapted_stage_ids) if prior else []
+    threat_before = prior.threat_before if prior else None
+    move = None
+    if prior and arc and prior.antagonist_move_id:
+        move = next((m for m in (arc.moves or []) if m.id == prior.antagonist_move_id), None)
+    if move is None and arc:
+        stage_moves = [m for m in (arc.moves or []) if m.stage_id == stage.id]
+        move = stage_moves[-1] if stage_moves else None
+    worker_report = _worker_field_report(state, stage)
+
+    council = convene_world_council(
+        state, stage=stage, decision=decision, antagonist_move=move,
+        adapted_stage_ids=adapted_ids, worker_report=worker_report,
+        threat_before=threat_before, live=is_live())
+    _record_world_council(state, council)
+    store.log_event("WORLD_COUNCIL", "world_council",
+        f"Game Master council convened for '{stage.title}' ({council.source}).",
+        {"stage_id": stage.id, "source": council.source,
+         "forward_motion": council.forward_motion,
+         "turns": [t.model_dump() for t in council.turns]})
+    store.save()
+    return _council_packet(state, council)
+
+
 class StandupResponseRequest(BaseModel):
     text: str
+    stage_id: Optional[str] = None
 
 
 @app.post("/api/world/standup/respond")
@@ -2438,13 +3118,64 @@ def respond_to_standup(payload: StandupResponseRequest):
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Response cannot be empty.")
-    mem_entry = remember("procedural", f"CEO responded to standup: '{text}'", {"source": "standup_response"})
+    stage = None
+    if state.world:
+        if payload.stage_id:
+            stage = next((s for s in state.world.stages if s.id == payload.stage_id), None)
+        if not stage and state.world.decisions:
+            last_stage_id = state.world.decisions[-1].get("stage_id")
+            stage = next((s for s in state.world.stages if s.id == last_stage_id), None)
+
+    mem_entry = remember_for_run(state, "procedural", f"CEO responded to standup: '{text}'", {
+        "source": "standup_response",
+        "stage_id": getattr(stage, "id", "") or "",
+    })
+    adapted_ids: List[str] = []
+    adapted_preview: Optional[Dict[str, Any]] = None
+    if state.world and stage:
+        synthetic_decisions = list(state.world.decisions or []) + [{
+            "stage_id": stage.id,
+            "option": text,
+            "tradeoff": "live standup response",
+            "consequence_summary": "CEO standup direction captured for the World Designer.",
+        }]
+        worker_report = _worker_field_report(state, stage)
+        adapted_ids = adapt_remaining_stages(
+            state.world,
+            stage.id,
+            _live_world_state(state),
+            decisions=synthetic_decisions,
+            brief=state.world.brief,
+            worker_report=worker_report,
+        )
+        if adapted_ids:
+            next_stage = next((s for s in state.world.stages if s.id == adapted_ids[0]), None)
+            if next_stage:
+                adapted_preview = {
+                    "stage_id": next_stage.id,
+                    "title": next_stage.title,
+                    "goal": next_stage.goal,
+                    "success_metric": next_stage.success_metric,
+                    "assigned_worker_title": next_stage.assigned_worker_title,
+                }
     store.log_event("CEO_STANDUP_RESPONSE", "founder", f"CEO responded to standup: {text}", {
         "text": text,
         "memory_injected": mem_entry,
+        "stage_id": getattr(stage, "id", "") or "",
+        "adapted_stage_ids": adapted_ids,
     })
+    if adapted_ids:
+        store.log_event("WORLD_ADAPTED", "world_designer",
+            f"World Designer bent {len(adapted_ids)} pending stage(s) to the live CEO standup response.",
+            {"stage_ids": adapted_ids, "after": getattr(stage, "id", "") or "", "standup_response": text[:160]})
     store.save()
-    return {"status": "success", "message": "Memory updated with response."}
+    return {
+        "status": "success",
+        "message": "Memory updated with response.",
+        "adapted_stage_ids": adapted_ids,
+        "adapted_next_stage": adapted_preview,
+        "state": _state_dump(state),
+    }
 
 
 def _live_world_state(state) -> Dict[str, Any]:
@@ -2455,6 +3186,9 @@ def _live_world_state(state) -> Dict[str, Any]:
     against the whole evolving situation, not just the original pitch.
     """
     ws = world_snapshot(state)
+    run_id = getattr(state, "run_id", "") or getattr(getattr(state, "game", None), "run_id", "")
+    if run_id:
+        ws["run_id"] = run_id
     arc = getattr(state.game, "antagonist_arc", None) if state.game else None
     if arc is not None:
         ws["antagonist_threat"] = int(getattr(arc, "threat_level", 0) or 0)
@@ -2467,6 +3201,11 @@ def run_next_stage():
     state = store.load()
     if not state or not state.world:
         raise HTTPException(status_code=400, detail="No world graph. Call /api/world/design first.")
+    _reconcile_loaded_game(state)
+    try:
+        ensure_active_run(state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     world = state.world
     pending = [s for s in world.stages if s.status not in ("completed", "needs-review")]
@@ -2476,7 +3215,10 @@ def run_next_stage():
     stage = pending[0]
     idx = world.stages.index(stage)
     world.current_stage_index = idx
-    start_player_turn(state, stage_id=stage.id)
+    try:
+        start_player_turn(state, stage_id=stage.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # Foundry IQ memory recalled for this stage (surfaced to the story view).
     memory = retrieve(f"{world.brief} {stage.goal} {stage.success_metric}", top_k=2)
@@ -2493,7 +3235,16 @@ def run_next_stage():
     stage.status = "completed" if score >= 80 else "needs-review"
     world.stages[idx] = stage
     state.world = world
-    record_stage_encounter(state, stage)
+    route_progress = advance_route_after_stage(state, stage.id) if stage.status == "completed" else {"advanced": False}
+    levelups = record_stage_encounter(state, stage)
+    for ev in levelups:
+        store.log_event(
+            "WORKER_LEVEL_UP", ev.get("worker_id", "worker"),
+            f"{ev.get('title', 'A worker')} reached level {ev.get('level')}"
+            + (f" and unlocked {ev.get('unlocked_tool')}" if ev.get("unlocked_tool") else "")
+            + ".",
+            ev,
+        )
 
     if state.economics is None:
         state.economics = initialize_economics_from_org(state.org)
@@ -2532,6 +3283,7 @@ def run_next_stage():
          "memory_injected": invocation.maf_memory,
          "tools_called": invocation.maf_tools_called,
          "tool_trace": invocation.tool_trace,
+         "route_progress": route_progress,
          "inference_usage": {"client": invocation.maf_client or "openai-direct",
                              "fallback_reason": invocation.maf_fallback_reason,
                              "tokens_in": invocation.tokens_in,
@@ -2574,7 +3326,7 @@ def autoplay_world(payload: AutoplayRequest):
     )
     state.founder_profile = profile_from_payload(
         None, source="pitch", source_ref=brief, pitch=brief, mode=runtime_mode())
-    mem_entry = remember("user_profile", f"Founder is building: {company_name} - {brief[:280]}",
+    mem_entry = remember_for_run(state, "user_profile", f"Founder is building: {company_name} - {brief[:280]}",
              {"company": company_name})
     if mem_entry:
         store.log_event("MEMORY_WRITTEN", "memory",
@@ -2622,7 +3374,15 @@ def autoplay_world(payload: AutoplayRequest):
         world, brief, auto_approve_threshold=threshold, org=state.org,
         world_state=_live_world_state(state),
     ):
-        record_stage_encounter(state, stage)
+        levelups = record_stage_encounter(state, stage)
+        for ev in levelups:
+            store.log_event(
+                "WORKER_LEVEL_UP", ev.get("worker_id", "worker"),
+                f"{ev.get('title', 'A worker')} reached level {ev.get('level')}"
+                + (f" and unlocked {ev.get('unlocked_tool')}" if ev.get("unlocked_tool") else "")
+                + ".",
+                ev,
+            )
 
         if state.economics is None:
             state.economics = initialize_economics_from_org(state.org)
@@ -2673,20 +3433,76 @@ def autoplay_world(payload: AutoplayRequest):
     return state_response(state, surface="world_graph", results=results)
 
 
+@app.get("/api/slots")
+def list_save_slots():
+    """List every saved run the player can resume, newest activity first.
+
+    Each run persists as its own slot (mirrored on every save), so the picker
+    is a library of companies/products - not a single overwritten autosave.
+    """
+    active = store.load()
+    active_run_id = (getattr(active, "run_id", "") or "") if active else ""
+    return {"slots": store.list_slots(), "active_run_id": active_run_id}
+
+
+class SlotRequest(BaseModel):
+    run_id: str
+
+
+@app.post("/api/slots/save")
+def save_save_slot():
+    """Snapshot the active run into its slot now (assigns a run_id if missing).
+
+    Auto-save already mirrors every save into the slot; this is the explicit
+    hook for legacy runs created before slots existed, or a manual checkpoint.
+    """
+    state = store.load()
+    if not state or not state.world:
+        raise HTTPException(status_code=400, detail="No active run to save.")
+    ensure_run_id(state)
+    store.save()
+    return {"saved": True, "run_id": state.run_id, "slots": store.list_slots()}
+
+
+@app.post("/api/slots/load")
+def load_save_slot(payload: SlotRequest):
+    """Make a saved slot the active run and return its full state to the UI."""
+    state = store.load_slot(payload.run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Unknown save slot: {payload.run_id}")
+    _reconcile_loaded_game(state)
+    if state.economics and state.org:
+        _advance_clock(state)
+    store.log_event("RUN_RESUMED", "founder",
+                    f"Loaded saved run '{state.name}' ({state.run_id}).",
+                    {"run_id": state.run_id})
+    return state_response(state)
+
+
+@app.post("/api/slots/delete")
+def delete_save_slot(payload: SlotRequest):
+    """Permanently remove a saved run from the library."""
+    removed = store.delete_slot(payload.run_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Unknown save slot: {payload.run_id}")
+    return {"deleted": True, "run_id": payload.run_id, "slots": store.list_slots()}
+
+
 @app.post("/api/reset")
 def reset_game():
-    """Resets the state file and the agent-memory ledger (new venture = clean slate)."""
+    """Reset the active working run while preserving saved slots and memory.
+
+    Multi-run aware: the active run was already mirrored into its save slot, so
+    clearing the live file starts a fresh company WITHOUT losing the prior one -
+    the player can resume it later from the slot picker. The memory ledger is
+    preserved because saved runs use it when resumed.
+    """
     if os.path.exists(STATE_FILE):
         try:
             os.remove(STATE_FILE)
         except Exception:
             pass
     store.state = None
-    try:
-        from agents.memory import forget_all
-        forget_all()
-    except Exception:
-        pass
     return reset_response()
 
 # Mount static folder for UI

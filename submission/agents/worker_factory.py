@@ -719,7 +719,8 @@ def execute_stage(
     # Agent memory (NOT IQ): what the workers have learned from this CEO -
     # gate-decision patterns, founder profile, prior artifact summaries.
     # Foundry Agent Service memory store when configured, local ledger always.
-    memories = recall_memories(f"{brief} {stage.goal}", limit=3)
+    memory_run_id = str((world_state or {}).get("run_id") or "") or None
+    memories = recall_memories(f"{brief} {stage.goal}", limit=3, run_id=memory_run_id)
 
     # Proof point baseline: memory_injected must be visible on EVERY path
     # (simulation and direct included), not only when MAF carries the run.
@@ -794,7 +795,7 @@ def execute_stage(
         _trace_validators(invocation, role, artifact)
         rubric = rubric_evaluate(stage, brief, artifact, floor)
         stage.rubric = rubric
-        _remember_stage(stage, worker_title, rubric["final"])
+        _remember_stage(stage, worker_title, rubric["final"], run_id=memory_run_id)
         return invocation, artifact, rubric["final"]
 
     t0 = time.perf_counter()
@@ -848,7 +849,7 @@ def execute_stage(
             _trace_validators(invocation, role, artifact)
             rubric = rubric_evaluate(stage, brief, artifact, floor)
             stage.rubric = rubric
-            _remember_stage(stage, worker_title, rubric["final"])
+            _remember_stage(stage, worker_title, rubric["final"], run_id=memory_run_id)
             return invocation, artifact, rubric["final"]
         except Exception:
             # Framework path failed - degrade silently to the direct call.
@@ -896,7 +897,7 @@ def execute_stage(
     _trace_validators(invocation, role, artifact)
     rubric = rubric_evaluate(stage, brief, artifact, floor)
     stage.rubric = rubric
-    _remember_stage(stage, worker_title, rubric["final"])
+    _remember_stage(stage, worker_title, rubric["final"], run_id=memory_run_id)
     return invocation, artifact, rubric["final"]
 
 
@@ -929,16 +930,19 @@ def _trace_validators(invocation: WorkerInvocation, role: str, artifact: Optiona
         })
 
 
-def _remember_stage(stage: Stage, worker_title: str, score: int) -> None:
+def _remember_stage(stage: Stage, worker_title: str, score: int, *, run_id: Optional[str] = None) -> None:
     """Write a chat-summary memory after a stage ships (agent memory loop).
 
     Best-effort: memory must never break the game loop.
     """
     try:
+        payload = {"stage_id": stage.id, "score": score}
+        if run_id:
+            payload["run_id"] = run_id
         remember("chat_summary",
                  f"Stage '{stage.title}' shipped by {worker_title} (score {score}/100). "
                  f"Goal: {stage.goal[:120]}",
-                 {"stage_id": stage.id, "score": score})
+                 payload)
     except Exception:
         pass
 

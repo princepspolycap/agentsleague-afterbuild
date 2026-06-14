@@ -118,6 +118,14 @@ def _foundry_search(query: str, limit: int) -> Optional[List[Dict[str, Any]]]:
         return None
 
 
+def _matches_run(item: Dict[str, Any], run_id: Optional[str]) -> bool:
+    """True when a memory belongs to the active run scope."""
+    if not run_id:
+        return True
+    payload = item.get("payload") or {}
+    return str(payload.get("run_id") or "") == run_id or payload.get("scope") == "global"
+
+
 # ---------------------------------------------------------------------------
 # Local ledger (always written, even when Foundry accepts the item, so the
 # replay/UI can read memory without a network hop).
@@ -182,19 +190,22 @@ def remember(kind: str, text: str, payload: Optional[Dict[str, Any]] = None) -> 
     return entry
 
 
-def recall_memories(query: str = "", limit: int = 4) -> List[Dict[str, Any]]:
+def recall_memories(query: str = "", limit: int = 4, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Recall the most relevant memory items for a worker brief.
 
     Foundry memory store first (semantic), local ledger fallback (recency +
     naive keyword overlap). Always includes the latest procedural memory if
     one exists - the CEO's operating pattern is binding direction.
     """
-    foundry = _foundry_search(query, limit) if query else None
+    foundry_limit = max(limit * 4, limit)
+    foundry = _foundry_search(query, foundry_limit) if query else None
     if foundry:
-        return foundry
+        scoped = [m for m in foundry if _matches_run(m, run_id)]
+        if scoped:
+            return scoped[:limit]
 
     with _lock:
-        items = _load_local()
+        items = [m for m in _load_local() if _matches_run(m, run_id)]
         if not items:
             return []
 
@@ -212,10 +223,10 @@ def recall_memories(query: str = "", limit: int = 4) -> List[Dict[str, Any]]:
         return ranked
 
 
-def memory_snapshot() -> Dict[str, Any]:
+def memory_snapshot(run_id: Optional[str] = None) -> Dict[str, Any]:
     """Everything the agents currently remember, grouped by kind (for the UI)."""
     with _lock:
-        items = _load_local()
+        items = [m for m in _load_local() if _matches_run(m, run_id)]
         grouped: Dict[str, List[Dict[str, Any]]] = {k: [] for k in _KINDS}
         for m in items:
             grouped.setdefault(m.get("kind", "procedural"), []).append(

@@ -31,12 +31,14 @@ if os.path.exists(_ENV_PATH):
 
 @dataclass(frozen=True)
 class AgentModel:
-    role: str          # narrator | strategist | designer | marketer | ops | npc
+    role: str          # narrator | orgdesigner | antagonist | strategist | designer | marketer | ops | npc
     deployment: str    # Model/deployment name from local env
 
 
 _CLOUD_AGENT_MODELS = {
     "narrator":   AgentModel("narrator",   os.getenv("NARRATOR_MODEL",   "")),
+    "orgdesigner": AgentModel("orgdesigner", os.getenv("ORG_DESIGNER_MODEL", os.getenv("NARRATOR_MODEL", ""))),
+    "antagonist": AgentModel("antagonist", os.getenv("ANTAGONIST_MODEL", os.getenv("NARRATOR_MODEL", ""))),
     "strategist": AgentModel("strategist", os.getenv("STRATEGIST_MODEL", "")),
     "designer":   AgentModel("designer",   os.getenv("DESIGNER_MODEL",   "")),
     "marketer":   AgentModel("marketer",   os.getenv("MARKETER_MODEL",   "")),
@@ -54,6 +56,8 @@ AGENT_ROUTING = os.getenv("AGENT_ROUTING", "local_first").strip().lower()
 
 _LOCAL_AGENT_MODELS = {
     "narrator": AgentModel("narrator", os.getenv("LOCAL_NARRATOR_MODEL", LOCAL_AGENT_MODEL).strip()),
+    "orgdesigner": AgentModel("orgdesigner", os.getenv("LOCAL_ORG_DESIGNER_MODEL", os.getenv("LOCAL_NARRATOR_MODEL", LOCAL_AGENT_MODEL)).strip()),
+    "antagonist": AgentModel("antagonist", os.getenv("LOCAL_ANTAGONIST_MODEL", os.getenv("LOCAL_NARRATOR_MODEL", LOCAL_AGENT_MODEL)).strip()),
     "strategist": AgentModel("strategist", os.getenv("LOCAL_STRATEGIST_MODEL", LOCAL_AGENT_MODEL).strip()),
     "designer": AgentModel("designer", os.getenv("LOCAL_DESIGNER_MODEL", LOCAL_AGENT_MODEL).strip()),
     "marketer": AgentModel("marketer", os.getenv("LOCAL_MARKETER_MODEL", LOCAL_AGENT_MODEL).strip()),

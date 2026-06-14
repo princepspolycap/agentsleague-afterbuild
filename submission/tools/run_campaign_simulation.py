@@ -90,8 +90,9 @@ def run_campaign_simulation(pitch: str, url: str | None = None) -> None:
     # 4. Campaign Stage Loop
     previous_artifacts = []
     
-    # Canned dilemmas for local offline simulation
-    from tools.server import _canned_dilemma_for_stage, _enrich_dilemma_options, _build_standup_turns
+    # Deterministic, venture-aware dilemmas for local offline simulation
+    from tools.dilemma_generator import build_stage_dilemma
+    from tools.server import _enrich_dilemma_options, _build_standup_turns
 
     for idx, stage in enumerate(world.stages, start=1):
         print("\n" + "=" * 70)
@@ -139,10 +140,10 @@ def run_campaign_simulation(pitch: str, url: str | None = None) -> None:
 
         # 5. Pose Dilemma Card
         print("\n⚖️  Strategic Dilemma Card Posed:")
-        canned = _canned_dilemma_for_stage(stage)
-        enriched_options = _enrich_dilemma_options(state, stage, canned["options"])
+        dilemma = build_stage_dilemma(state, stage)
+        enriched_options = _enrich_dilemma_options(state, stage, dilemma["options"])
         
-        print(f"   Prompt: \"{canned['prompt']}\"")
+        print(f"   Prompt: \"{dilemma['prompt']}\"")
         for i, opt in enumerate(enriched_options, start=1):
             print(f"   [{i}] {opt['option']}")
             print(f"       Tradeoff: {opt['tradeoff']}")
@@ -155,7 +156,7 @@ def run_campaign_simulation(pitch: str, url: str | None = None) -> None:
         # Apply Consequence
         old_entry = next((d for d in world.decisions if d.get("stage_id") == stage.id), None)
         choice = {
-            "prompt": canned["prompt"],
+            "prompt": dilemma["prompt"],
             "option": selected_opt["option"],
             "tradeoff": selected_opt["tradeoff"],
             "custom": False,

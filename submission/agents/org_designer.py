@@ -6,8 +6,8 @@ team of roles - mostly digital workers - that act as the execution layer behind
 a single human operator. Each role carries an educational `why` so the player
 understands *why* the org looks the way it does.
 
-Deployment preference: STRATEGIST_MODEL (org design is deep strategy work);
-falls back to NARRATOR_MODEL, then to a rich, brief-adaptive simulation so the
+Deployment preference: ORG_DESIGNER_MODEL, then NARRATOR_MODEL / STRATEGIST_MODEL,
+then a rich, brief-adaptive simulation so the
 whole thing runs after a fresh `git clone` with zero Azure credentials.
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ from agents.worker_economics import (
     WORKER_MODEL,
     human_median_fallback_usd,
     projected_monthly_cost_usd,
+    worker_cost_from_human,
     worker_unit_price,
 )
 
@@ -257,23 +258,12 @@ def _normalize_role(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
     if not isinstance(tools, list):
         tools = [str(tools)]
 
-    # The worker's real RUN cost: the model is asked for monthly_cost_usd as the
-    # model-inference + tooling cost of running THIS worker. This IS the burn -
-    # the player pays the honest, cheap cost of running a digital workforce.
-    run_cost = raw.get("monthly_cost_usd")
-    try:
-        run_cost = int(run_cost)
-        if kind != "human" and run_cost <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        run_cost = 0 if kind == "human" else projected_monthly_cost_usd(hint, WORKER_MODEL)
-
     reports_to = raw.get("reports_to")
     reports_to = _slugify(str(reports_to)) if reports_to else None
 
     # What a HUMAN in this seat would cost today (fully-loaded salary / 12),
-    # reasoned per-role by the model or a coarse fallback. This is NOT charged -
-    # it is the savings headline: human-equivalent minus the real run cost.
+    # reasoned per-role by the model or a coarse fallback. The worker's price is
+    # anchored to this, so compute it first.
     if kind == "human":
         human_median = 0
     else:
@@ -283,6 +273,17 @@ def _normalize_role(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
                 raise ValueError
         except (TypeError, ValueError):
             human_median = human_median_fallback_usd(stage, str(raw.get("seniority") or "ic"))
+
+    # The cheap, real compute to actually RUN this worker (model inference +
+    # tooling) - kept for the efficiency dossier ("runs on X for $Y").
+    inference_cost = 0 if kind == "human" else projected_monthly_cost_usd(hint, WORKER_MODEL)
+
+    # The BURN the player pays for this worker is a fixed fraction of the human
+    # salary it replaces (worker_economics.WORKER_COST_FRACTION_OF_HUMAN), so
+    # burn is a real constraint and savings is the rest - not a rounding error.
+    # An explicit human seat costs its own salary; a digital worker is derived.
+    # (Consistent with the mid-game hire path in consequences._upsert_consequence_role.)
+    run_cost = human_median if kind == "human" else worker_cost_from_human(human_median)
 
     return {
         "id": role_id,
@@ -296,7 +297,7 @@ def _normalize_role(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
         "lifecycle_stage": stage,
         "seniority": str(raw.get("seniority") or "ic").lower(),
         "monthly_cost_usd": max(0, run_cost),
-        "inference_usd": max(0, run_cost),
+        "inference_usd": max(0, inference_cost),
         "runs_on_model": "" if kind == "human" else WORKER_MODEL,
         "human_median_usd": human_median,
         "why": str(raw.get("why") or ""),
@@ -392,11 +393,9 @@ def design_org(brief: str, source: str = "pitch", source_ref: str = "",
     org reads coherently on the URL path even in simulation.
     """
     client = get_foundry_client()
-    # Org design is the first on-screen reveal, so prefer the narrator
-    # deployment (frontier reasoning, fast, clean JSON) over the deep strategist
-    # model, which is verbose and slow enough to hurt a live demo. Strategist is
-    # the fallback if the narrator deployment is not configured.
-    deployment = model_for("narrator") or model_for("strategist")
+    # Org design is a Game Master job: it shapes the workforce and economics for
+    # the whole run, so allow it to use a stronger model than ordinary workers.
+    deployment = model_for("orgdesigner") or model_for("narrator") or model_for("strategist")
 
     if not (client and deployment and is_live()):
         return _finalize(_fallback_blueprint(brief), brief, source, source_ref, summary_hint)

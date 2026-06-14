@@ -9,7 +9,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from state.schema import (
     AntagonistArc,
@@ -45,11 +46,16 @@ _PRESSURE_BY_RULE = {
 def initialize_game_run(state: CompanyState, *, mode: str = "simulation") -> None:
     """Refresh game-facing party and antagonist state from company state."""
     state.game.mode = mode
-    state.game.party = _party_from_org(state)
+    sync_party_from_org(state)
+    if state.run_id and state.game.run_id != state.run_id:
+        state.game.run_id = state.run_id
     if not state.game.run_id or state.game.run_id == "run_default":
-        slug_source = state.name or state.pitch
-        seed_slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")[:48] or "run"
-        state.game.run_id = f"run_{seed_slug}"
+        if state.run_id:
+            state.game.run_id = state.run_id
+        else:
+            slug_source = state.name or state.pitch
+            seed_slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")[:48] or "run"
+            state.game.run_id = f"run_{seed_slug}"
     if not state.game.rng_seed:
         state.game.rng_seed = _seed_from_run_id(state.game.run_id)
     if not state.game.rng_state:
@@ -73,11 +79,40 @@ def initialize_game_run(state: CompanyState, *, mode: str = "simulation") -> Non
         state.game.antagonist_arc.antagonist_name = state.antagonist.name
         if not state.game.antagonist_arc.current_pressure:
             state.game.antagonist_arc.current_pressure = state.antagonist.signature_tactic
+    # Anchor the real-time payroll clock at run start so the slot picker can sort
+    # by recency immediately (its updated_epoch reads last_tick_epoch), and the
+    # first /api/state tick charges from "now" instead of a zero epoch.
+    if state.economics is not None and not state.economics.last_tick_epoch:
+        now = time.time()
+        state.economics.last_tick_epoch = now
+        if not state.economics.started_at_epoch:
+            state.economics.started_at_epoch = now
     _refresh_run_status(state)
 
 
-def record_stage_encounter(state: CompanyState, stage: Stage) -> None:
-    """Upsert the stage execution encounter after a worker produces an artifact."""
+def sync_party_from_org(state: CompanyState) -> List[WorkerPartyMember]:
+    """Rebuild the game party from the live org, preserving existing member state."""
+    state.game.party = _party_from_org(state)
+    return state.game.party
+
+
+def ensure_active_run(state: CompanyState) -> None:
+    """Reject player actions once the run has resolved."""
+    status = getattr(getattr(state, "game", None), "run_status", "active")
+    if status != "active":
+        reason = state.game.defeat_reason if status == "defeat" else state.game.victory_reason
+        detail = f"Run is already {status}."
+        if reason:
+            detail = f"{detail} {reason}"
+        raise ValueError(detail)
+
+
+def record_stage_encounter(state: CompanyState, stage: Stage) -> List[Dict[str, Any]]:
+    """Upsert the stage execution encounter after a worker produces an artifact.
+
+    Returns any worker level-up events from shipping this stage so the caller can
+    log them (WORKER_LEVEL_UP) - empty when no worker leveled up this stage.
+    """
     day_index = _day_index_for_stage(state, stage)
     worker_ids = [stage.assigned_worker_id or stage.owner_role]
     encounter = EncounterState(
@@ -93,15 +128,22 @@ def record_stage_encounter(state: CompanyState, stage: Stage) -> None:
     _upsert_encounter(state, encounter)
     _upsert_inventory_from_stage(state, stage)
     _add_reward_card_from_stage(state, stage)
-    _assign_party_to_stage(state, stage)
+    levelups = _assign_party_to_stage(state, stage)
     _refresh_run_status(state)
+    return levelups
 
 
-def record_choice_game_state(state: CompanyState, stage: Stage, choice: ChoiceRecord) -> Optional[AntagonistMove]:
-    """Record the dilemma encounter and antagonist response for a CEO choice."""
+def record_choice_game_state(state: CompanyState, stage: Stage, choice: ChoiceRecord,
+                             worker_report: Optional[Dict[str, Any]] = None) -> Optional[AntagonistMove]:
+    """Record the dilemma encounter and antagonist response for a CEO choice.
+
+    The antagonist reacts to BOTH the CEO choice and what the workforce just
+    brought back (`worker_report`): the rival contests the specific wedge the
+    digital workers discovered, not only the player's decision.
+    """
     state.game.day_index = max(state.game.day_index, choice.day_index)
     state.game.loop_phase = "aftermath"
-    move = _build_antagonist_move(state, stage, choice)
+    move = _build_antagonist_move(state, stage, choice, worker_report)
     if move:
         _upsert_antagonist_move(state, move)
     encounter = EncounterState(
@@ -124,6 +166,7 @@ def record_choice_game_state(state: CompanyState, stage: Stage, choice: ChoiceRe
 
 def start_player_turn(state: CompanyState, stage_id: str = "") -> PlayerMove:
     """Start a new card turn and draw up to draw_per_turn cards."""
+    ensure_active_run(state)
     game = state.game
     game.turn_index += 1
     game.energy = game.max_energy
@@ -154,12 +197,23 @@ def start_player_turn(state: CompanyState, stage_id: str = "") -> PlayerMove:
 
 
 def end_player_turn(state: CompanyState, stage_id: str = "") -> PlayerMove:
-    """End the current turn, discard hand, then draw a fresh hand."""
+    """End the current turn, discard hand, then draw a fresh hand.
+
+    Refreshing the hand refills energy, so it is not free: the rival presses
+    while you regroup (a small, capped threat bump). That keeps energy a real
+    budget instead of an unlimited resource you can refill at will.
+    """
+    ensure_active_run(state)
     game = state.game
     ended = [c.id for c in game.hand]
     if game.hand:
         game.discard.extend(game.hand)
         game.hand = []
+    arc = game.antagonist_arc
+    threat_before = arc.threat_level
+    if END_TURN_THREAT_PRESS:
+        arc.threat_level = max(0, min(100, arc.threat_level + END_TURN_THREAT_PRESS))
+        arc.escalation_stage = _escalation_stage(arc.threat_level)
     end_move = PlayerMove(
         id=f"move_{game.turn_index}_end",
         turn_index=game.turn_index,
@@ -167,9 +221,16 @@ def end_player_turn(state: CompanyState, stage_id: str = "") -> PlayerMove:
         stage_id=stage_id,
         move_type="end_turn",
         summary=f"Ended turn {game.turn_index}.",
-        effects_applied={"discarded": ended, "energy": game.energy},
+        effects_applied={
+            "discarded": ended,
+            "energy": game.energy,
+            "antagonist_threat": {"before": threat_before, "after": arc.threat_level},
+        },
     )
     game.move_log.append(end_move)
+    _refresh_run_status(state)
+    if game.run_status != "active":
+        return end_move
     draw_move = start_player_turn(state, stage_id=stage_id)
     end_move.effects_applied["next_drawn"] = (draw_move.effects_applied or {}).get("drawn", [])
     return end_move
@@ -177,16 +238,38 @@ def end_player_turn(state: CompanyState, stage_id: str = "") -> PlayerMove:
 
 def choose_next_room(state: CompanyState, room_id: str) -> PlayerMove:
     """Choose the next available room in the run path and apply room effects."""
+    ensure_active_run(state)
     game = state.game
     room = next((r for r in game.route_rooms if r.get("id") == room_id), None)
     if not room:
         raise ValueError(f"Room not found: {room_id}")
     if game.available_room_ids and room_id not in game.available_room_ids:
         raise ValueError(f"Room is not currently selectable: {room_id}")
+    next_stage = _next_executable_stage(state)
+    room_stage_id = str(room.get("stage_id") or "")
+    if next_stage and room_stage_id and room_stage_id != next_stage.id:
+        raise ValueError(
+            f"Room {room_id} belongs to {room_stage_id}; complete {next_stage.id} before choosing it."
+        )
+    if room.get("visited"):
+        return PlayerMove(
+            id=f"move_room_noop_{room_id}_{game.turn_index}",
+            turn_index=game.turn_index,
+            day_index=game.day_index,
+            stage_id=room_stage_id,
+            move_type="choose_option",
+            target_id=room_id,
+            summary=f"Already entered room: {room.get('title', room_id)}.",
+            effects_applied={"noop": True, "room_id": room_id, "kind": str(room.get("kind") or "normal")},
+        )
 
     room["visited"] = True
     game.current_room_id = room_id
-    game.available_room_ids = list(room.get("next_ids") or [])
+    next_ids = list(room.get("next_ids") or [])
+    # The route advances only after this room's stage actually ships. Otherwise
+    # a player can click ahead on the map while /api/world/run-next still
+    # executes the first pending Story Circle stage.
+    game.available_room_ids = []
     game.day_index = max(game.day_index, int(room.get("day_index") or 0))
     game.loop_phase = "execute"
 
@@ -195,7 +278,7 @@ def choose_next_room(state: CompanyState, room_id: str) -> PlayerMove:
         "room_id": room_id,
         "kind": room_kind,
         "title": room.get("title", ""),
-        "next_ids": game.available_room_ids,
+        "next_ids": next_ids,
     }
     if room_kind == "shop":
         applied["economics_delta"] = _apply_economics_delta(state, {"burn_pressure": -2, "trust": 1})
@@ -231,14 +314,49 @@ def choose_next_room(state: CompanyState, room_id: str) -> PlayerMove:
     return move
 
 
+def advance_route_after_stage(state: CompanyState, stage_id: str) -> Dict[str, Any]:
+    """Unlock the next route rooms after the chosen room's stage completes.
+
+    Room selection applies room effects and records which room the CEO entered;
+    stage execution remains owned by /api/world/run-next. This helper is the
+    single seam between them: when a stage ships, the room tied to that stage
+    opens its `next_ids`. If no explicit room was chosen, use the current/default
+    room for that stage and mark it visited so cold-start callers still progress.
+    """
+    game = state.game
+    if not game or not stage_id:
+        return {"advanced": False}
+    room = next((r for r in game.route_rooms if r.get("id") == game.current_room_id), None)
+    if not room or str(room.get("stage_id") or "") != stage_id:
+        room = next((r for r in game.route_rooms if r.get("stage_id") == stage_id and r.get("visited")), None)
+    if not room:
+        room = next((r for r in game.route_rooms if r.get("stage_id") == stage_id), None)
+    if not room:
+        return {"advanced": False, "stage_id": stage_id}
+
+    room["visited"] = True
+    game.current_room_id = str(room.get("id") or game.current_room_id or "")
+    game.available_room_ids = list(room.get("next_ids") or [])
+    game.loop_phase = "aftermath" if game.available_room_ids else "complete"
+    return {
+        "advanced": True,
+        "stage_id": stage_id,
+        "room_id": room.get("id", ""),
+        "next_ids": list(game.available_room_ids),
+    }
+
+
 def play_card(state: CompanyState, card_id: str, *, target_id: str = "", stage_id: str = "") -> PlayerMove:
     """Play a card from hand and apply its deterministic effects."""
+    ensure_active_run(state)
     game = state.game
     card = next((c for c in game.hand if c.id == card_id), None)
     if not card:
         raise ValueError(f"Card is not in hand: {card_id}")
     if game.energy < card.cost:
         raise ValueError(f"Not enough energy for {card.name}: need {card.cost}, have {game.energy}")
+    if float(card.effects.get("market_share_delta") or 0.0) and _completed_stage_count(state) <= 0:
+        raise ValueError("Ship one stage before converting customers - no product or service exists to sell yet.")
 
     game.energy -= card.cost
     game.hand = [c for c in game.hand if c.id != card_id]
@@ -264,11 +382,26 @@ def play_card(state: CompanyState, card_id: str, *, target_id: str = "", stage_i
 
 
 def claim_reward_card(state: CompanyState, card_id: str) -> PlayerMove:
-    """Choose one pending reward card and add it to the run deck."""
+    """Choose one pending reward card and add it to the run deck.
+
+    Idempotent for true duplicate clicks: claiming the same card after it was
+    already drafted returns a benign no-op, while unknown card ids still fail.
+    """
+    ensure_active_run(state)
     game = state.game
     card = next((c for c in game.pending_rewards if c.id == card_id), None)
     if not card:
-        raise ValueError(f"Reward card is not available: {card_id}")
+        if not any(m.move_type == "reward_card" and m.card_id == card_id for m in game.move_log):
+            raise ValueError(f"Reward card is not pending: {card_id}")
+        return PlayerMove(
+            id=f"move_reward_noop_{card_id}",
+            turn_index=game.turn_index,
+            day_index=game.day_index,
+            move_type="reward_card",
+            card_id=card_id,
+            summary="Reward already drafted.",
+            effects_applied={"noop": True, "pending": len(game.pending_rewards)},
+        )
 
     stage_tag = next((tag for tag in card.tags if tag.startswith("stage_")), "")
     if stage_tag:
@@ -327,6 +460,11 @@ def _party_from_org(state: CompanyState) -> List[WorkerPartyMember]:
             morale=existing.morale if existing else 70,
             fatigue=existing.fatigue if existing else 0,
             trust=existing.trust if existing else 60,
+            # Progression persists with the worker: prefer the live party member's
+            # earned xp/level, falling back to whatever was propagated to the
+            # OrgRole, so a rebuild from the org never resets a leveled worker.
+            xp=existing.xp if existing else int(getattr(role, "xp", 0) or 0),
+            level=existing.level if existing else max(1, int(getattr(role, "level", 1) or 1)),
             current_stage_id=existing.current_stage_id if existing else "",
             tools=list(role.tools),
             traits=[role.kind, role.seniority, role.lifecycle_stage],
@@ -644,6 +782,17 @@ def _apply_card_effects(state: CompanyState, card: GameCard, *, target_id: str =
     return applied
 
 
+def _completed_stage_count(state: CompanyState) -> int:
+    return sum(1 for s in (state.world.stages if state.world else []) if s.status == "completed")
+
+
+def _next_executable_stage(state: CompanyState) -> Optional[Stage]:
+    return next(
+        (s for s in (state.world.stages if state.world else []) if s.status not in ("completed", "needs-review")),
+        None,
+    )
+
+
 def _apply_card_synergy(state: CompanyState, card: GameCard) -> List[Dict[str, Any]]:
     """Apply lightweight combo rules from tags + party/inventory state."""
     events: List[Dict[str, Any]] = []
@@ -716,27 +865,120 @@ def _all_cards(game: GameRunState) -> List[GameCard]:
     return list(game.deck) + list(game.hand) + list(game.discard) + list(game.exhaust)
 
 
-def _build_antagonist_move(state: CompanyState, stage: Stage, choice: ChoiceRecord) -> Optional[AntagonistMove]:
+def _antagonist_reaction_to_report(
+    antagonist: Any, report: Optional[Dict[str, Any]]
+) -> Optional[Tuple[str, str, int]]:
+    """How the rival answers what the workforce just brought back.
+
+    Single source for "the antagonist reacts to the workforce": turns the real
+    field report ({signal, source} from server._worker_field_report) into the
+    rival's adversarial clause, a specific counterplay, and a small bounded
+    threat bonus - the win has a cost, a discovered wedge draws the rival's eye.
+    Returns None when the report carries no concrete finding (the move then
+    degrades to its CEO-choice-only form). Reuses the SAME finding the World
+    Designer reacts to, so both Game Masters answer the workforce from one truth.
+    """
+    if not antagonist or not report:
+        return None
+    signal = str(report.get("signal") or "").strip()
+    source = str(report.get("source") or "").strip()
+    if signal:
+        return (
+            f"sees your workforce surface '{signal[:80]}' and races to plant its flag there first",
+            f"Defend the wedge: ship cited proof on '{signal[:60]}' before the rival does.",
+            2,
+        )
+    if source:
+        return (
+            f"reverse-engineers your {source[:48]}-backed proof and rushes a cheap imitation",
+            f"Differentiate: add a proof the rival cannot copy from {source[:48]}.",
+            1,
+        )
+    return None
+
+
+def _rival_role_for_pressure(antagonist: Any, pressure_type: str, target_metric: str) -> Dict[str, str]:
+    """Pick the rival org role that owns a pressure lane.
+
+    AntagonistState carries a small enemy org chart. This helper makes that org
+    mechanically real by assigning each move to the role whose lane/mandate best
+    matches the pressure, with deterministic fallback to the first role.
+    """
+    roles = list(getattr(antagonist, "organization_roles", None) or []) if antagonist else []
+    if not roles:
+        return {}
+    aliases = {
+        "market": {"sales", "distribution", "marketing", "market", "retention"},
+        "financial": {"financial", "pricing", "cost"},
+        "technical": {"technical", "data", "platform", "automation"},
+        "operational": {"ops", "supply", "compliance", "process"},
+        "cultural": {"cultural", "policy", "attention", "marketing", "compliance"},
+        "proof": {"data", "technical", "compliance", "proof"},
+        "trust": {"policy", "compliance", "retention", "sales", "trust"},
+        "velocity": {"technical", "distribution", "ops", "platform"},
+        "burn_pressure": {"financial", "cost", "pricing"},
+        "autonomy": {"policy", "cultural", "compliance", "platform"},
+    }
+    needles = set()
+    for key in (pressure_type, target_metric):
+        needles.update(aliases.get(key, {key}))
+
+    def normalize(role: Dict[str, Any]) -> Dict[str, str]:
+        return {
+            "title": str(role.get("title") or "").strip(),
+            "mandate": str(role.get("mandate") or "").strip(),
+            "pressure_lane": str(role.get("pressure_lane") or "").strip(),
+        }
+
+    for raw in roles:
+        role = normalize(raw if isinstance(raw, dict) else {})
+        haystack = f"{role['title']} {role['mandate']} {role['pressure_lane']}".lower()
+        if any(needle and needle.lower() in haystack for needle in needles):
+            return role
+    return normalize(roles[0] if isinstance(roles[0], dict) else {})
+
+
+def _build_antagonist_move(state: CompanyState, stage: Stage, choice: ChoiceRecord,
+                           worker_report: Optional[Dict[str, Any]] = None) -> Optional[AntagonistMove]:
     if not state.antagonist:
         return None
     pressure_type, target_metric, pressure_delta, fallback = _PRESSURE_BY_RULE.get(
         choice.rule_id, _PRESSURE_BY_RULE["custom.default"])
     tactic = state.antagonist.signature_tactic or fallback
-    narrative = (
-        f"{state.antagonist.name} answers the CEO choice '{choice.option}' with {tactic}. "
-        f"{choice.consequence_summary or fallback}"
-    )
+    rival_role = _rival_role_for_pressure(state.antagonist, pressure_type, target_metric)
+    role_title = rival_role.get("title") or "rival operator"
+    # The rival watches the WORKFORCE, not only the CEO: when the digital workers
+    # surface a real finding, the rival contests that exact wedge - reacting to
+    # what the team did, with a specific counterplay and a small threat bite.
+    reaction = _antagonist_reaction_to_report(state.antagonist, worker_report)
+    if reaction:
+        clause, counterplay, contest_bonus = reaction
+        narrative = (
+            f"{state.antagonist.name}'s {role_title} {clause}, answering the CEO call "
+            f"'{choice.option}'. {choice.consequence_summary or ''}"
+        ).strip()
+        pressure_delta = min(20, pressure_delta + contest_bonus)
+    else:
+        narrative = (
+            f"{state.antagonist.name} sends {role_title} to answer the CEO choice "
+            f"'{choice.option}' with {tactic}. "
+            f"{choice.consequence_summary or fallback}"
+        )
+        counterplay = _counterplay_for_metric(target_metric)
     return AntagonistMove(
         id=f"move_{stage.id}_{choice.rule_id.replace('.', '_')}",
         day_index=choice.day_index,
         stage_id=stage.id,
-        title=f"{state.antagonist.name}: {pressure_type} pressure",
+        title=f"{state.antagonist.name}: {role_title} pressure",
         tactic=tactic,
         pressure_type=pressure_type,
         target_metric=target_metric,
+        rival_role_title=role_title,
+        rival_role_mandate=rival_role.get("mandate", ""),
+        rival_pressure_lane=rival_role.get("pressure_lane", ""),
         pressure_delta=pressure_delta,
         narrative=narrative[:500],
-        counterplay=_counterplay_for_metric(target_metric),
+        counterplay=counterplay,
         source_rule_id=choice.rule_id,
     )
 
@@ -774,14 +1016,88 @@ def _upsert_inventory_from_stage(state: CompanyState, stage: Stage) -> None:
     state.game.inventory.append(item)
 
 
-def _assign_party_to_stage(state: CompanyState, stage: Stage) -> None:
+# Worker evolution: a digital worker that ships stages earns XP and levels up,
+# unlocking a new tool and gaining morale/trust. This is the roguelike growth
+# loop - the workforce gets stronger across the run, not a static blueprint.
+# Threshold scales with level so each tier costs more (level N needs 30*N XP).
+WORKER_XP_PER_LEVEL = max(1, int(os.getenv("WORKER_XP_PER_LEVEL", "30") or 30))
+WORKER_MAX_LEVEL = max(1, int(os.getenv("WORKER_MAX_LEVEL", "6") or 6))
+# Default unlock pool when the toolbox has no role-specific tools to grant.
+_DEFAULT_UNLOCK_TOOLS = ["map_company", "web_search", "recall"]
+
+
+def _unlock_pool_for_role(role: str) -> List[str]:
+    """Ordered tools a worker of this archetype can unlock as it levels.
+
+    Sourced from the real worker toolbox (tools_for_role) so an unlock grants a
+    tool the worker can actually draw; degrades to a generic research pool when
+    the toolbox is unavailable (keeps state/ importable without tools/)."""
+    try:
+        from tools.toolbox import tools_for_role
+        pool = list(tools_for_role(role) or [])
+    except Exception:
+        pool = []
+    for t in _DEFAULT_UNLOCK_TOOLS:
+        if t not in pool:
+            pool.append(t)
+    return pool
+
+
+def _evolve_worker_from_stage(state: CompanyState, member: WorkerPartyMember, stage: Stage) -> List[Dict[str, Any]]:
+    """Award XP for a shipped stage and level the worker up past each threshold.
+
+    Single source for worker progression: XP scales with the gate score, each
+    level costs WORKER_XP_PER_LEVEL * level, and a level-up grants morale/trust
+    and unlocks the next tool the worker can draw. Earned xp/level/tools are
+    propagated back to the OrgRole so they survive a party rebuild and a reload.
+    Returns the level-up events for the caller to log (empty = no level gained).
+    """
+    score = int(stage.validation_score or 0)
+    if score <= 0:
+        return []
+    member.xp = int(member.xp or 0) + score
+    events: List[Dict[str, Any]] = []
+    pool = _unlock_pool_for_role(member.role or stage.owner_role)
+    while member.level < WORKER_MAX_LEVEL and member.xp >= WORKER_XP_PER_LEVEL * member.level:
+        member.xp -= WORKER_XP_PER_LEVEL * member.level
+        member.level += 1
+        member.morale = max(0, min(100, member.morale + 15))
+        member.trust = max(0, min(100, member.trust + 10))
+        unlocked = next((t for t in pool if t not in member.tools), "")
+        if unlocked:
+            member.tools.append(unlocked)
+        events.append({
+            "worker_id": member.worker_id,
+            "title": member.title,
+            "level": member.level,
+            "xp": member.xp,
+            "next_threshold": WORKER_XP_PER_LEVEL * member.level,
+            "unlocked_tool": unlocked,
+        })
+    # Propagate the live progression back to the designed seat (single source of
+    # truth survives a _party_from_org rebuild and a save/reload).
+    if state.org:
+        for role in state.org.roles:
+            if role.id == member.worker_id:
+                role.xp = member.xp
+                role.level = member.level
+                role.tools = list(member.tools)
+                break
+    return events
+
+
+def _assign_party_to_stage(state: CompanyState, stage: Stage) -> List[Dict[str, Any]]:
     worker_id = stage.assigned_worker_id or ""
+    levelups: List[Dict[str, Any]] = []
     for member in state.game.party:
         if member.worker_id == worker_id:
             member.current_stage_id = stage.id
             member.status = "assigned" if stage.status != "completed" else "ready"
             member.fatigue = min(100, member.fatigue + 6)
             member.morale = max(0, min(100, member.morale + (3 if (stage.validation_score or 0) >= 80 else -4)))
+            if stage.status == "completed":
+                levelups = _evolve_worker_from_stage(state, member, stage)
+    return levelups
 
 
 def _apply_party_choice_cost(state: CompanyState, stage: Stage, choice: ChoiceRecord) -> None:
@@ -839,6 +1155,11 @@ def _escalation_stage(threat_level: int) -> str:
 THREAT_PER_DAY = max(0.0, float(os.getenv("ANTAGONIST_THREAT_PER_DAY", "1.1") or 1.1))
 _THREAT_ACCEL = {"watching": 0.7, "probing": 1.0, "contesting": 1.3, "crisis": 1.6, "endgame": 2.0}
 
+# Ending a turn to refresh the hand is not free: the rival uses the breather to
+# press, so refilling energy is a genuine tactical trade, not an exploit. Kept
+# modest so it teaches the loop without being punishing.
+END_TURN_THREAT_PRESS = max(0, int(os.getenv("END_TURN_THREAT_PRESS", "3") or 3))
+
 # When time pushes the rival into a higher escalation stage it makes a visible
 # MOVE in the world (narrative + a counterplay) AND bites a metric, reusing the
 # same AntagonistMove machinery CEO decisions use - so the rising number
@@ -884,15 +1205,20 @@ def _build_time_escalation_move(state: CompanyState, to_stage: str) -> Optional[
     tactic = (state.antagonist.signature_tactic if state.antagonist else "") or "relentless market pressure"
     ptype, target_metric, line, _delta = _ESCALATION_PRESSURE.get(
         to_stage, ("market", "trust", "tightens its grip on the market", {"trust": -3}))
-    narrative = f"{rival} {line}. Signature move: {tactic}."
+    rival_role = _rival_role_for_pressure(state.antagonist, ptype, target_metric)
+    role_title = rival_role.get("title") or "rival operator"
+    narrative = f"{rival}'s {role_title} {line}. Signature move: {tactic}."
     return AntagonistMove(
         id=f"move_time_{to_stage}",
         day_index=int(state.game.day_index or 0),
         stage_id="",
-        title=f"{rival}: {to_stage} pressure",
+        title=f"{rival}: {role_title} pressure",
         tactic=tactic,
         pressure_type=ptype,
         target_metric=target_metric,
+        rival_role_title=role_title,
+        rival_role_mandate=rival_role.get("mandate", ""),
+        rival_pressure_lane=rival_role.get("pressure_lane", ""),
         pressure_delta=0,
         narrative=narrative[:500],
         counterplay=_counterplay_for_metric(target_metric),
@@ -1035,6 +1361,15 @@ def _build_route_rooms(state: CompanyState) -> tuple[List[Dict[str, Any]], List[
 
 def _refresh_run_status(state: CompanyState) -> None:
     game = state.game
+    stages = list(state.world.stages) if state.world else []
+    all_stages_completed = bool(stages) and all(s.status == "completed" for s in stages)
+    if game.run_status == "victory" and not all_stages_completed:
+        game.run_status = "active"
+        game.victory_reason = ""
+        if state.world:
+            state.world.status = "active"
+        if state.stage == "launched":
+            state.stage = "validated"
     if game.run_status != "active":
         return
     if state.economics.trust <= 0:
@@ -1046,8 +1381,20 @@ def _refresh_run_status(state: CompanyState) -> None:
     elif game.antagonist_arc.threat_level >= 100:
         game.run_status = "defeat"
         game.defeat_reason = "Antagonist reached endgame dominance."
-    elif state.world and state.world.status == "completed" and state.stage == "launched":
-        game.run_status = "victory"
-        game.victory_reason = "World completed and venture launched."
+    elif state.world and state.world.status == "completed" and state.stage == "launched" and all_stages_completed:
+        # Completing the 8-beat Story Circle launches the first operating loop;
+        # it is not narrative victory. The larger win condition is contributing
+        # materially to automated basic needs, so keep the run alive and unlock
+        # continuation play instead of ending the game here.
+        game.run_status = "active"
+        game.victory_reason = ""
+        if "venture_loop_launched" not in game.unlocks:
+            game.unlocks.append("venture_loop_launched")
         if "starter_plus_draw" not in game.unlocks:
             game.unlocks.append("starter_plus_draw")
+
+
+def reconcile_run_status(state: CompanyState) -> None:
+    """Normalize lifecycle status after loading older saved runs."""
+    if state and state.game:
+        _refresh_run_status(state)

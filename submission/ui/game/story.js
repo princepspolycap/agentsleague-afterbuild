@@ -652,6 +652,7 @@ const state = {
     org: null,
     economics: null,
     game: null,      // authoritative card-building roguelike state from backend
+    latestServerState: null,
     stages: [],
     decisions: [],   // CEO gate decisions (session memory ledger)
     playerCommands: [], // free-form CEO moves issued from the persistent footer input
@@ -669,11 +670,29 @@ const state = {
     },
 };
 
+function syncLatestState(s) {
+    if (!s) return;
+    state.latestServerState = s;
+    if (s.org) state.org = s.org;
+    if (s.economics) state.economics = s.economics;
+    if (s.game) state.game = s.game;
+    if (s.antagonist) state.antagonist = s.antagonist;
+    if (s.world) {
+        state.stages = Array.isArray(s.world.stages) ? s.world.stages : state.stages;
+        state.decisions = Array.isArray(s.world.decisions) ? s.world.decisions : state.decisions;
+    }
+    syncCompanyContext(s);
+}
+
 const sceneStatus = {
     actor: "World Designer",
     speaking: "The Worldkeeper",
     source: "live session",
 };
+
+function cleanDeployLabel(label) {
+    return /simulation/i.test(String(label || "")) ? "" : String(label || "");
+}
 
 function chapterProgressLabel() {
     const total = Array.isArray(state.stages) ? state.stages.length : 0;
@@ -706,7 +725,9 @@ function runPulse(actionText = "") {
     const net = Number(econ.net_profit_usd || 0);
     const runwayDays = Number(econ.runway_days || 0);
     const threat = Number((game.antagonist_arc || {}).threat_level || 0);
-    const runStatus = String(game.run_status || "active").toLowerCase();
+    const completed = (state.stages || []).filter((s) => String(s.status || "").toLowerCase() === "completed").length;
+    const rawRunStatus = String(game.run_status || "active").toLowerCase();
+    const runStatus = rawRunStatus === "victory" && completed < total ? "active" : rawRunStatus;
     let label = "Stable";
     let tone = "stable";
 
@@ -777,6 +798,264 @@ function escText(s) {
         '"': "&quot;",
         "'": "&#039;",
     }[ch]));
+}
+
+function fmtSigned(n) {
+    const v = Number(n || 0);
+    return `${v > 0 ? "+" : ""}${v}`;
+}
+
+function estimatedInvocationCost(inv) {
+    const econ = state.economics || {};
+    const org = state.org || {};
+    const inPrice = Number(econ.worker_price_in_per_m || org.worker_price_in_per_m || 0);
+    const outPrice = Number(econ.worker_price_out_per_m || org.worker_price_out_per_m || 0);
+    const tokensIn = Number(inv && (inv.tokens_in ?? inv.tokensIn) || 0);
+    const tokensOut = Number(inv && (inv.tokens_out ?? inv.tokensOut) || 0);
+    const reasoning = Number(inv && (inv.reasoning_tokens ?? inv.reasoningTokens) || 0);
+    if (!inPrice && !outPrice) return "";
+    const usd = (tokensIn / 1_000_000) * inPrice + ((tokensOut + reasoning) / 1_000_000) * outPrice;
+    if (!usd) return "$0.0000";
+    return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+
+function invocationTokenLine(inv) {
+    const tokensIn = Number(inv && (inv.tokens_in ?? inv.tokensIn) || 0);
+    const tokensOut = Number(inv && (inv.tokens_out ?? inv.tokensOut) || 0);
+    const reasoning = Number(inv && (inv.reasoning_tokens ?? inv.reasoningTokens) || 0);
+    const parts = [];
+    if (tokensIn) parts.push(`${tokensIn.toLocaleString()} in`);
+    if (tokensOut) parts.push(`${tokensOut.toLocaleString()} out`);
+    if (reasoning) parts.push(`${reasoning.toLocaleString()} thinking`);
+    return parts.join(" / ") || "not reported";
+}
+
+let actionReceiptTimer = 0;
+function showActionReceipt(title, chips = [], detail = "", tone = "good") {
+    const host = $("player-command-status");
+    if (!host) return;
+    if (actionReceiptTimer) clearTimeout(actionReceiptTimer);
+    const cls = ["cmd-status", "action-receipt", tone].filter(Boolean).join(" ");
+    const chipHtml = chips.slice(0, 7).map((chip) => `<span>${escText(chip)}</span>`).join("");
+    host.className = cls;
+    host.innerHTML = `<b>${escText(title)}</b>${chipHtml ? `<div>${chipHtml}</div>` : ""}${detail ? `<em>${escText(detail)}</em>` : ""}`;
+    actionReceiptTimer = setTimeout(() => {
+        if (host.classList.contains("action-receipt")) {
+            host.className = "cmd-status";
+            host.innerHTML = "";
+        }
+    }, 9000);
+}
+
+const RECEIPT_LABELS = {
+    proof: "proof",
+    trust: "trust",
+    velocity: "velocity",
+    burn_pressure: "burn pressure",
+    autonomy: "autonomy",
+    runway_months: "runway",
+};
+
+function moveReceiptChips(move) {
+    const effects = (move && move.effects_applied) || {};
+    const chips = [];
+    Object.entries(effects.economics_delta || {}).forEach(([key, val]) => {
+        const label = RECEIPT_LABELS[key] || key.replace(/_/g, " ");
+        chips.push(`${label} ${val.before}->${val.after} (${fmtSigned(val.delta)})`);
+    });
+    const threat = effects.antagonist_threat;
+    if (threat && threat.before !== undefined && threat.after !== undefined) {
+        chips.push(`rival ${threat.before}->${threat.after} (${fmtSigned(Number(threat.after) - Number(threat.before))})`);
+    }
+    const market = effects.market || {};
+    if (market.market_share_before !== undefined && market.market_share_after !== undefined) {
+        chips.push(`market ${Number(market.market_share_before).toFixed(1)}%->${Number(market.market_share_after).toFixed(1)}%`);
+    }
+    if (market.paying_customers !== undefined) {
+        const gained = Number(market.customers_gained || 0);
+        chips.push(`customers ${market.paying_customers}${gained ? ` (${fmtSigned(gained)})` : ""}`);
+    }
+    if (market.monthly_revenue_usd !== undefined) chips.push(`rev ${moneyCompact(Number(market.monthly_revenue_usd || 0))}/mo`);
+    if (market.deal_cash_usd) chips.push(`cash ${moneyCompact(Number(market.deal_cash_usd || 0))}`);
+    const party = effects.party;
+    if (party && party.before && party.after) {
+        const name = party.after.title || "worker";
+        if (party.before.fatigue !== party.after.fatigue) chips.push(`${name} fatigue ${party.before.fatigue}->${party.after.fatigue}`);
+        if (party.before.morale !== party.after.morale) chips.push(`${name} morale ${party.before.morale}->${party.after.morale}`);
+    }
+    if (Array.isArray(effects.drawn) && effects.drawn.length) chips.push(`drew ${effects.drawn.length}`);
+    if (Array.isArray(effects.next_drawn) && effects.next_drawn.length) chips.push(`new hand ${effects.next_drawn.length}`);
+    if (effects.destination) chips.push(`to ${effects.destination}`);
+    return chips;
+}
+
+function completedStageCount() {
+    return (state.stages || []).filter((stage) => String(stage.status || "").toLowerCase() === "completed").length;
+}
+
+function roleTitleForNeed(org, keys, fallback, run = null) {
+    const roles = (org && Array.isArray(org.roles)) ? org.roles : [];
+    const found = roles.find((role) => {
+        const hay = `${role.title || ""} ${role.deployment_hint || ""} ${role.lifecycle_stage || ""} ${(role.kpis || []).join(" ")}`.toLowerCase();
+        return keys.some((key) => hay.includes(key));
+    });
+    if (found && found.title) return found.title;
+    const stages = ((run && run.world && Array.isArray(run.world.stages)) ? run.world.stages : state.stages) || [];
+    const stage = stages.find((item) => {
+        const hay = `${item.assigned_worker_title || ""}`.toLowerCase();
+        return keys.some((key) => hay.includes(key));
+    });
+    return (stage && (stage.assigned_worker_title || ROLE_NAME[stage.owner_role])) || fallback;
+}
+
+function ventureModelData(run = null) {
+    const snap = run || state.latestServerState || {};
+    const sections = snap.venture_model && snap.venture_model.sections;
+    if (sections) {
+        const section = (key) => sections[key] || {};
+        return {
+            company: section("company").value || snap.name || state.company || "Company",
+            offer: section("offer").value || "Product/service not defined",
+            customer: section("customer").value || "Target customer not defined",
+            model: section("business_model").value || "Business model pending",
+            revenueShort: section("revenue_model").value || "Not priced yet",
+            revenueDetail: section("revenue_model").detail || section("revenue_model").value || "No revenue model yet.",
+            builder: section("build_owner").value || "No product owner",
+            growth: section("sell_owner").value || "No revenue owner",
+            ops: section("ops_owner").value || "No delivery owner",
+            antagonist: section("rival").value || "The rival",
+            sources: {
+                company: section("company").source,
+                offer: section("offer").source,
+                customer: section("customer").source,
+                model: section("business_model").source,
+                revenue: section("revenue_model").source,
+                build: section("build_owner").source,
+                sell: section("sell_owner").source,
+                ops: section("ops_owner").source,
+                rival: section("rival").source,
+            },
+            meanings: {
+                company: section("company").meaning,
+                offer: section("offer").meaning,
+                customer: section("customer").meaning,
+                model: section("business_model").meaning,
+                revenue: section("revenue_model").meaning,
+                build: section("build_owner").meaning,
+                sell: section("sell_owner").meaning,
+                ops: section("ops_owner").meaning,
+                rival: section("rival").meaning,
+            },
+            statuses: {
+                build: section("build_owner").status,
+                sell: section("sell_owner").status,
+                ops: section("ops_owner").status,
+            },
+        };
+    }
+    const profile = snap.founder_profile || (state.preflight && state.preflight.ares && state.preflight.ares.profile) || {};
+    const org = snap.org || state.org || {};
+    const antagonist = (snap.antagonist && snap.antagonist.name) || ((snap.game || state.game || {}).antagonist_arc || {}).antagonist_name || "The rival";
+    const offer = profile.what_they_sell || profile.company_summary || org.company_summary || state.pitch || "the product/service is not defined yet";
+    const customer = profile.target_customer || (snap.antagonist && snap.antagonist.target_customer_overlap) || "the target customer is not defined yet";
+    const model = profile.business_model || org.operating_model || "business model pending";
+    const builder = roleTitleForNeed(org, ["builder", "designer", "engineer", "product", "mvp", "search"], "No product owner", snap);
+    const growth = roleTitleForNeed(org, ["growth", "sales", "gtm", "closer", "marketer"], "No revenue owner", snap);
+    const ops = roleTitleForNeed(org, ["ops", "operation", "retention", "support", "success", "take"], "No delivery owner", snap);
+    // Revenue model, made concrete from live economics: how money actually comes
+    // in (price per customer) and what that adds up to right now. This is the
+    // "how do we make money" answer the HUD numbers were missing context for.
+    const econ = snap.economics || state.economics || {};
+    const arpu = Number(econ.arpu_usd || 0);
+    const rev = Number(econ.monthly_revenue_usd || 0);
+    const customers = Number(econ.paying_customers || 0);
+    const revenueShort = arpu > 0 ? `$${arpu.toLocaleString()}/customer \u00b7 mo` : "Not priced yet";
+    const revenueDetail = arpu > 0
+        ? `Recurring: $${arpu.toLocaleString()}/customer/mo \u00d7 ${customers.toLocaleString()} paying = $${rev.toLocaleString()}/mo today. Win more customers by shipping verified stages.`
+        : "Recurring per-customer pricing; nothing sold yet, so revenue is $0/mo until a stage ships and a customer is won.";
+    return { company: snap.name || state.company || "Company", offer, customer, model, revenueShort, revenueDetail, builder, growth, ops, antagonist };
+}
+
+// One source of truth for what each company-context section MEANS, so the
+// footer dashboard and the canvas venture model teach the same definitions
+// (business model vs revenue model, who builds vs who sells, etc.).
+const COMPANY_CONTEXT_META = {
+    company: "The venture you are building this run - every move ladders up to this one company.",
+    offer: "Offer - the product or service the company actually sells.",
+    customer: "Customer - the specific people or orgs the offer is sold to.",
+    model: "Business model - how the company is structured to create, deliver, and defend value.",
+    revenue: "Revenue model - how money actually comes in: price per customer x paying customers = monthly revenue.",
+    build: "Build - the worker accountable for making the product/service exist.",
+    sell: "Sell - the worker who owns market share and revenue.",
+    ops: "Ops - the worker who runs delivery and keeps customers.",
+    rival: "Rival - the antagonist market logic pressuring the run; counter it with proof, trust, shipping, and counterplay cards.",
+};
+
+const COMPANY_CONTEXT_SOURCE = {
+    company: "Source: World Designer / saved run state.",
+    offer: "Source: Founder Analyst profile fields, then Org Designer summary fallback.",
+    customer: "Source: Founder Analyst target customer, with antagonist overlap as fallback.",
+    model: "Source: Founder Analyst business_model, then Org Designer operating model fallback.",
+    revenue: "Source: live economics: ARPU, paying customers, and monthly revenue.",
+    build: "Source: current org + World Designer stage ownership. If missing, the workforce has no product owner right now.",
+    sell: "Source: current org + World Designer stage ownership. If missing, no worker owns revenue right now.",
+    ops: "Source: current org + World Designer stage ownership. This owner runs delivery and retention.",
+    rival: "Source: Antagonist Generator + current antagonist arc.",
+};
+
+function companyContextTip(label, meaning, value, detail, source) {
+    return `${label}\nWhat: ${meaning}\nValue: ${detail || value}\n${source}`;
+}
+
+function ventureModelHTML(run = null) {
+    const vm = ventureModelData(run);
+    const M = COMPANY_CONTEXT_META;
+    const cell = (cls, label, value, tip) =>
+        `<div${cls ? ` class="${cls}"` : ""} title="${esc(tip)}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`;
+    return `<div class="venture-model" aria-label="Venture model">`
+        + cell("", "Offer", vm.offer, `${M.offer}\n\n${vm.offer}`)
+        + cell("", "Customer", vm.customer, `${M.customer}\n\n${vm.customer}`)
+        + cell("", "Business model", vm.model, `${M.model}\n\n${vm.model}`)
+        + cell("", "Revenue model", vm.revenueShort, `${M.revenue}\n\n${vm.revenueDetail}`)
+        + cell("", "Build", vm.builder, M.build)
+        + cell("", "Sell", vm.growth, M.sell)
+        + cell("", "Operate", vm.ops, M.ops)
+        + cell("rival", "Rival", vm.antagonist, M.rival)
+        + `</div>`;
+}
+
+function syncCompanyContext(run = null) {
+    const host = $("company-context");
+    if (!host) return;
+    const hasWorld = Array.isArray(state.stages) && state.stages.length > 0;
+    if (!hasWorld && !state.company && !(run && run.name)) {
+        host.hidden = true;
+        host.innerHTML = "";
+        return;
+    }
+    const vm = ventureModelData(run);
+    const M = COMPANY_CONTEXT_META;
+    const S = COMPANY_CONTEXT_SOURCE;
+    const gap = (value, key) => ((vm.statuses && vm.statuses[key] === "gap") || /^No\s/i.test(String(value || ""))) ? " gap" : "";
+    const meaning = (key, fallback) => (vm.meanings && vm.meanings[key]) || fallback;
+    const source = (key) => (vm.sources && vm.sources[key]) || S[key];
+    // One tile grammar: label + value + a tooltip that teaches the concept AND
+    // shows the full (untruncated) value. Owners flag gaps; rival reads red.
+    const tile = (cls, key, label, value, meaningText, detail) => {
+        const tip = companyContextTip(label, meaningText, value, detail, source(key));
+        return `<div class="ccx-tile${cls ? " " + cls : ""}" data-move-tip="${escText(tip)}" tabindex="0" role="button" aria-label="${escText(tip)}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`;
+    };
+    host.hidden = false;
+    host.innerHTML = tile("lead", "company", "Company", vm.company, meaning("company", M.company))
+        + tile("", "offer", "Offer", vm.offer, meaning("offer", M.offer))
+        + tile("", "customer", "Customer", vm.customer, meaning("customer", M.customer))
+        + tile("", "model", "Business model", vm.model, meaning("model", M.model))
+        + tile("", "revenue", "Revenue model", vm.revenueShort, meaning("revenue", M.revenue), vm.revenueDetail)
+        + tile("owner" + gap(vm.builder, "build"), "build", "Build", vm.builder, meaning("build", M.build))
+        + tile("owner" + gap(vm.growth, "sell"), "sell", "Sell", vm.growth, meaning("sell", M.sell))
+        + tile("owner" + gap(vm.ops, "ops"), "ops", "Ops", vm.ops, meaning("ops", M.ops))
+        + tile("rival", "rival", "Rival", vm.antagonist, meaning("rival", M.rival));
+    bindMoveTooltips(host);
 }
 
 function renderResources() {
@@ -853,7 +1132,7 @@ function cardEffectLine(card) {
     const econ = effects.economics_delta || {};
     Object.entries(econ).forEach(([key, value]) => {
         const signed = Number(value) > 0 ? `+${value}` : `${value}`;
-        parts.push(`${signed} ${key.replace("_", " ")}`);
+        parts.push(`${signed} ${key.replace(/_/g, " ")}`);
     });
     if (effects.antagonist_threat_delta) {
         const v = Number(effects.antagonist_threat_delta);
@@ -880,6 +1159,133 @@ const CARD_KIND_META = {
 };
 function cardKindMeta(kind) {
     return CARD_KIND_META[kind] || { label: kind || "card", accent: "#94a3b8", soft: "rgba(148,163,184,0.12)" };
+}
+
+const CARD_TERM_MEANING = {
+    proof: "Proof is evidence your venture can work.",
+    trust: "Trust is public confidence and buyer belief.",
+    velocity: "Velocity is how fast the team can ship the next stage.",
+    burn_pressure: "Burn pressure is operational strain; lower is better.",
+    autonomy: "Autonomy is how much freedom the founder keeps.",
+    threat: "Threat is the rival's pressure; at 100 the run is lost.",
+    market: "Customers grow revenue through market share.",
+    draw: "Draw adds more card options this turn.",
+    fatigue: "Fatigue makes the workforce harder to push later.",
+};
+
+function cardTermLine(card) {
+    const effects = card && card.effects ? card.effects : {};
+    const terms = new Set();
+    Object.keys(effects.economics_delta || {}).forEach((key) => terms.add(key));
+    if (effects.antagonist_threat_delta) terms.add("threat");
+    if (effects.market_share_delta) terms.add("market");
+    if (effects.draw) terms.add("draw");
+    if (effects.party && effects.party.fatigue) terms.add("fatigue");
+    return Array.from(terms).slice(0, 3).map((term) => CARD_TERM_MEANING[term]).filter(Boolean).join(" ");
+}
+
+function cardUseCase(card) {
+    const effects = card && card.effects ? card.effects : {};
+    const econ = effects.economics_delta || {};
+    if (Number(effects.antagonist_threat_delta || 0) < 0) return "the rival's threat is climbing or you need to protect the run before the next stage.";
+    if (Number(effects.market_share_delta || 0) > 0) return "you want customers and revenue now, especially before burn or threat gets louder.";
+    if (Number(econ.proof || 0) > 0 && Number(econ.trust || 0) > 0) return "the next gate needs both evidence and confidence from the market.";
+    if (Number(econ.velocity || 0) > 0) return "you need tempo this turn and can afford the listed cost or fatigue.";
+    if (Number(econ.autonomy || 0) > 0) return "you want the digital workforce to carry more of the operating load.";
+    if (Number(econ.burn_pressure || 0) < 0) return "strain is creeping up and you want the company to run cleaner.";
+    if (effects.draw) return "you need more options before committing to a larger play.";
+    return "its listed meters are the ones you most need to move right now.";
+}
+
+function cardMoveTooltip(card, opts = {}) {
+    if (!card) return "";
+    const cost = Number(card.cost || 0);
+    const lines = [card.name || "Move"];
+    if (opts.lockReason) lines.push(`Locked: ${opts.lockReason}`);
+    lines.push(`Result: ${cardEffectLine(card)}${card.upgraded ? " / upgraded" : ""}${card.exhausts ? " / exhausts" : ""}.`);
+    if (card.description) lines.push(`Move: ${card.description}`);
+    const terms = cardTermLine(card);
+    if (terms) lines.push(`Means: ${terms}`);
+    lines.push(`Use when: ${cardUseCase(card)}`);
+    lines.push(`Cost: ${cost} energy. Source: ${cardSourceLine(card)}.`);
+    return lines.join("\n");
+}
+
+let moveTooltipEl = null;
+
+function ensureMoveTooltip() {
+    if (moveTooltipEl) return moveTooltipEl;
+    moveTooltipEl = document.createElement("div");
+    moveTooltipEl.id = "move-tooltip";
+    moveTooltipEl.className = "move-tooltip";
+    moveTooltipEl.setAttribute("role", "tooltip");
+    moveTooltipEl.hidden = true;
+    document.body.appendChild(moveTooltipEl);
+    document.addEventListener("pointerdown", (event) => {
+        if (!event.target.closest("[data-move-tip]")) hideMoveTooltip();
+    });
+    window.addEventListener("resize", () => hideMoveTooltip());
+    return moveTooltipEl;
+}
+
+function positionMoveTooltip(anchor, tooltip) {
+    const rect = anchor.getBoundingClientRect();
+    const tipRect = tooltip.getBoundingClientRect();
+    const margin = 12;
+    let left = rect.left + (rect.width / 2) - (tipRect.width / 2);
+    left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
+    let top = rect.top - tipRect.height - 10;
+    if (top < margin) top = Math.min(window.innerHeight - tipRect.height - margin, rect.bottom + 10);
+    tooltip.style.left = `${Math.max(margin, left)}px`;
+    tooltip.style.top = `${Math.max(margin, top)}px`;
+}
+
+function showMoveTooltip(anchor) {
+    if (!anchor || !anchor.dataset.moveTip) return;
+    const tooltip = ensureMoveTooltip();
+    const lines = anchor.dataset.moveTip.split("\n").filter(Boolean);
+    tooltip.innerHTML = lines.map((line, index) => index === 0
+        ? `<b>${escText(line)}</b>`
+        : `<span>${escText(line)}</span>`).join("");
+    tooltip.hidden = false;
+    anchor.setAttribute("aria-describedby", "move-tooltip");
+    requestAnimationFrame(() => positionMoveTooltip(anchor, tooltip));
+}
+
+function hideMoveTooltip(anchor) {
+    if (anchor && typeof anchor.removeAttribute === "function") anchor.removeAttribute("aria-describedby");
+    if (moveTooltipEl) moveTooltipEl.hidden = true;
+}
+
+function bindMoveTooltips(host) {
+    if (!host || host.dataset.moveTooltipsBound) return;
+    host.dataset.moveTooltipsBound = "1";
+    host.addEventListener("pointerover", (event) => {
+        const anchor = event.target.closest("[data-move-tip]");
+        if (anchor && host.contains(anchor)) showMoveTooltip(anchor);
+    });
+    host.addEventListener("pointerout", (event) => {
+        const anchor = event.target.closest("[data-move-tip]");
+        if (!anchor) return;
+        requestAnimationFrame(() => {
+            const focused = document.activeElement === anchor || anchor.contains(document.activeElement);
+            if (!anchor.matches(":hover") && !focused) hideMoveTooltip(anchor);
+        });
+    });
+    host.addEventListener("focusin", (event) => showMoveTooltip(event.target.closest("[data-move-tip]")));
+    host.addEventListener("focusout", (event) => {
+        const anchor = event.target.closest("[data-move-tip]");
+        if (!anchor) return;
+        requestAnimationFrame(() => {
+            if (!anchor.matches(":hover") && document.activeElement !== anchor) hideMoveTooltip(anchor);
+        });
+    });
+    host.addEventListener("click", (event) => {
+        if (!event.target.closest("[data-move-help]")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        showMoveTooltip(event.target.closest("[data-move-tip]"));
+    }, true);
 }
 
 // Meters where "up" helps the company; burn_pressure is the inverse (down good).
@@ -935,16 +1341,64 @@ let rewardResolve = null;
 let layoutSyncRaf = 0;
 let footerLayoutObserver = null;
 
+// --- Stage layer coordinator -------------------------------------------------
+// Single source of truth for the immersive overlay layers that can take over the
+// stage: the speaker spotlight, the agent / worker inspector, the agent
+// stand-up, the reasoning theater, and the dilemma gate. Components never poke
+// the body classes directly any more - they call setStageLayer(name, on) so
+// every layer knows what else is on stage, and the footer + scene react
+// coherently instead of each toggle fighting the others. Each layer keeps its
+// own body class as the CSS hook; this owns when they turn on/off and derives
+// the shared footer state from the active set.
+const STAGE_LAYERS = new Set();
+// Layers that own the stage and would collide with the footer's playable hand +
+// command input, so those controls step back (the worker mini + economy clock
+// stay - they are identity and live pressure, not controls). The stand-up has
+// its own CEO input, the inspector is a focused read, and the dilemma is a modal
+// decision - in all three the footer hand is unusable or overlapping.
+const FOOTER_QUIETING_LAYERS = new Set(["standup-active", "inspecting-agent", "inspecting-worker", "dilemma"]);
+
+function setStageLayer(name, on) {
+    if (!name) return;
+    if (on) STAGE_LAYERS.add(name); else STAGE_LAYERS.delete(name);
+    document.body.classList.toggle(name, !!on);
+    const quiet = [...FOOTER_QUIETING_LAYERS].some((layer) => STAGE_LAYERS.has(layer));
+    document.body.classList.toggle("footer-quiet", quiet);
+    // The footer's playable cluster just changed height; re-derive the stage
+    // reserve so the world canvas + hand never fight the captions.
+    queueFooterAwareLayoutSync();
+}
+
+function stageLayerActive(name) {
+    return STAGE_LAYERS.has(name);
+}
+
 function syncFooterAwareLayout() {
     const scene = $("scene");
     const footer = document.querySelector("footer");
     if (!scene || !footer) return;
     document.body.classList.toggle("compact-ui", window.innerWidth <= 1100);
-    const footerHeight = Math.ceil(footer.getBoundingClientRect().height || 0);
+    const footerRect = footer.getBoundingClientRect();
+    const footerHeight = Math.ceil(footerRect.height || 0);
     if (!footerHeight) return;
     // Keep stage overlays (party rail, dialogue reserve, inspector lift) tied
     // to the REAL footer stack height, not static breakpoint assumptions.
     scene.style.setProperty("--hand-bottom", `${footerHeight + 28}px`);
+    // The scene's lower reserve MUST track the real lower band, not a static
+    // :root calc (which resolved against the stale default --hand-bottom and
+    // let the canvas slide under the footer). Reserve from the topmost element
+    // actually occupying the bottom band - the footer, plus the floating party
+    // hand when it is on stage - down to the viewport bottom, with a small gap.
+    const vh = window.innerHeight || footerRect.bottom;
+    let bandTop = footerRect.top;
+    const party = $("party");
+    const partyShown = party
+        && !document.body.classList.contains("footer-quiet")
+        && getComputedStyle(party).display !== "none"
+        && party.getBoundingClientRect().height > 1;
+    if (partyShown) bandTop = Math.min(bandTop, party.getBoundingClientRect().top);
+    const reserve = Math.max(96, Math.ceil(vh - bandTop) + 18);
+    scene.style.setProperty("--lower-stage-reserve", `${reserve}px`);
 }
 
 function queueFooterAwareLayoutSync() {
@@ -963,6 +1417,16 @@ function ensureFooterLayoutObserver() {
     footerLayoutObserver = new ResizeObserver(() => queueFooterAwareLayoutSync());
     footerLayoutObserver.observe(footer);
     if (hand) footerLayoutObserver.observe(hand);
+    // The party rail's visibility is derived from what #diagram renders (the
+    // :has(.world-canvas) rule in story.html) - a content swap there can show or
+    // hide the rail with NO JS running. Re-derive the stage reserve whenever the
+    // diagram content changes so the world-canvas band always clears the rail
+    // (no per-call-site wiring; one observer keeps the geometry in sync).
+    const diagram = $("diagram");
+    if (diagram && typeof MutationObserver !== "undefined") {
+        new MutationObserver(() => queueFooterAwareLayoutSync())
+            .observe(diagram, { childList: true });
+    }
 }
 
 function renderGameHand(game) {
@@ -980,35 +1444,73 @@ function renderGameHand(game) {
     host.hidden = false;
     host.classList.remove("reward-draft");
     const energy = Number(game.energy || 0);
+    const maxEnergy = Number(game.max_energy ?? 0);
     const threat = Number((game.antagonist_arc || {}).threat_level || 0);
-    const stats = `<div class="hand-stat"><b>${energy}/${game.max_energy ?? 0}</b> energy<span>deck ${game.deck ? game.deck.length : 0} &middot; discard ${game.discard ? game.discard.length : 0}</span>${pending.length ? `<span>draft ${pending.length} ready</span>` : ""}</div>`;
+    const shippedStages = completedStageCount();
+    const cardLockReason = (card) => {
+        if (Number(((card && card.effects) || {}).market_share_delta || 0) && shippedStages <= 0) {
+            return "Ship one stage first - there is no product or service to sell yet.";
+        }
+        const cost = Number((card && card.cost) || 0);
+        return cost > energy ? `Needs ${cost} energy - you have ${energy}. End turn to refresh.` : "";
+    };
+    // Out of juice for this hand: every card costs more than we can pay. The
+    // hand never dead-ends - End Turn refreshes it - so we surface that path
+    // instead of leaving the player staring at greyed-out cards.
+    const tapped = hand.length > 0 && !hand.some((c) => !cardLockReason(c));
+    const statCls = ["hand-stat", tapped ? "tapped" : ""].filter(Boolean).join(" ");
+    const stats = `<div class="${statCls}"><b>${energy}/${maxEnergy}</b> energy<span>deck ${game.deck ? game.deck.length : 0} &middot; discard ${game.discard ? game.discard.length : 0}</span>${tapped ? `<span class="hand-tapped">out of energy &middot; end turn to refresh</span>` : (pending.length ? `<span>draft ${pending.length} ready</span>` : "")}</div>`;
     const cards = hand.map((card) => {
         const cost = Number(card.cost || 0);
-        const affordable = cost <= energy;
+        const lockReason = cardLockReason(card);
+        const affordable = !lockReason;
         const meta = cardKindMeta(card.kind);
         // Teach the antagonist loop: when the rival is closing in, the cards
         // that push threat back pulse so the player learns the counter.
         const counterHot = card.kind === "counterplay" && threat >= 45 && affordable;
         const cls = ["game-card-btn", counterHot ? "counter-hot" : ""].filter(Boolean).join(" ");
-        return `<button class="${cls}" type="button" data-card-id="${escText(card.id)}" ${affordable ? "" : "disabled"} style="--gc-accent:${meta.accent};--gc-soft:${meta.soft}" title="${escText(card.description || "")}">
-            <span class="game-card-top"><span class="gc-kind">${escText(meta.label)}</span><span class="game-card-cost">${cost}</span></span>
+        const tip = cardMoveTooltip(card, { lockReason });
+        return `<button class="${cls}" type="button" data-card-id="${escText(card.id)}" data-move-tip="${escText(tip)}" ${affordable ? "" : `aria-disabled="true"`} style="--gc-accent:${meta.accent};--gc-soft:${meta.soft}" title="${escText(tip)}">
+            <span class="game-card-top"><span class="gc-kind">${escText(meta.label)}</span><span class="gc-cost-row"><span class="gc-help" data-move-help="1" aria-hidden="true">?</span><span class="game-card-cost">${cost}</span></span></span>
             <span class="game-card-name">${escText(card.name)}</span>
             <span class="gc-effects">${cardEffectChips(card)}</span>
             <span class="gc-source">${escText(cardSourceLine(card))}${card.upgraded ? " &middot; upgraded" : ""}</span>
         </button>`;
     }).join("");
+    // End Turn is always available while there is a hand: refreshing refills
+    // energy but lets the rival press, so it stays a real choice rather than a
+    // free reset. This is the affordance that makes energy legible.
+    const endTurnTip = "End turn\nResult: discard your hand, refill energy, and draw fresh cards.\nMeans: the rival presses while you regroup, so threat can rise.\nUse when: you are out of energy, your hand is weak, or you need a clean draw before the next stage.";
+    const endTurn = hand.length
+        ? `<button class="end-turn-btn${tapped ? " urgent" : ""}" type="button" data-end-turn="1" data-move-tip="${escText(endTurnTip)}" title="${escText(endTurnTip)}">
+            <span class="et-label">End turn <span class="gc-help" data-move-help="1" aria-hidden="true">?</span></span>
+            <span class="et-sub">refresh hand &middot; rival presses</span>
+        </button>`
+        : "";
+    const draftTip = pending.length
+        ? `Draft ready\nResult: choose one of ${pending.length} reward cards to add to your deck.\nMeans: reward cards are forged from the worker's real stage receipts.\nUse when: you want to bank this stage and shape future turns.`
+        : "";
     const draft = pending.length
-        ? `<button class="game-card-btn pending" type="button" data-open-reward="1" style="--gc-accent:#f4c95d;--gc-soft:rgba(244,201,93,0.12)">
-            <span class="game-card-top"><span class="gc-kind">reward</span><span class="game-card-cost">${pending.length}</span></span>
+        ? `<button class="game-card-btn pending" type="button" data-open-reward="1" data-move-tip="${escText(draftTip)}" style="--gc-accent:#f4c95d;--gc-soft:rgba(244,201,93,0.12)" title="${escText(draftTip)}">
+            <span class="game-card-top"><span class="gc-kind">reward</span><span class="gc-cost-row"><span class="gc-help" data-move-help="1" aria-hidden="true">?</span><span class="game-card-cost">${pending.length}</span></span></span>
             <span class="game-card-name">Draft ready</span>
             <span class="gc-effects"><span class="gc-chip util">choose 1 of ${pending.length}</span></span>
             <span class="gc-source">forged from this stage</span>
         </button>`
         : "";
-    host.innerHTML = stats + cards + draft;
+    host.innerHTML = stats + cards + endTurn + draft;
+    bindMoveTooltips(host);
     host.querySelectorAll("[data-card-id]").forEach((btn) => {
-        btn.addEventListener("click", () => playGameCard(btn.dataset.cardId));
+        btn.addEventListener("click", () => {
+            if (btn.getAttribute("aria-disabled") === "true") {
+                showMoveTooltip(btn);
+                return;
+            }
+            playGameCard(btn.dataset.cardId);
+        });
     });
+    const endTurnBtn = host.querySelector("[data-end-turn]");
+    if (endTurnBtn) endTurnBtn.addEventListener("click", () => endGameTurn());
     const draftBtn = host.querySelector("[data-open-reward]");
     if (draftBtn) draftBtn.addEventListener("click", () => renderRewardDraft(game, true));
     queueFooterAwareLayoutSync();
@@ -1029,11 +1531,12 @@ function renderRewardDraft(game, forceOpen = false) {
     host.hidden = false;
     host.classList.add("reward-draft");
     host.innerHTML = pending.slice(0, 3).map((card, i) => `
-        <button class="reward-pick" type="button" data-reward-card-id="${escText(card.id)}">
-            <b>${i + 1} &middot; ${escText(card.name)} <span class="game-card-cost">${Number(card.cost || 0)}</span></b>
+        <button class="reward-pick" type="button" data-reward-card-id="${escText(card.id)}" data-move-tip="${escText(cardMoveTooltip(card))}" title="${escText(cardMoveTooltip(card))}">
+            <b><span class="reward-title">${i + 1} &middot; ${escText(card.name)}</span><span class="gc-cost-row"><span class="gc-help" data-move-help="1" aria-hidden="true">?</span><span class="game-card-cost">${Number(card.cost || 0)}</span></span></b>
             <span>${escText(card.description || "")}</span>
             <em>${escText(cardEffectLine(card))}${card.upgraded ? " / upgraded" : ""}${card.exhausts ? " / exhausts" : ""}</em>
         </button>`).join("");
+    bindMoveTooltips(host);
     host.querySelectorAll("[data-reward-card-id]").forEach((btn) => {
         btn.addEventListener("click", () => claimRewardCard(btn.dataset.rewardCardId));
     });
@@ -1070,6 +1573,16 @@ function maybeShowRunOver(game) {
     const overlay = $("run-over-overlay");
     if (!overlay) return;
     const status = String((game && game.run_status) || "active").toLowerCase();
+    const stages = Array.isArray(state.stages) ? state.stages : [];
+    const done = stages.filter((s) => String(s.status || "").toLowerCase() === "completed").length;
+    const invalidVictory = status === "victory" && (!stages.length || done < stages.length);
+    if (invalidVictory) {
+        overlay.hidden = true;
+        overlay.classList.remove("show");
+        overlay.setAttribute("aria-hidden", "true");
+        overlay.dataset.shownFor = "";
+        return;
+    }
     if (status !== "victory" && status !== "defeat") {
         if (!overlay.hidden) { overlay.hidden = true; overlay.classList.remove("show"); overlay.setAttribute("aria-hidden", "true"); }
         overlay.dataset.shownFor = "";
@@ -1081,8 +1594,6 @@ function maybeShowRunOver(game) {
 
     const econ = state.economics || {};
     const arc = game.antagonist_arc || {};
-    const stages = Array.isArray(state.stages) ? state.stages : [];
-    const done = stages.filter((s) => String(s.status || "").toLowerCase() === "completed").length;
     const victory = status === "victory";
 
     const card = $("run-over-card");
@@ -1132,14 +1643,46 @@ async function playGameCard(cardId, targetId = "") {
             syncGameState(res.state.game);
         }
         const move = res.move || {};
+        const chips = moveReceiptChips(move);
+        const energy = Number(move.energy_spent || 0);
+        if (energy) chips.unshift(`energy -${energy}`);
+        showActionReceipt(move.summary || "Card played", chips, "Those changes are now in company state and saved to the run.");
+        setActionHint(move.summary || "Card effects applied.");
         lens("reasoning", `played ${move.card_id || cardId}: ${move.summary || "card effects applied"}`);
         return res;
     } catch (e) {
         setActionHint("Card could not be played.");
+        showActionReceipt("Card rejected", [e.message || String(e)], "No state changed.", "bad");
         lens("reliability", `card play rejected: ${e.message || e}`);
         return null;
     }
 }
+
+async function endGameTurn() {
+    try {
+        const stage = state.stages[state.idx] || {};
+        const res = await api("/api/game/turn/end", { stage_id: stage.id || "" });
+        if (res.state) {
+            setHud(res.state);
+            setResourcesFromEconomics(res.state.economics, res.state.org || state.org);
+            syncGameState(res.state.game);
+        }
+        const move = res.move || {};
+        const arc = (move.effects_applied || {}).antagonist_threat || {};
+        const pressed = (arc.after !== undefined && arc.before !== undefined) ? arc.after - arc.before : 0;
+        setActionHint("Fresh hand drawn - energy refilled.");
+        showActionReceipt("Turn ended", moveReceiptChips(move), "Energy refilled, but the rival gets a small press while you regroup.", pressed > 0 ? "warn" : "good");
+        lens("reasoning", `ended turn ${move.turn_index || ""}: hand refreshed, energy restored`);
+        if (pressed > 0) lens("reliability", `rival pressed +${pressed} threat while you regrouped`);
+        return res;
+    } catch (e) {
+        setActionHint("Could not end the turn.");
+        showActionReceipt("End turn rejected", [e.message || String(e)], "No state changed.", "bad");
+        lens("reliability", `end turn rejected: ${e.message || e}`);
+        return null;
+    }
+}
+window.endGameTurn = endGameTurn;
 
 async function claimRewardCard(cardId) {
     if (!cardId) return null;
@@ -1156,6 +1699,8 @@ async function claimRewardCard(cardId) {
             overlay.hidden = true;
         }
         const move = res.move || {};
+        showActionReceipt(move.summary || "Reward drafted", moveReceiptChips(move), "It enters discard now and can be drawn on a later turn.");
+        setActionHint(move.summary || "Reward added to your deck.");
         lens("reasoning", `drafted ${move.card_id || cardId}: ${move.summary || "reward added to discard"}`);
         if (rewardResolve) {
             const done = rewardResolve;
@@ -1166,6 +1711,7 @@ async function claimRewardCard(cardId) {
     } catch (e) {
         document.querySelectorAll("[data-reward-card-id]").forEach((el) => { el.disabled = false; });
         setActionHint("Reward could not be drafted.");
+        showActionReceipt("Reward rejected", [e.message || String(e)], "No state changed.", "bad");
         lens("reliability", `reward draft rejected: ${e.message || e}`);
         return null;
     }
@@ -1399,7 +1945,7 @@ function setParty(activeKey, line, activeName) {
         // (the same cc-* renderer), never a second modal.
         return `<div class="party-agent${active ? " active" : ""}${done ? " done" : ""}${flipped ? " flipped" : ""}"`
             + ` data-owner="${esc(m.name)}" role="button" tabindex="0" aria-pressed="${flipped ? "true" : "false"}"`
-            + ` title="${esc(m.name)} - tap to flip to its dossier">`
+            + ` title="${esc(m.name)} - click to inspect, press Space to flip this card">`
             + `<div class="pa-inner">`
             + `<div class="pa-face pa-front">`
             + `<div class="pa-layer ${gm ? "gm" : "dw"}">${gm ? "Game Master" : "Digital Worker"}</div>`
@@ -1408,7 +1954,7 @@ function setParty(activeKey, line, activeName) {
             + `<div class="party-role">${esc(ROLE_NAME[m.role] || m.role || "agent")}</div>`
             + partyMetricMarkup(m)
             + `<div class="party-line">${esc(statusLine).slice(0, 110)}</div>`
-            + `<div class="party-badge">${hasCard ? `receipts &middot; ${score}/100` : `tap to flip`}</div>`
+            + `<div class="party-badge">${hasCard ? `inspect &middot; ${score}/100` : `click inspect`}</div>`
             + `</div>`
             + `<div class="pa-face pa-back">${dossierBackHTML(partyCardEv(m))}</div>`
             + `</div></div>`;
@@ -1429,6 +1975,106 @@ function recordCardEvidence(name, role, ev) {
     setParty(state.activePartyKey, state.activePartyLine, state.activePartyName);
 }
 
+function workerStagesForMember(member, run = latestRunState()) {
+    const stages = (run.world && Array.isArray(run.world.stages)) ? run.world.stages : (state.stages || []);
+    if (!member) return [];
+    return stages.filter((stage) =>
+        (member.workerId && stage.assigned_worker_id === member.workerId)
+        || stage.assigned_worker_title === member.name
+        || (!stage.assigned_worker_title && (ROLE_NAME[stage.owner_role] || stage.owner_role) === member.name)
+        || (!member.workerId && stage.owner_role === member.role));
+}
+
+function invocationsForMember(member, run = latestRunState()) {
+    const invocations = (run.world && Array.isArray(run.world.invocations)) ? run.world.invocations : [];
+    const ownedIds = new Set(workerStagesForMember(member, run).map((stage) => stage.id));
+    return invocations.filter((inv) =>
+        (member.workerId && inv.worker_id === member.workerId)
+        || inv.worker_title === member.name
+        || ownedIds.has(inv.stage_id)
+        || (!member.workerId && inv.role === member.role));
+}
+
+function partyStateForMember(member, run = latestRunState()) {
+    const party = run.game && Array.isArray(run.game.party) ? run.game.party : [];
+    if (!member) return null;
+    return party.find((p) =>
+        (member.workerId && p.worker_id === member.workerId)
+        || p.title === member.name
+        || p.role === member.role) || null;
+}
+
+function workerSuggestionLines(member, run = latestRunState()) {
+    const econ = run.economics || state.economics || {};
+    const game = run.game || state.game || {};
+    const current = (run.world && run.world.stages || state.stages || [])[state.idx] || null;
+    const role = (member && member.role) || "strategist";
+    const suggestions = [];
+    const threat = Number((game.antagonist_arc || {}).threat_level || 0);
+    const burn = Number(econ.burn_pressure || 0);
+    const market = Number(econ.market_share || 0);
+    if (role === "strategist") {
+        suggestions.push(current ? `Narrow the next move around ${current.title || "the current stage"}.` : "Pick one beachhead before widening the run.");
+        if (market <= 0) suggestions.push("Ask for one proof-backed customer segment before spending more energy.");
+    } else if (role === "designer") {
+        suggestions.push("Turn the next CEO move into a testable product artifact, not a broad theme.");
+        if (burn >= 35) suggestions.push("Favor a lean build path that lowers burn pressure.");
+    } else if (role === "marketer") {
+        suggestions.push("Play or request a customer signal so revenue starts moving, not just proof.");
+        if (market <= 0) suggestions.push("Name the first buyer and the channel that reaches them this turn.");
+    } else if (role === "ops") {
+        suggestions.push("Protect runway: choose the move that keeps the workforce operating cleanly.");
+        if (threat >= 35) suggestions.push("Use counterplay before the rival gets room to escalate.");
+    }
+    if (threat >= 50) suggestions.unshift("The rival is loud. Push threat down before the next stage if you can.");
+    return uniq(suggestions).slice(0, 4);
+}
+
+function workerEvidenceFromState(name) {
+    const run = latestRunState();
+    const member = partyMembers().find((m) => m.name === name || m.key === name);
+    if (!member || isGameMaster(member.role)) return null;
+    const invocations = invocationsForMember(member, run);
+    const latestInv = invocations.slice(-1)[0] || null;
+    const ownedStages = workerStagesForMember(member, run);
+    const completed = ownedStages.filter((stage) => stage.status === "completed");
+    const scored = completed.map((stage) => Number(stage.validation_score)).filter(Number.isFinite);
+    const quality = scored.length ? Math.max(...scored) : null;
+    const active = member.key === state.activePartyKey || member.role === state.activePartyKey
+        || member.name === state.activePartyName || member.name === state.activePartyKey;
+    const activeLine = active ? (state.activePartyLine || "working with you") : (member.title || "waiting for the brief");
+    const ceoMessages = [];
+    (state.playerCommands || []).slice(-3).forEach((cmd) => ceoMessages.push({ kind: "ceo_decision", text: cmd.text || "CEO move" }));
+    (((run.world || {}).decisions) || []).slice(-3).forEach((decision) => {
+        ceoMessages.push({ kind: "ceo_decision", text: `${decision.stage_title || decision.stage_id || "Gate"}: ${decision.option || decision.tradeoff || "decision"}` });
+    });
+    return {
+        role: member.role || "strategist",
+        name: member.name,
+        roleLabel: ROLE_NAME[member.role] || member.role,
+        score: quality === null ? "--" : quality,
+        deployment: latestInv
+            ? `${cleanDeployLabel(latestInv.deployment)}${latestInv.framework === "microsoft-agent-framework" ? " · Agent Framework" : ""}`.trim()
+            : (active ? "active in the current world state" : "awaiting a completed run"),
+        tools: latestInv ? (latestInv.tools_drawn || []) : [],
+        trace: latestInv ? (latestInv.tool_trace || []) : [],
+        mafTools: latestInv ? (latestInv.maf_tools_called || []) : [],
+        mafMemory: [...(latestInv ? (latestInv.maf_memory || []) : []), ...ceoMessages].slice(-8),
+        currentEvents: latestInv ? (latestInv.current_events || []) : [],
+        status: latestInv ? (latestInv.status || "completed") : (active ? "running" : "idle"),
+        tokens_in: latestInv ? (latestInv.tokens_in || 0) : 0,
+        tokens_out: latestInv ? (latestInv.tokens_out || 0) : 0,
+        reasoningTokens: latestInv ? (latestInv.reasoning_tokens || 0) : 0,
+        reasoningPreview: latestInv ? (latestInv.reasoning_preview || activeLine) : activeLine,
+        latency: latestInv ? (latestInv.latency_s || 0) : 0,
+        workerStages: ownedStages,
+        workerInvocations: invocations,
+        workerPartyState: partyStateForMember(member, run),
+        suggestions: workerSuggestionLines(member, run),
+        liveOnly: !latestInv,
+    };
+}
+
 function liveCardEvidence(name) {
     const member = partyMembers().find((m) => m.name === name || m.key === name);
     if (!member) return null;
@@ -1446,10 +2092,155 @@ function liveCardEvidence(name) {
         mafTools: [],
         mafMemory: [],
         currentEvents: [],
+        status: active ? "running" : "idle",
+        tokens_in: 0,
+        tokens_out: 0,
         reasoningTokens: 0,
         reasoningPreview: currentLine,
         latency: 0,
         liveOnly: true,
+    };
+}
+
+function latestRunState() {
+    return state.latestServerState || {
+        name: state.company,
+        pitch: state.pitch,
+        org: state.org,
+        world: { stages: state.stages || [], decisions: state.decisions || [], invocations: [] },
+        economics: state.economics,
+        game: state.game,
+        replay_log: [],
+    };
+}
+
+function uniq(list) {
+    return Array.from(new Set((list || []).filter(Boolean).map((x) => String(x).trim()).filter(Boolean)));
+}
+
+const GM_EVENT_TYPES = {
+    narrator: new Set([
+        "SESSION_START", "URL_SCRAPED", "WEB_SEARCHED", "PROFILE_ANALYZED",
+        "ANTAGONIST_FORGED", "WORLD_GROUNDED", "WORLD_NAMED", "WORLD_DESIGNED",
+        "WORLD_ADAPTED", "ORG_BOUND", "KNOWLEDGE_STRUCTURED", "DILEMMA_LIVE_ERROR",
+    ]),
+    orgdesigner: new Set([
+        "ORG_CHARTERED", "ORG_BOUND", "ORG_EXPORTED", "WORKFORCE_HIRED",
+        "WORKFORCE_CONTRACTED", "KNOWLEDGE_STRUCTURED",
+    ]),
+};
+const GM_ACTORS = {
+    narrator: new Set(["world_designer", "narrator", "profile_analyst", "scraper", "iq_sync", "antagonist", "system"]),
+    orgdesigner: new Set(["org_designer", "iq_sync", "memory", "system", "founder"]),
+};
+
+function gmReplayEvents(role, run) {
+    const log = Array.isArray(run.replay_log) ? run.replay_log : [];
+    const types = GM_EVENT_TYPES[role] || GM_EVENT_TYPES.narrator;
+    const actors = GM_ACTORS[role] || GM_ACTORS.narrator;
+    return log.filter((event) => types.has(event.event_type) || actors.has(event.actor));
+}
+
+function gmToolsFor(role, run, events) {
+    const names = [];
+    const has = (type) => (events || []).some((event) => event.event_type === type);
+    if (role === "orgdesigner") {
+        if (run.founder_profile || run.pitch) names.push("design_org");
+        if (run.org) names.push("initialize_economics_from_org");
+        if (has("ORG_BOUND")) names.push("bind_world_to_org");
+        if (has("ORG_EXPORTED")) names.push("org_to_workforce_bundle");
+        if (has("WORKFORCE_HIRED")) names.push("hire_worker");
+        if (has("WORKFORCE_CONTRACTED")) names.push("fire_or_contract_worker");
+    } else {
+        if (run.founder_profile && run.founder_profile.source === "url") names.push("scrape_profile");
+        if (run.founder_profile) names.push("analyze_founder_profile");
+        if (run.antagonist || has("ANTAGONIST_FORGED")) names.push("forge_antagonist");
+        if (run.world) names.push("design_world_named");
+        if (has("WORLD_ADAPTED")) names.push("adapt_remaining_stages");
+        if (has("KNOWLEDGE_STRUCTURED")) names.push("refresh_session_knowledge");
+    }
+    return uniq(names);
+}
+
+function gmMemoryFor(role, run, events) {
+    const memory = [];
+    const profile = run.founder_profile || null;
+    if (profile && role !== "orgdesigner") {
+        memory.push({ kind: "user_profile", text: profile.company_summary || profile.brief || profile.source_ref || "Founder profile mapped" });
+        (profile.signals || []).slice(0, 2).forEach((signal) => memory.push({ kind: "agent_memory", text: signal }));
+    }
+    const decisions = ((run.world && run.world.decisions) || state.decisions || []).slice(-3);
+    decisions.forEach((decision) => {
+        memory.push({ kind: "ceo_decision", text: `${decision.stage_title || decision.stage_id || "Gate"}: ${decision.option || decision.tradeoff || "decision recorded"}` });
+    });
+    (events || []).filter((event) => event.event_type === "MEMORY_WRITTEN").slice(-3).forEach((event) => {
+        memory.push({ kind: "agent_memory", text: event.message || "Memory written" });
+    });
+    return memory.slice(0, 8);
+}
+
+function authoredStageRows(run) {
+    const stages = (run.world && Array.isArray(run.world.stages)) ? run.world.stages : (state.stages || []);
+    return stages.slice(0, 8).map((stage, index) => ({
+        n: index + 1,
+        title: stage.title || stage.id || `Stage ${index + 1}`,
+        owner: stage.assigned_worker_title || ROLE_NAME[stage.owner_role] || stage.owner_role || "worker",
+        status: stage.status || "not-started",
+    }));
+}
+
+function gmReasoningLine(role, run, events, aw) {
+    const world = run.world || {};
+    const stages = Array.isArray(world.stages) ? world.stages.length : 0;
+    const org = run.org || null;
+    const profile = run.founder_profile || null;
+    const last = (events || []).slice(-1)[0];
+    if (role === "orgdesigner") {
+        if (org) {
+            return `Chartered ${org.digital_worker_count || 0} digital workers around the founder seat; monthly run cost ${fmtMoney(org.monthly_burn_usd || 0)}.`;
+        }
+        return aw.stateText || "Waiting to design the workforce.";
+    }
+    if (stages) {
+        const source = profile && profile.source === "url" ? ` from ${profile.host || profile.source_ref || "profile"}` : " from the founder brief";
+        return `Authored ${stages} Story Circle stages${source}; latest replay event: ${(last && last.event_type) || "world ready"}.`;
+    }
+    return aw.stateText || "Waiting for the founder signal.";
+}
+
+function gameMasterEvidence(aw) {
+    const run = latestRunState();
+    const role = aw.role || "narrator";
+    const events = gmReplayEvents(role, run).slice(-10);
+    const world = run.world || {};
+    const invocations = Array.isArray(world.invocations) ? world.invocations : [];
+    const stages = Array.isArray(world.stages) ? world.stages : [];
+    const completed = stages.filter((stage) => stage.status === "completed").length;
+    const arc = (run.game && run.game.antagonist_arc) || {};
+    const displayName = aw.displayName || ROLE_NAME[role] || role;
+    return {
+        role,
+        name: displayName,
+        roleLabel: role === "orgdesigner" ? "Game Master - workforce author" : "Game Master - world author",
+        deployment: cleanDeployLabel(aw.deployLabel) || (role === "orgdesigner" ? "Org Designer - Foundry reasoning" : "World Designer - Foundry reasoning"),
+        score: "--",
+        tools: gmToolsFor(role, run, events),
+        trace: [],
+        mafTools: [],
+        mafMemory: gmMemoryFor(role, run, events),
+        currentEvents: invocations.flatMap((inv) => inv.current_events || []).slice(-3),
+        reasoningTokens: 0,
+        reasoningPreview: gmReasoningLine(role, run, events, aw),
+        authoredStages: role === "narrator" ? authoredStageRows(run) : [],
+        replayEvents: events,
+        gmSummary: {
+            stages,
+            completed,
+            invocations: invocations.length,
+            decisions: ((world.decisions || state.decisions || [])).length,
+            threat: arc.threat_level,
+            escalation: arc.escalation_stage,
+        },
     };
 }
 
@@ -1460,15 +2251,39 @@ function isGameMaster(role) {
     return role === "narrator" || role === "orgdesigner";
 }
 
+// One source of truth for which of the three agent classes a role belongs to,
+// so every surface (party rail, speaking spotlight, stand-up transcript) frames
+// it the same way. "gm" = the world masters that author the run (World Designer
+// / Narrator, Org Designer) - they get the gold announcement treatment; "rival"
+// = the antagonist pressuring the run (red); "dw" = a player digital worker.
+function agentClassForRole(role) {
+    if (isGameMaster(role)) return "gm";
+    const r = String(role || "").toLowerCase();
+    if (r === "antagonist" || r === "villain" || r === "rival") return "rival";
+    return "dw";
+}
+
 // The dossier of a card: the real receipts - tools the model called,
 // reasoning, memory injected, gate score, and the world meters it moves. Reuses
 // the cc-* receipt classes; rendered into the inspector dialog.
 function dossierBackHTML(ev) {
     if (!ev) return "";
+    const isGm = !!ev.gmSummary;
     const color = ROLE_COLOR[ev.role] || T.narrator;
     const roleName = ev.roleLabel || ROLE_NAME[ev.role] || ev.role || "agent";
     const score = (ev.score === undefined || ev.score === null) ? "--" : ev.score;
     const worldStats = resourceMeterMarkup(Object.keys(RESOURCE_SPEC), "cc");
+    const section = (title, body, opts = {}) => {
+        if (!body) return "";
+        const collapsible = opts.collapsible !== false;
+        const detail = esc(opts.detail || title);
+        const classes = ["cc-section", collapsible ? "is-collapsible" : "", opts.open ? "open" : ""].filter(Boolean).join(" ");
+        if (!collapsible) return `<div class="${classes}"><div class="cc-h">${esc(title)}</div>${body}</div>`;
+        return `<div class="${classes}" data-detail="${detail}">`
+            + `<button class="cc-section-toggle" type="button" aria-expanded="${opts.open ? "true" : "false"}">`
+            + `<span class="cc-h">${esc(title)}</span><span class="cc-more">details</span></button>`
+            + `<div class="cc-section-body">${body}</div></div>`;
+    };
     // Per-worker economics: the cheap run cost vs the human seat it replaces -
     // distinct per worker, sourced from its designed org seat (when chartered).
     const seat = (state.org && Array.isArray(state.org.roles))
@@ -1486,8 +2301,9 @@ function dossierBackHTML(ev) {
             + (seat.runs_on_model ? `<div class="cc-econ"><span>Runs on</span><b>${esc(seat.runs_on_model)}</b></div>` : "")
             + `</div>`;
     }
-    const toolChips = (ev.mafTools || []).length
-        ? ev.mafTools.map((t) => `<span class="cc-chip">&#9874; ${esc(t)}</span>`).join(" ")
+    const toolNames = uniq([...(ev.mafTools || []), ...(ev.tools || [])]);
+    const toolChips = toolNames.length
+        ? toolNames.map((t) => `<span class="cc-chip">&#9874; ${esc(t)}</span>`).join(" ")
         : `<span class="cc-chip dim">no tool calls yet</span>`;
     const memChips = (ev.mafMemory || []).map((m) =>
         `<span class="cc-chip mem">${m.kind === "ceo_decision" ? "&#9819;" : m.kind === "agent_memory" ? "&#9851;" : m.kind === "current_event" ? "&#128240;" : "&#9783;"} ${esc((m.text || "").slice(0, 30))}</span>`).join(" ");
@@ -1500,34 +2316,85 @@ function dossierBackHTML(ev) {
     const spoken = (spokenLines[ev.name] || []).slice(-3).map((line) =>
         `<div class="cc-spoken-line">&ldquo;${esc((line.text || "").slice(0, 120))}${(line.text || "").length > 120 ? "&hellip;" : ""}&rdquo;</div>`
     ).join("");
+    const authoredHtml = (ev.authoredStages || []).slice(0, 8).map((stage) =>
+        `<div class="cc-stage-row"><span>${stage.n}</span><b>${esc(stage.title).slice(0, 58)}</b><em>${esc(stage.owner)} · ${esc(stage.status)}</em></div>`
+    ).join("");
+    const workerStagesHtml = (ev.workerStages || []).slice(0, 8).map((stage, index) =>
+        `<div class="cc-stage-row"><span>${index + 1}</span><b>${esc(stage.title || stage.id || "Stage").slice(0, 58)}</b><em>${esc(stage.status || "not-started")} · ${esc(stage.success_metric || stage.goal || "")}</em></div>`
+    ).join("");
+    const suggestionHtml = (ev.suggestions || []).map((line) =>
+        `<button type="button" class="cc-suggestion" data-suggestion="${esc(line)}">${esc(line)}</button>`
+    ).join("");
+    const partyState = ev.workerPartyState;
+    const wLevel = Number((partyState && partyState.level) || 1);
+    const wXp = Number((partyState && partyState.xp) || 0);
+    const wNext = 30 * wLevel; // mirrors WORKER_XP_PER_LEVEL * level on the server
+    const workerStateHtml = partyState ? `<div class="cc-gm-grid worker-state-grid">`
+        + `<div><span>Level</span><b>${wLevel}</b></div>`
+        + `<div><span>XP</span><b>${wXp} / ${wNext}</b></div>`
+        + `<div><span>Status</span><b>${esc(partyState.status || "ready")}</b></div>`
+        + `<div><span>Morale</span><b>${Number(partyState.morale || 0)}</b></div>`
+        + `<div><span>Fatigue</span><b>${Number(partyState.fatigue || 0)}</b></div>`
+        + `<div><span>Trust</span><b>${Number(partyState.trust || 0)}</b></div>`
+        + `</div>` : "";
+    const replayHtml = (ev.replayEvents || []).slice(-5).reverse().map((event) =>
+        `<div class="cc-replay-line"><span>${esc(event.event_type || "EVENT")}</span><b>${esc(event.actor || "system")}</b><em>${esc((event.message || "").slice(0, 110))}</em></div>`
+    ).join("");
+    const gm = ev.gmSummary || null;
+    const gmHtml = gm ? `<div class="cc-gm-grid">`
+        + `<div><span>Stages</span><b>${Number(gm.completed || 0)}/${(gm.stages || []).length || 0}</b></div>`
+        + `<div><span>Worker turns</span><b>${Number(gm.invocations || 0)}</b></div>`
+        + `<div><span>CEO memories</span><b>${Number(gm.decisions || 0)}</b></div>`
+        + `<div><span>Rival</span><b>${gm.threat == null ? "--" : `${gm.threat}/100`}</b></div>`
+        + `</div>` : "";
+    const callCount = (ev.trace || []).length;
+    const cost = estimatedInvocationCost(ev);
+    const proofHtml = !isGm ? `<div class="cc-econ-grid evidence-grid">`
+        + `<div class="cc-econ"><span>Status</span><b>${esc(ev.status || (callCount ? "completed" : "idle"))}</b></div>`
+        + `<div class="cc-econ"><span>Model</span><b>${esc(cleanDeployLabel(ev.deployment) || "simulation")}</b></div>`
+        + `<div class="cc-econ"><span>Tokens</span><b>${esc(invocationTokenLine(ev))}</b></div>`
+        + `<div class="cc-econ ${cost ? "gold" : ""}"><span>Est. call cost</span><b>${esc(cost || "n/a")}</b></div>`
+        + `<div class="cc-econ"><span>Latency</span><b>${Number(ev.latency || 0).toFixed(2)}s</b></div>`
+        + `<div class="cc-econ ${callCount >= 2 ? "gold" : ""}"><span>Tool calls</span><b>${callCount}/2 shown</b></div>`
+        + `</div>` : "";
     let traceHtml = "";
-    (ev.trace || []).forEach((t) => {
-        const argStr = t.args ? esc(JSON.stringify(t.args)).slice(0, 64) : "";
-        traceHtml += `<div class="cc-trace-line"><span class="cc-call">&rarr; ${esc(t.tool)}</span>`
-            + `<span class="cc-args">${argStr}</span>`
-            + `<div class="cc-res">&larr; ${esc(String(t.result || ""))} <span class="cc-ms">${t.ms}ms</span></div></div>`;
+    (ev.trace || []).forEach((t, index) => {
+        const argStr = t.args ? esc(JSON.stringify(t.args)).slice(0, 180) : "";
+        traceHtml += `<div class="cc-trace-line"><span class="cc-call">call ${index + 1}: ${esc(t.tool)}</span>`
+            + `<span class="cc-args">params ${argStr || "{}"}</span>`
+            + `<div class="cc-res">result ${esc(String(t.result || "ok")).slice(0, 220)} <span class="cc-ms">${t.ms}ms &middot; ${esc(t.source || "local")}</span></div></div>`;
     });
     return `<div class="cc-head compact" style="--cc-color:${color}">`
         + `<div><div class="cc-name">${esc(ev.name)}</div>`
         + `<div class="cc-role">${esc(roleName)} &middot; receipts</div>`
-        + (ev.deployment ? `<div class="cc-deploy">${esc(ev.deployment)}</div>` : ``)
+        + (cleanDeployLabel(ev.deployment) ? `<div class="cc-deploy">${esc(cleanDeployLabel(ev.deployment))}</div>` : ``)
         + `</div><div class="cc-score"><b>${score}</b><span>/100</span></div></div>`
-        + (econHtml ? `<div class="cc-section"><div class="cc-h">This worker's economics</div>${econHtml}</div>` : ``)
-        + `<div class="cc-section"><div class="cc-h">Tools the model called</div><div class="cc-chips">${toolChips}</div></div>`
-        + (spoken ? `<div class="cc-section"><div class="cc-h">Spoken lines</div>${spoken}</div>` : ``)
-        + (memChips ? `<div class="cc-section"><div class="cc-h">Memory injected</div><div class="cc-chips">${memChips}</div></div>` : ``)
-        + (eventsHtml ? `<div class="cc-section"><div class="cc-h">Live current events researched</div><div class="cc-trace">${eventsHtml}</div></div>` : ``)
-        + (traceHtml ? `<div class="cc-section"><div class="cc-h">tools/call trace</div><div class="cc-trace">${traceHtml}</div></div>` : ``)
-        + (ev.reasoningPreview ? `<div class="cc-section"><div class="cc-h">Reasoning${ev.reasoningTokens ? ` &middot; ${ev.reasoningTokens} tok` : ""}</div><div class="cc-text quote">&ldquo;${esc((ev.reasoningPreview || "").slice(0, 150))}&hellip;&rdquo;</div></div>` : ``)
-        + `<div class="cc-section"><div class="cc-h">Company state it shifts</div><div class="cc-metric-grid">${worldStats}</div></div>`
-        + `<div class="cc-badge-back">tap to return</div>`;
+        + section("Scoring proof", proofHtml, { open: true, detail: "model / tokens / calls" })
+        + section(isGm ? "Run authorship" : "This worker's economics", isGm ? gmHtml : econHtml, { open: true, detail: "model summary" })
+        + section("Worker state", workerStateHtml, { open: true, detail: "morale/fatigue/status" })
+        + section("Suggested CEO moves", suggestionHtml ? `<div class="cc-suggestions">${suggestionHtml}</div>` : "", { open: !isGm, detail: "suggestions from current state" })
+        + section("Tools and actions", `<div class="cc-chips">${toolChips}</div>`, { open: true, detail: "tools/actions" })
+        + section("World authored", authoredHtml ? `<div class="cc-stage-list">${authoredHtml}</div>` : "", { detail: "stage graph from state" })
+        + section("Stages this worker owns", workerStagesHtml ? `<div class="cc-stage-list">${workerStagesHtml}</div>` : "", { detail: "worker-owned stages" })
+        + section("Spoken lines", spoken, { detail: "recent spoken messages" })
+        + section(isGm ? "IQ / memory restored" : "Memory injected", memChips ? `<div class="cc-chips">${memChips}</div>` : "", { detail: "memory / IQ context" })
+        + section("Replay receipts", replayHtml ? `<div class="cc-replay">${replayHtml}</div>` : "", { detail: "state replay log" })
+        + section("Live current events researched", eventsHtml ? `<div class="cc-trace">${eventsHtml}</div>` : "", { detail: "current events" })
+        + section("tools/call trace", traceHtml ? `<div class="cc-trace">${traceHtml}</div>` : "", { detail: "tool trace" })
+        + section(isGm ? "Authorship note" : `Reasoning${ev.reasoningTokens ? ` &middot; ${ev.reasoningTokens} tok` : ""}`,
+            ev.reasoningPreview ? `<div class="cc-text quote">&ldquo;${esc((ev.reasoningPreview || "").slice(0, 150))}&hellip;&rdquo;</div>` : "",
+            { detail: isGm ? "world author note" : "model reasoning excerpt" })
+        + (isGm ? `` : section("Current company meters", `<div class="cc-metric-grid">${worldStats}</div>`, { collapsible: false }));
 }
 
 // The dossier source for a party card's back face. Reuses the same recorded
 // receipts the modal uses (real run evidence, then the live fallback), so the
 // flip and the footer-mini inspector share one source of truth.
 function partyCardEv(m) {
-    const ev = cardEvidence[m.name] || liveCardEvidence(m.name);
+    if (isGameMaster(m.role)) {
+        return gameMasterEvidence({ role: m.role, displayName: m.name, deployLabel: "", stateText: m.title || "" });
+    }
+    const ev = cardEvidence[m.name] || workerEvidenceFromState(m.name) || liveCardEvidence(m.name);
     if (ev) {
         if (!ev.roleLabel) ev.roleLabel = ROLE_NAME[m.role] || m.role;
         return ev;
@@ -1538,6 +2405,9 @@ function partyCardEv(m) {
         roleLabel: ROLE_NAME[m.role] || m.role,
         score: "--",
         tools: [], trace: [], mafTools: [], mafMemory: [],
+        status: "idle",
+        tokens_in: 0,
+        tokens_out: 0,
         reasoningPreview: m.title || "",
         reasoningTokens: 0,
         deployment: "awaiting a completed run",
@@ -1592,7 +2462,7 @@ function setWorker(role, deployLabel, stateText, thinking, displayName) {
             ms.hidden = false;
         } else { ms.hidden = true; ms.innerHTML = ""; }
     }
-    const deployEl = $("worker-deploy"); if (deployEl) deployEl.textContent = deployLabel || "";
+    const deployEl = $("worker-deploy"); if (deployEl) deployEl.textContent = cleanDeployLabel(deployLabel);
     const stateEl = $("worker-state");
     if (stateEl) stateEl.innerHTML = thinking
         ? `<span class="pulse"></span> ${stateText}`
@@ -1608,12 +2478,14 @@ function setWorker(role, deployLabel, stateText, thinking, displayName) {
     setSceneStatus({
         actor: displayName || ROLE_NAME[role] || role,
         speaking: (activeSpeakerSnapshot().heroName || displayName || ROLE_NAME[role] || role),
-        source: deployLabel || sceneStatus.source,
+        source: cleanDeployLabel(deployLabel) || sceneStatus.source,
     });
     // A worker stepping onto the stage clears the core-agent spotlight; the
     // reasoning theater takes over for worker chapters.
     if (!SPOTLIGHT_ROLES.has(role)) hideSpeakerSpotlight();
-    if (inspectorOpen) openAgentInspector(inspectorOwner);
+    const inspectorRole = gameMasterRoleFromOwner(inspectorOwner);
+    if (inspectorOpen && inspectorRole && inspectorRole === role) openAgentInspector(inspectorOwner);
+    if (workerInspectorOpen && workerInspectorMatchesUpdate(workerInspectorOwner, role, displayName)) openWorkerInspector(workerInspectorOwner);
 }
 
 // --- Active-agent inspector: the gorgeous floating card, on demand ----------
@@ -1622,16 +2494,39 @@ function setWorker(role, deployLabel, stateText, thinking, displayName) {
 // summons that agent's collectible card and flips it straight to its receipts,
 // so every agent in the run is inspectable, not just the digital workforce.
 let inspectorOpen = false;
+let workerInspectorOpen = false;
+let workerInspectorOwner = null;
 // Which card the open dossier belongs to: null = the agent live on stage, or a
 // party member's name when the player tapped a specific card. Kept so a stage
 // advance re-renders the SAME card the player is reading, not a different one.
 let inspectorOwner = null;
+function gameMasterRoleFromOwner(name) {
+    const clean = String(name || "").trim();
+    const low = clean.toLowerCase().replace(/[\s-]+/g, "_");
+    if (low === "narrator" || low === "world_designer" || clean === "The Worldkeeper" || clean === ROLE_NAME.narrator || clean === "World Designer") return "narrator";
+    if (low === "orgdesigner" || low === "org_designer" || clean === "The Architect" || clean === ROLE_NAME.orgdesigner || clean === "Org Designer") return "orgdesigner";
+    return "";
+}
 function roleFromWorkerName(name) {
     const clean = String(name || "").trim();
+    const gmRole = gameMasterRoleFromOwner(clean);
+    if (gmRole) return gmRole;
     for (const entry of Object.entries(ROLE_NAME)) {
         if (entry[1] === clean) return entry[0];
     }
     return clean === "The Architect" ? "orgdesigner" : clean === "The Worldkeeper" ? "narrator" : "narrator";
+}
+function isKnownGameMasterOwner(name) {
+    return !!gameMasterRoleFromOwner(name);
+}
+function workerInspectorMatchesUpdate(owner, role, displayName) {
+    const clean = String(owner || "").trim();
+    if (!clean) return false;
+    if (clean === displayName || clean === ROLE_NAME[role] || clean === role) return true;
+    const member = partyMembers().find((x) => x.name === clean || x.key === clean);
+    if (member && member.role === role) return true;
+    const ev = workerEvidenceFromState(clean);
+    return !!(ev && ev.role === role);
 }
 function activeWorkerSnapshot() {
     if (state.activeWorker && state.activeWorker.role) return state.activeWorker;
@@ -1643,6 +2538,7 @@ function activeWorkerSnapshot() {
 function activeAgentEv() {
     const aw = activeWorkerSnapshot();
     const name = aw.displayName || ROLE_NAME[aw.role] || aw.role || "Agent";
+    if (isGameMaster(aw.role)) return gameMasterEvidence(aw);
     // If this agent already ran, show its real recorded/live receipts.
     const recorded = cardEvidence[name] || liveCardEvidence(name);
     if (recorded) return recorded;
@@ -1654,6 +2550,9 @@ function activeAgentEv() {
         deployment: aw.deployLabel || "",
         score: "--",
         tools: [], trace: [], mafTools: [], mafMemory: [], currentEvents: [],
+        status: aw.stateText ? "running" : "idle",
+        tokens_in: 0,
+        tokens_out: 0,
         reasoningPreview: aw.stateText || "",
         reasoningTokens: 0,
     };
@@ -1671,19 +2570,33 @@ function castKeyForRole(role) {
 function openAgentInspector(owner) {
     const stage = $("cast-stage");
     if (!stage) return;
-    document.body.classList.remove("spotlight-active");
+    setStageLayer("spotlight-active", false);
     // Owner given = the player tapped a specific party card; otherwise inspect
     // whoever is live on stage (the footer mini's front door).
     let aw, ev;
     if (owner) {
         const m = partyMembers().find((x) => x.name === owner || x.key === owner);
-        aw = { role: m ? m.role : roleFromWorkerName(owner), deployLabel: "", stateText: "", displayName: m ? m.name : owner };
-        ev = cardEvidence[owner] || liveCardEvidence(owner) || activeAgentEv();
+        const ownerEvidence = cardEvidence[owner] || workerEvidenceFromState(owner) || liveCardEvidence(owner);
+        const inferredRole = (m && m.role) || (ownerEvidence && ownerEvidence.role)
+            || (isKnownGameMasterOwner(owner) ? roleFromWorkerName(owner) : "strategist");
+        if (inferredRole && !isGameMaster(inferredRole)) {
+            openWorkerInspector(owner);
+            return;
+        }
+        let displayName = m ? m.name : owner;
+        if (inferredRole === "narrator") displayName = ROLE_NAME.narrator;
+        else if (inferredRole === "orgdesigner") displayName = ROLE_NAME.orgdesigner;
+        aw = { role: inferredRole || "narrator", deployLabel: "", stateText: "", displayName: displayName };
+        ev = ownerEvidence || activeAgentEv();
     } else {
         aw = activeWorkerSnapshot();
+        if (aw && aw.role && !isGameMaster(aw.role)) {
+            openWorkerInspector(aw.displayName || ROLE_NAME[aw.role] || aw.role);
+            return;
+        }
         ev = activeAgentEv();
     }
-    inspectorOwner = owner || null;
+    inspectorOwner = owner || (aw && aw.role) || null;
     const role = aw.role || "narrator";
     const key = castKeyForRole(role);
     // Game-master agents get the special gold dossier; the digital workforce
@@ -1706,17 +2619,25 @@ function openAgentInspector(owner) {
     stage.style.setProperty("--cast-aura", hexToRgba(color, 0.34));
     stage.innerHTML =
         `<div class="cast-card${gm ? " gm" : " worker"}">`
+        + `<div class="cast-card-inner">`
+        + `<div class="cast-face cast-front">`
         + `<div class="cast-card-art${gm ? "" : " icon"}"><div class="cast-fig" style="background-image:url('${artSrc}')"></div></div>`
         + `<div class="cast-card-plate"><div class="cast-card-name">${esc(heroName)}</div>`
         + `<div class="cast-card-role">${esc(ROLE_NAME[role] || role)}</div>`
         + `<div class="cast-card-tag">${esc(tag)}</div></div>`
         + `<button class="cast-close" type="button" aria-label="Close dossier">&times;</button>`
-        + `<div class="cast-dossier">${dossierBackHTML(ev)}</div>`
+        + `<div class="cast-dossier" data-sheet="mid"><button class="cast-sheet-handle" type="button" aria-label="Resize receipts sheet"></button>${dossierBackHTML(ev)}</div>`
+        + `</div>`
+        + `<div class="cast-face cast-back"><button class="cast-close" type="button" aria-label="Close dossier">&times;</button>`
+        + `<div class="cast-back-panel"><div class="cast-back-kicker">Deep receipts</div>${dossierBackHTML(ev)}</div></div>`
+        + `</div>`
         + `</div>`;
     inspectorOpen = true;
     castRole = key;
     stage.className = "inspect show";
-    document.body.classList.add("inspecting-agent");
+    setStageLayer("inspecting-agent", true);
+    const cardEl = stage.querySelector(".cast-card");
+    if (cardEl) bindInspectorCardFlip(cardEl);
 }
 function closeAgentInspector() {
     inspectorOpen = false;
@@ -1727,10 +2648,190 @@ function closeAgentInspector() {
         stage.innerHTML = "";
     }
     castRole = null;
-    document.body.classList.remove("inspecting-agent");
+    setStageLayer("inspecting-agent", false);
+}
+
+function ensureWorkerInspectorStage() {
+    let stage = $("worker-stage");
+    if (stage) return stage;
+    stage = document.createElement("div");
+    stage.id = "worker-stage";
+    stage.setAttribute("aria-hidden", "true");
+    const scene = $("scene") || document.body;
+    scene.appendChild(stage);
+    bindInspectorInteractions(stage);
+    return stage;
+}
+
+function openWorkerInspector(owner) {
+    const stage = ensureWorkerInspectorStage();
+    const ownerEvidence = cardEvidence[owner] || workerEvidenceFromState(owner) || liveCardEvidence(owner);
+    const member = partyMembers().find((x) => x.name === owner || x.key === owner)
+        || { role: (ownerEvidence && ownerEvidence.role) || "strategist", name: owner, key: owner };
+    const role = member.role || "strategist";
+    if (isGameMaster(role)) {
+        openAgentInspector(member.name || owner);
+        return;
+    }
+    const key = castKeyForRole(role);
+    const ev = cardEvidence[member.name] || workerEvidenceFromState(member.name) || liveCardEvidence(member.name);
+    const color = ROLE_COLOR[role] || ROLE_COLOR[key] || T.blue;
+    const portrait = `/game/assets/generated/characters/${key}.png`;
+    workerInspectorOwner = member.name || owner;
+    workerInspectorOpen = true;
+    closeAgentInspector();
+    stage.style.setProperty("--card-accent", hexToRgba(color, 0.9));
+    stage.style.setProperty("--cast-aura", hexToRgba(color, 0.34));
+    stage.innerHTML =
+        `<div class="cast-card worker">`
+        + `<div class="cast-card-inner">`
+        + `<div class="cast-face cast-front">`
+        + `<div class="cast-card-art worker-art"><div class="cast-fig" style="background-image:url('${portrait}')"></div></div>`
+        + `<div class="worker-card-label"><span>Digital Worker</span><b>${esc(member.name || owner)}</b><em>${esc(ROLE_NAME[role] || role)}</em></div>`
+        + `<div class="worker-flip-zone" title="Double-click to flip to deep receipts"></div>`
+        + `<button class="cast-close" type="button" aria-label="Close worker dossier">&times;</button>`
+        + `<div class="cast-dossier" data-sheet="peek"><button class="cast-sheet-handle" type="button" aria-label="Resize receipts sheet"></button>${dossierBackHTML(ev)}</div>`
+        + `</div>`
+        + `<div class="cast-face cast-back"><button class="cast-close" type="button" aria-label="Close worker dossier">&times;</button>`
+        + `<div class="cast-back-panel"><div class="cast-back-kicker">Worker deep receipts</div>${dossierBackHTML(ev)}</div></div>`
+        + `</div>`
+        + `</div>`;
+    stage.className = "inspect show";
+    setStageLayer("inspecting-worker", true);
+    const cardEl = stage.querySelector(".cast-card");
+    if (cardEl) bindInspectorCardFlip(cardEl);
+}
+
+function closeWorkerInspector() {
+    workerInspectorOpen = false;
+    workerInspectorOwner = null;
+    const stage = $("worker-stage");
+    if (stage) {
+        stage.className = "";
+        stage.innerHTML = "";
+    }
+    setStageLayer("inspecting-worker", false);
 }
 function toggleAgentInspector() {
-    if (inspectorOpen) closeAgentInspector(); else openAgentInspector();
+    if (inspectorOpen) closeAgentInspector();
+    else {
+        const aw = activeWorkerSnapshot();
+        if (aw && aw.role && !isGameMaster(aw.role)) openWorkerInspector(aw.displayName || ROLE_NAME[aw.role] || aw.role);
+        else openAgentInspector();
+    }
+}
+
+function cycleInspectorSheet(card) {
+    const sheet = card && card.querySelector(".cast-dossier");
+    if (!sheet) return;
+    const order = ["peek", "mid", "full"];
+    const current = sheet.dataset.sheet || "mid";
+    sheet.dataset.sheet = order[(order.indexOf(current) + 1) % order.length] || "mid";
+}
+
+function setInspectorSheetFromPointer(card, clientY) {
+    const sheet = card && card.querySelector(".cast-dossier");
+    if (!card || !sheet) return;
+    const rect = card.getBoundingClientRect();
+    const ratio = (clientY - rect.top) / Math.max(1, rect.height);
+    sheet.dataset.sheet = ratio < 0.42 ? "full" : ratio < 0.68 ? "mid" : "peek";
+}
+
+function toggleInspectorFlip(card) {
+    if (!card) return;
+    card.classList.toggle("flipped");
+}
+
+function inspectorFlipBlocked(target) {
+    return !!(target.closest(".cast-close") || target.closest(".cc-section-toggle")
+        || target.closest(".cc-suggestion") || target.closest(".cast-sheet-handle")
+        || target.closest("a") || target.closest("button"));
+}
+
+function bindInspectorCardFlip(cardEl) {
+    if (!cardEl || cardEl.dataset.flipBound) return;
+    cardEl.dataset.flipBound = "1";
+    cardEl.addEventListener("dblclick", (event) => {
+        if (inspectorFlipBlocked(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggleInspectorFlip(cardEl);
+        castTapStamp = 0;
+    });
+}
+
+let castTapStamp = 0;
+let castDragCard = null;
+function bindInspectorInteractions(castStage) {
+    if (!castStage || castStage.dataset.inspectorBound) return;
+    castStage.dataset.inspectorBound = "1";
+    castStage.addEventListener("click", (e) => {
+        const sectionToggle = e.target.closest(".cc-section-toggle");
+        if (sectionToggle) {
+            e.preventDefault();
+            e.stopPropagation();
+            const section = sectionToggle.closest(".cc-section");
+            const open = !section.classList.contains("open");
+            section.classList.toggle("open", open);
+            sectionToggle.setAttribute("aria-expanded", open ? "true" : "false");
+            return;
+        }
+        const suggestion = e.target.closest(".cc-suggestion");
+        if (suggestion) {
+            e.preventDefault();
+            e.stopPropagation();
+            const input = $("player-command-input");
+            if (input) {
+                input.value = suggestion.dataset.suggestion || suggestion.textContent || "";
+                input.focus();
+            }
+            setActionHint("Worker suggestion loaded - edit or send it as your next move.");
+            return;
+        }
+        if (e.target.closest(".cast-close")) {
+            if (castStage.id === "worker-stage") closeWorkerInspector();
+            else closeAgentInspector();
+            return;
+        }
+        const handle = e.target.closest(".cast-sheet-handle");
+        if (handle) {
+            e.preventDefault();
+            e.stopPropagation();
+            cycleInspectorSheet(e.target.closest(".cast-card"));
+            castTapStamp = 0;
+            return;
+        }
+        const card = e.target.closest(".cast-card");
+        if (card && !inspectorFlipBlocked(e.target)) {
+            const now = Date.now();
+            if (now - castTapStamp < 340) {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleInspectorFlip(card);
+                castTapStamp = 0;
+            } else {
+                castTapStamp = now;
+            }
+        }
+    });
+    castStage.addEventListener("pointerdown", (e) => {
+        const card = e.target.closest(".cast-card");
+        if (!card) return;
+        const handle = e.target.closest(".cast-sheet-handle");
+        if (handle) {
+            castDragCard = card;
+            handle.setPointerCapture?.(e.pointerId);
+            return;
+        }
+    });
+    castStage.addEventListener("pointermove", (e) => {
+        if (!castDragCard) return;
+        e.preventDefault();
+        setInspectorSheetFromPointer(castDragCard, e.clientY);
+    });
+    const endDrag = () => { castDragCard = null; };
+    castStage.addEventListener("pointerup", endDrag);
+    castStage.addEventListener("pointercancel", endDrag);
 }
 
 // --- Speaker spotlight -----------------------------------------------------
@@ -1763,17 +2864,27 @@ function showSpeakerSpotlight(role, displayName, opts = {}) {
         ? `<div class="cast-shot"><img src="${esc(opts.image)}" alt="${esc(opts.caption || "")}" onerror="this.closest('.cast-shot').style.display='none'" />`
           + (opts.caption ? `<span>${esc(opts.caption)}</span>` : "") + `</div>`
         : "";
+    // Frame the card by agent class: the world masters (gm) get the gold
+    // announcement treatment with a herald eyebrow, so a world-master speaking
+    // reads as a deliberate announcement to the player, not a worker aside.
+    // Workers / the rival (rare on this spotlight) keep the role-colored frame.
+    const agentClass = agentClassForRole(role);
+    const announce = agentClass === "gm"
+        ? `<div class="cast-announce">&#9818; Announcement</div>`
+        : "";
+    const cardClass = agentClass === "gm" ? "cast-card"
+        : agentClass === "rival" ? "cast-card worker rival" : "cast-card worker";
     stage.innerHTML =
-        `<div class="cast-card">`
+        `<div class="${cardClass}">`
         + `<div class="cast-card-art"><div class="cast-fig" style="background-image:url('${src}')"></div></div>`
         + imgHtml
-        + `<div class="cast-speech"><div class="cast-speech-name">${esc(heroName)}<span>${esc(roleLabel)}</span></div>`
+        + `<div class="cast-speech">${announce}<div class="cast-speech-name">${esc(heroName)}<span>${esc(roleLabel)}</span></div>`
         + `<div class="cast-speech-line" id="cast-speech-line"></div></div>`
         + `</div>`;
-    stage.className = "speaking show";
+    stage.className = agentClass === "gm" ? "speaking show gm-announce" : "speaking show";
     // CSS uses this body class to resize the world canvas and remove the hidden
     // narration reserve. Always clear it in hideSpeakerSpotlight/openInspector.
-    document.body.classList.add("spotlight-active");
+    setStageLayer("spotlight-active", true);
     spotlightRole = role;
     spotlightName = displayName || null;
 }
@@ -1807,7 +2918,7 @@ function hideSpeakerSpotlight() {
     if (!stage || !spotlightRole) return;
     stage.className = "";
     stage.innerHTML = "";
-    document.body.classList.remove("spotlight-active");
+    setStageLayer("spotlight-active", false);
     spotlightRole = null;
     spotlightName = null;
 }
@@ -1973,14 +3084,22 @@ function mafRunLand(inv) {
     const called = (inv.maf_tools_called || []).map((t) =>
         `<span class="maf-chip called">&#9874; ${esc(t)}</span>`).join(" ")
         || `<span class="maf-chip">none - clean first draft</span>`;
+    const trace = inv.tool_trace || [];
+    const usage = invocationTokenLine(inv);
+    const cost = estimatedInvocationCost(inv);
+    const traceLine = trace.length
+        ? `${trace.length} server-recorded call${trace.length === 1 ? "" : "s"}; open the worker card for params/results.`
+        : "no server-recorded toolbox calls";
     const div = live || document.createElement("div");
     div.className = "maf-run";
     div.removeAttribute("id");
     const clientTag = inv.maf_client ? `${esc(inv.maf_client)} &middot; ` : "";
     div.innerHTML = `
         <div class="maf-run-head"><span>${esc(inv.worker_title || inv.role || "worker")} &middot; Agent</span><span>${clientTag}${inv.latency_s ?? 0}s</span></div>
+        <div class="maf-row"><b>Model usage</b><br><span class="maf-chip">${esc(inv.deployment || "simulation")}</span> <span class="maf-chip">${esc(usage)}</span>${cost ? ` <span class="maf-chip called">${esc(cost)} est.</span>` : ""}</div>
         <div class="maf-row"><b>Memory injected</b> <span style="opacity:.65">(ContextProvider)</span><br>${mem}</div>
-        <div class="maf-row"><b>Tools the model called</b> <span style="opacity:.65">(FunctionTools)</span><br>${called}</div>`;
+        <div class="maf-row"><b>Tools the model called</b> <span style="opacity:.65">(FunctionTools)</span><br>${called}</div>
+        <div class="maf-row"><b>Tool call receipts</b><br><span class="maf-chip">${esc(traceLine)}</span></div>`;
     if (!live) host.prepend(div);
     while (host.querySelectorAll(".maf-run").length > 4) host.lastElementChild.remove();
 }
@@ -2004,12 +3123,12 @@ function setToolTrace(trace) {
     const el = $("worker-trace");
     if (!el) return;
     if (!trace || !trace.length) { el.hidden = true; el.innerHTML = ""; return; }
-    let html = `<div class="rz-head">&#9654; tools/call trace <span style="opacity:.6">(live, server-recorded)</span></div>`;
-    trace.forEach((t) => {
-        const argStr = t.args ? esc(JSON.stringify(t.args)).slice(0, 90) : "";
-        html += `<div class="trace-line"><span class="tr-call">&rarr; ${esc(t.tool)}</span>`
-            + `<span class="tr-args">${argStr}</span>`
-            + `<div class="tr-res">&larr; ${esc(String(t.result || ""))} <span class="tr-ms">${t.ms}ms &middot; ${esc(t.source || "local")}</span></div></div>`;
+    let html = `<div class="rz-head">&#9654; tools/call trace <span style="opacity:.6">(${trace.length} live server-recorded call${trace.length === 1 ? "" : "s"})</span></div>`;
+    trace.forEach((t, index) => {
+        const argStr = t.args ? esc(JSON.stringify(t.args)).slice(0, 180) : "{}";
+        html += `<div class="trace-line"><span class="tr-call">call ${index + 1}: ${esc(t.tool)}</span>`
+            + `<span class="tr-args"> params ${argStr}</span>`
+            + `<div class="tr-res">result ${esc(String(t.result || "ok")).slice(0, 220)} <span class="tr-ms">${t.ms}ms &middot; ${esc(t.source || "local")}</span></div></div>`;
     });
     el.innerHTML = html;
     el.hidden = false;
@@ -2067,6 +3186,7 @@ function renderDilemmaReceipt(receipt) {
     const tradeoff = receipt.tradeoff || "";
     const memory = receipt.memory || null;
     const nextBrief = receipt.nextBrief || null;
+    const principle = receipt.principle || null;
 
     // Only surface metric rows that actually moved - keeps the receipt compact
     // and makes the consequence of THIS choice unmistakable.
@@ -2102,7 +3222,7 @@ function renderDilemmaReceipt(receipt) {
     const nextStep = nextBrief
         ? `<div class="receipt-step next">
                 <div class="receipt-step-head"><span class="receipt-num">4</span> Next brief
-                    ${nextBrief.adapted ? `<em class="receipt-adapted">world adapted</em>` : ""}</div>
+                    ${nextBrief.adapted ? `<em class="receipt-adapted">world adapted${nextBrief.adapted_reason ? ` &middot; ${esc(nextBrief.adapted_reason)}` : ""}</em>` : ""}</div>
                 <div class="receipt-next">
                     <b>${esc(nextBrief.title || "Next stage")}</b>
                     ${nextBrief.assigned_worker_title ? `<span>&#9851; <em>${esc(nextBrief.assigned_worker_title)}</em> executes this with your decision as binding direction</span>` : `<span>carries your decision as binding direction</span>`}
@@ -2121,6 +3241,7 @@ function renderDilemmaReceipt(receipt) {
                 <div class="receipt-step-head"><span class="receipt-num">1</span> You decided</div>
                 <div class="receipt-decision">&ldquo;${esc(option)}&rdquo;</div>
                 ${tradeoff ? `<div class="receipt-tradeoff">tradeoff accepted: ${esc(tradeoff)}</div>` : ""}
+                ${principle && principle.name ? `<div class="receipt-principle">&#128218; <b>${esc(principle.name)}</b> &mdash; ${esc(principle.insight || "")}</div>` : ""}
             </div>`
         + `<div class="receipt-arrow">&darr;</div>`
         // Step 2: the consequence
@@ -2180,9 +3301,25 @@ function setEconHud(org) {
     // strategy, contested by the rival. It is the "are we actually winning?"
     // number, distinct from the cash treasury.
     const share = num(econ.market_share);
+    const customers = num(econ.paying_customers);
+    const arpu = num(econ.arpu_usd);
     if (share > 0 || num(econ.addressable_market_usd) > 0) {
         const shareClass = share >= 15 ? "good" : (share >= 5 ? "" : "warn");
-        html += `<span class="econ-pill ${shareClass}" title="Share of your addressable market. Revenue is a slice of the market this size. Win it by shipping verified stages and smart strategy; the rival contests it."><i>🌐</i> Market: <b>${share.toFixed(1)}%</b></span>`;
+        const tamCustomers = arpu > 0 ? Math.round(num(econ.addressable_market_usd) / arpu) : 0;
+        const marketTip = tamCustomers > 0
+            ? `Share of your addressable market (~${tamCustomers.toLocaleString()} reachable customers). You hold ${share.toFixed(1)}% = ${customers.toLocaleString()} paying customers. Win it by shipping verified stages and smart strategy; the rival contests it.`
+            : `Share of your addressable market. Revenue is a slice of the market this size. Win it by shipping verified stages and smart strategy; the rival contests it.`;
+        html += `<span class="econ-pill ${shareClass}" title="${esc(marketTip)}"><i>🌐</i> Market: <b>${share.toFixed(1)}%</b></span>`;
+    }
+    // Paying customers: the concrete thing behind the revenue. No customers,
+    // no money - so the player can always see WHO is paying and how that maps
+    // to the dollars. Derived from share, so it moves only when share is won.
+    if (customers > 0 || revMonth > 0) {
+        const custClass = customers > 0 ? "good" : "warn";
+        const custTip = arpu > 0
+            ? `${customers.toLocaleString()} paying customers x $${arpu.toLocaleString()}/mo = $${revMonth.toLocaleString()}/mo revenue. Win more by growing market share - ship verified stages and play the Customer Signal card.`
+            : `Paying customers behind your revenue.`;
+        html += `<span class="econ-pill ${custClass}" title="${esc(custTip)}"><i>👥</i> <b>${customers.toLocaleString()}</b> customers</span>`;
     }
 
     if (org && org.digital_worker_count) {
@@ -2193,10 +3330,20 @@ function setEconHud(org) {
     const arc = (state.game && state.game.antagonist_arc) || {};
     const threat = num(arc.threat_level);
     if (threat > 0) {
+        const ant = state.antagonist || ((state.latestServerState || {}).antagonist) || {};
         const rival = arc.antagonist_name || "Rival";
         const stage = arc.escalation_stage || "watching";
         const tClass = threat >= 60 ? "bad" : (threat >= 40 ? "warn" : "");
-        html += `<span class="econ-pill ${tClass}" title="${esc(rival)} is your antagonist - a rival that gains ground over time and whenever you stall. At 100/100 it wins the market and the run is lost. Push it back by playing counter cards and shipping stages.">`
+        const orgName = ant.organization_name || `${rival} counter-org`;
+        const roleLine = Array.isArray(ant.organization_roles) && ant.organization_roles.length
+            ? ` Rival team: ${ant.organization_roles.slice(0, 3).map((r) => r.title || r.pressure_lane || "agent").join(", ")}.`
+            : "";
+        const latestMove = Array.isArray(arc.moves) && arc.moves.length ? arc.moves[arc.moves.length - 1] : null;
+        const latestRole = latestMove && (latestMove.rival_role_title || latestMove.rival_pressure_lane)
+            ? ` Latest move owner: ${latestMove.rival_role_title || "rival operator"}${latestMove.rival_pressure_lane ? ` (${latestMove.rival_pressure_lane})` : ""}.`
+            : "";
+        const rivalTip = `${rival} is your antagonist. ${orgName}: ${ant.organization_model || "a rival organization countering your workforce."} Motivation: ${ant.motivation || "capture the market before you can."} Tactic: ${ant.signature_tactic || arc.current_pressure || "pressure your weak metric."} Active operation: ${ant.active_operation || arc.current_pressure || "contest your market share."}${roleLine}${latestRole} At 100/100 it wins the market and the run is lost. Push it back with counterplay cards, verified stages, and trusted revenue.`;
+        html += `<span class="econ-pill ${tClass}" title="${esc(rivalTip)}">`
             + `<i>&#9876;</i> ${esc(rival)}: <b>${threat}</b>/100 &middot; ${esc(stage)}</span>`;
     }
     host.innerHTML = html;
@@ -2226,6 +3373,7 @@ function ensureEconClock() {
         if (snap.org) state.org = snap.org;
         if (snap.game) state.game = snap.game;
         setEconHud(state.org);
+        reactToWorkforceContraction(snap.org);
         reactToRivalEscalation(snap.game);
         const status = String((snap.game || {}).run_status || "active").toLowerCase();
         if (status !== "active") {
@@ -2237,6 +3385,41 @@ function ensureEconClock() {
             if (hint) hint.textContent = (snap.game && (snap.game.defeat_reason || snap.game.victory_reason)) || "The run is over.";
         }
     }, 4000);
+}
+
+// The world reacts when the workforce contracts. When the company can't sustain
+// its burn, the real-time clock lays off its most expensive worker (burn falls,
+// the org shrinks). Detect the drop in digital_worker_count between polls and
+// surface it as a felt beat: refresh the workforce rail, narrate the layoff,
+// and flash the burn pill so "you're losing people because you're not making
+// money" lands as an event, not a silent number change.
+let _lastWorkerCount = null;
+function reactToWorkforceContraction(org) {
+    if (!org) return;
+    const count = Number(org.digital_worker_count || 0);
+    setOrgPanel(org); // keep the workforce rail in lockstep with the clock
+    if (_lastWorkerCount === null) { _lastWorkerCount = count; return; }
+    if (count >= _lastWorkerCount) { _lastWorkerCount = count; return; }
+    _lastWorkerCount = count;
+    // A worker was just let go. Name it from the org note the backend appended.
+    const notes = Array.isArray(org.notes) ? org.notes : [];
+    const layoff = [...notes].reverse().find((n) => /laid off/i.test(n)) || "";
+    const who = (layoff.match(/Laid off ([^:]+):/i) || [])[1] || "your most expensive worker";
+    const burn = Number(org.monthly_burn_usd || 0);
+    const beat = $("scene-beat");
+    if (beat) beat.textContent = "Workforce contraction";
+    const prov = $("scene-prov");
+    if (prov) prov.textContent = "unprofitable - burn trimmed";
+    const hint = $("hint");
+    if (hint) hint.innerHTML = `<span class="run-pulse"><span class="run-state bad">\u26a0\ufe0f Laid off ${esc(who)} \u2014 you're spending faster than you earn.</span>`
+        + `<span class="run-next">Ship a stage to win revenue, or burn keeps shrinking the team.</span></span>`;
+    // Flash the burn pill (the one showing the daily run cost) so the eye lands
+    // on the cost that just forced the cut.
+    const pill = document.querySelector('#econ-hud .econ-pill[title*="run cost"]')
+        || document.querySelector("#econ-hud .econ-pill");
+    if (pill) { pill.classList.remove("pulse-flash"); void pill.offsetWidth; pill.classList.add("pulse-flash"); }
+    try { lens("reliability", `Workforce contracted: ${who} laid off - burn now $${burn.toLocaleString()}/mo. Memory written so later briefs carry the pressure.`); } catch (_) {}
+    try { if (A && A.chime) A.chime(); } catch (_) {}
 }
 
 // The world reacts when the rival escalates. The clock can push the antagonist
@@ -2331,6 +3514,70 @@ async function renderRivalArc(arc, rival) {
     _rivalArcTimer = setTimeout(() => panel.classList.remove("show"), 7000);
 }
 
+// The hire menu (seats + their real monthly cost) is loaded once from the
+// backend, which owns the cost math. null = not yet fetched, [] = loading/empty.
+let hireOptionsCache = null;
+
+async function loadHireOptions() {
+    try {
+        const res = await fetch("/api/org/options");
+        if (!res.ok) throw new Error(`options ${res.status}`);
+        const data = await res.json();
+        hireOptionsCache = Array.isArray(data.options) ? data.options : [];
+    } catch (_) {
+        hireOptionsCache = [];
+    }
+    return hireOptionsCache;
+}
+
+// After a workforce change, re-sync every dependent surface from the returned
+// state in one place so the econ HUD, org rail, and card layer never drift.
+function syncAfterWorkforceChange(st) {
+    if (!st) return;
+    setHud(st);
+    setResourcesFromEconomics(st.economics, st.org || state.org);
+    setOrgPanel(st.org);
+    if (st.game) syncGameState(st.game);
+}
+
+async function hireWorker(roleKey, btn) {
+    if (!roleKey) return null;
+    if (btn) { btn.disabled = true; btn.style.opacity = "0.6"; }
+    try {
+        const res = await api("/api/org/hire", { role_key: roleKey });
+        syncAfterWorkforceChange(res.state);
+        const r = res.receipt || {};
+        setActionHint(`Hired ${r.hired_title || "a worker"} - burn now $${Number(r.burn_after_usd || 0).toLocaleString()}/mo.`);
+        lens("reasoning", `hired ${r.hired_title || roleKey}: burn $${Number(r.burn_before_usd || 0).toLocaleString()} -> $${Number(r.burn_after_usd || 0).toLocaleString()}/mo${r.share_gained ? `, +${r.share_gained}% market share` : ""}`);
+        return res;
+    } catch (e) {
+        if (btn) { btn.disabled = false; btn.style.opacity = ""; }
+        setActionHint("Could not hire that worker.");
+        lens("reliability", `hire rejected: ${e.message || e}`);
+        return null;
+    }
+}
+
+async function fireWorker(roleId, btn) {
+    if (!roleId) return null;
+    if (btn) { btn.disabled = true; btn.style.opacity = "0.6"; }
+    try {
+        const res = await api("/api/org/fire", { role_id: roleId });
+        syncAfterWorkforceChange(res.state);
+        const r = res.receipt || {};
+        setActionHint(`Laid off ${r.laid_off_title || "a worker"} - burn now $${Number(r.burn_after_usd || 0).toLocaleString()}/mo, runway ${r.runway_days || 0}d.`);
+        lens("reliability", `laid off ${r.laid_off_title || roleId}: burn $${Number(r.burn_before_usd || 0).toLocaleString()} -> $${Number(r.burn_after_usd || 0).toLocaleString()}/mo, runway ${r.runway_days || 0}d`);
+        return res;
+    } catch (e) {
+        if (btn) { btn.disabled = false; btn.style.opacity = ""; }
+        setActionHint("Could not lay off that worker.");
+        lens("reliability", `layoff rejected: ${e.message || e}`);
+        return null;
+    }
+}
+window.hireWorker = hireWorker;
+window.fireWorker = fireWorker;
+
 // Populate the persistent "Digital Workforce" rail: stats + operating model +
 // the educational per-role rationale.
 function setOrgPanel(org) {
@@ -2368,13 +3615,50 @@ function setOrgPanel(org) {
     });
     if (digitalRoles.length) {
         html += `<div class="org-handnote">&#9874; <b>${digitalRoles.length}</b> digital worker${digitalRoles.length === 1 ? "" : "s"} `
-            + `live in the agent hand below &mdash; tap any card to flip to its dossier.</div>`;
+            + `live in the agent hand below &mdash; click any card to inspect its dossier.</div>`;
     }
+    // Workforce management: the CEO can grow the team (burn rises now, the seat
+    // earns it back by winning customers) or trim it (burn falls, runway
+    // extends). Both route through the org so the economy HUD moves the instant
+    // the workforce changes - the live profit trade the founder asked for. This
+    // is the economic-management view; the hand stays the card/dossier view.
+    const minCore = 2; // mirrors MIN_DIGITAL_WORKERS; only gates the fire affordance
+    html += `<div class="org-manage"><div class="org-manage-h">Manage workforce</div>`;
+    if (Array.isArray(hireOptionsCache) && hireOptionsCache.length) {
+        html += `<div class="org-hire-row">` + hireOptionsCache.map((o) =>
+            `<button class="org-hire-btn" type="button" data-hire="${escText(o.key)}" title="${escText(o.why || "")}">`
+            + `+ ${esc(o.title)} <b>$${Number(o.monthly_cost_usd || 0).toLocaleString()}</b>/mo`
+            + `${o.wins_customers ? ` <span class="hire-cust">wins customers</span>` : ""}</button>`
+        ).join("") + `</div>`;
+    } else {
+        html += `<div class="org-hire-row muted">Loading hire options&hellip;</div>`;
+    }
+    if (digitalRoles.length) {
+        const canFire = digitalRoles.length > minCore;
+        html += `<div class="org-fire-list">` + digitalRoles.map((r) => {
+            const cost = Number(r.monthly_cost_usd || 0);
+            return `<div class="org-fire-row"><span class="org-orb" style="background:var(--marketer)"></span>`
+                + `<span class="org-fire-name">${esc(r.title)}</span>`
+                + `<span class="org-fire-cost">$${cost.toLocaleString()}/mo</span>`
+                + `<button class="org-fire-btn" type="button" data-fire="${escText(r.id)}" ${canFire ? "" : "disabled"} `
+                + `title="${canFire ? "Lay off to cut burn and extend runway" : "Cannot cut below the core workforce"}">lay off</button></div>`;
+        }).join("") + `</div>`;
+    }
+    html += `</div>`;
     // Bridge out of the game: download the org as a platform-neutral
     // Workforce Bundle any digital-worker platform can ingest and provision
     // (behind its own human approval gate).
     html += `<button id="org-export-btn" class="org-export" type="button">Export workforce bundle</button>`;
     host.innerHTML = html;
+    host.querySelectorAll("[data-hire]").forEach((b) => b.addEventListener("click", () => hireWorker(b.dataset.hire, b)));
+    host.querySelectorAll("[data-fire]").forEach((b) => b.addEventListener("click", () => fireWorker(b.dataset.fire, b)));
+    // Lazily load the hire menu once, then re-render this panel so the buttons
+    // appear. Guarded so it fetches a single time, not on every panel render.
+    setOrgPanel._lastOrg = org;
+    if (hireOptionsCache === null) {
+        hireOptionsCache = [];
+        loadHireOptions().then(() => { if (setOrgPanel._lastOrg) setOrgPanel(setOrgPanel._lastOrg); });
+    }
     const exportBtn = $("org-export-btn");
     if (exportBtn) exportBtn.addEventListener("click", async () => {
         exportBtn.disabled = true;
@@ -2450,6 +3734,7 @@ function markProgress(idx, status) {
 
 function setHud(s) {
     if (!s) return;
+    syncLatestState(s);
     const lvl = $("hud-level"); if (lvl) lvl.textContent = s.level ?? 1;
     const xp = $("hud-xp"); if (xp) xp.textContent = s.xp ?? 0;
     if (s.game) syncGameState(s.game);
@@ -2483,6 +3768,41 @@ function readFounderInputsFromForm() {
     // Wire customized settings into global voice/portrait maps
     VOICE_BY_ROLE["founder"] = state.founderVoice;
     ROLE_PORTRAIT["founder"] = "founder";
+}
+
+function looksLikeProfileUrl(value) {
+    return /^https?:\/\//i.test((value || "").trim());
+}
+
+function founderSignalFromSavedState(savedState) {
+    const profile = (savedState && savedState.founder_profile) || {};
+    const source = String(profile.source || "").toLowerCase();
+    const sourceRef = String(profile.source_ref || "").trim();
+    const sourceKind = String(profile.source_kind || "").toLowerCase();
+    if ((source === "url" || sourceKind.includes("profile") || looksLikeProfileUrl(sourceRef)) && sourceRef) {
+        return { url: sourceRef, pitch: "" };
+    }
+    if (sourceRef) return { url: "", pitch: sourceRef };
+    const pitch = String((savedState && savedState.pitch) || "").trim();
+    return looksLikeProfileUrl(pitch) ? { url: pitch, pitch: "" } : { url: "", pitch };
+}
+
+function setInputValue(id, value, { overwrite = false } = {}) {
+    const el = $(id);
+    if (!el) return;
+    const next = String(value || "");
+    if (!overwrite && el.value.trim()) return;
+    if (el.value === next) return;
+    el.value = next;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function hydrateFounderInputsFromSavedState(savedState, { overwrite = false } = {}) {
+    if (!savedState) return;
+    const signal = founderSignalFromSavedState(savedState);
+    setInputValue("in-company", savedState.name || "", { overwrite });
+    setInputValue("in-url", signal.url || "", { overwrite });
+    setInputValue("in-pitch", signal.pitch || "", { overwrite });
 }
 
 // The founder's archetype rides into every brief: their skill becomes the human
@@ -2785,6 +4105,7 @@ async function beginStory() {
         + `<div class="kicker">The ascension begins</div>`
         + `<h1>${esc(state.company)}</h1>`
         + (state.archetype ? `<p class="founding-arch">${esc(state.archetype.name)} &middot; ${esc(state.archetype.skill)}</p>` : ``)
+        + `${ventureModelHTML()}`
         + `</div>`;
 
     // ---- Beat 0: the welcome ----
@@ -2980,6 +4301,7 @@ async function revealWorldDrop() {
         + `<div class="kicker">World initialized</div>`
         + `<h1>${esc(state.company)}</h1>`
         + `<p>${esc(first.goal || "Your opening room is ready. Choose your first move.")}</p>`
+        + `${ventureModelHTML()}`
         + `</div>`;
     await narrate(`The world is live. ${first.title ? `${first.title} is your opening room.` : "Your opening room is ready."} Make your move.`);
 }
@@ -3087,19 +4409,30 @@ async function attachTurnMedia(mediaEl, turn) {
     if (shown) mediaEl.hidden = false;
 }
 
-async function renderAgentStandup(standup) {
+async function renderAgentStandup(standup, opts = {}) {
     const turns = standup && Array.isArray(standup.turns) ? standup.turns : [];
     if (!turns.length) return;
+    const interactive = opts.interactive !== false;
     const trigger = standup.trigger || {};
-    setSceneHead("Agent stand-up", "The party reacts to your call",
-        `group chat orchestration - ${esc(trigger.rule_id || "decision")}`);
+    // The same transcript renderer serves two tiers: the Game Master council
+    // (engine: World Designer + Antagonist + Org Designer ratifying the move)
+    // and the worker standup (party reacting). The header names which one.
+    if (standup.tier === "game_master") {
+        setSceneHead("Game Master council", "The world engine ratifies your move",
+            `forward motion - ${esc(standup.forward_motion || trigger.summary || "world updated")}`);
+    } else {
+        setSceneHead("Agent stand-up", "The party reacts to your call",
+            `group chat orchestration - ${esc(trigger.rule_id || "decision")}`);
+    }
 
     // Any prior speaker spotlight yields: the transcript itself is now the home
     // for who is speaking, so nothing floats a duplicate over it.
     hideSpeakerSpotlight();
     // The standup owns the stage: hide the redundant party roster (those same
     // workers are in the transcript) and give the transcript the freed height.
-    document.body.classList.add("standup-active");
+    // The coordinator also quiets the footer hand so it never overlaps the
+    // transcript or the stand-up's own CEO input.
+    setStageLayer("standup-active", true);
     // Scrollable conversation transcript - a vertical log you can scroll back
     // through (earlier turns + your own responses); each message can carry an
     // image or a Mermaid diagram.
@@ -3115,10 +4448,18 @@ async function renderAgentStandup(standup) {
             const profile = speakerProfileForTurn(turn);
             const handoff = turn.handoff_to ? `<div class="standup-handoff">handoff: ${esc(turn.handoff_to)}</div>` : "";
             const source = turn.source ? `<span>${esc(turn.source)}</span>` : "";
+            // Differentiate the three agent classes in the transcript: the world
+            // masters announce (gold), the rival presses (red), the workers react
+            // (role/teal) - so a glance separates authorship from reaction.
+            const agentClass = agentClassForRole(role);
+            const announce = agentClass === "gm"
+                ? `<div class="standup-announce">&#9818; ${esc(profile.displayName)} announces</div>`
+                : "";
 
-            const cardHtml = `<div class="council-member standup-member" style="transition: opacity 300ms ease;">`
+            const cardHtml = `<div class="council-member standup-member agent-${agentClass}" style="transition: opacity 300ms ease;">`
                 + `<div class="council-top"><img class="council-face" src="${esc(profile.portraitUrl)}" alt="" onerror="this.style.display='none'" />`
                 + `<div><div class="council-name">${esc(profile.displayName)}</div><div class="council-role">${esc(profile.roleLabel)}</div></div></div>`
+                + announce
                 + `<div class="standup-profile"><span>${esc(profile.textStyle)}</span>${source}</div>`
                 + standupToolMarkup(turn)
                 + `<div class="council-says quote" aria-live="polite"></div>`
@@ -3170,11 +4511,17 @@ async function renderAgentStandup(standup) {
     await narrate(`Stand-up. ${line}`);
     await sleep(400);
 
+    // The Game Master council is a one-shot ratification beat, not a chat: show
+    // the transcript and the closing line, then hand off to the interactive
+    // worker standup that follows. Only the worker standup opens the CEO reply
+    // loop, so the two transcripts never compete for the same input.
+    if (!interactive) return;
+
     // Now loop conversation infinitely
     let replySeq = 0;
     return new Promise((resolve) => {
         // Leaving the standup restores the normal stage layout (party roster back).
-        const finish = () => { document.body.classList.remove("standup-active"); resolve(); };
+        const finish = () => { setStageLayer("standup-active", false); resolve(); };
         async function promptCEO() {
             // The floor is back with the CEO: clear the speaking spotlight so the
             // response card owns the stage.
@@ -3238,7 +4585,15 @@ async function renderAgentStandup(standup) {
 
                 try {
                     // 1. Save response to procedural memory
-                    await api("/api/world/standup/respond", { text: val });
+                    const responseState = await api("/api/world/standup/respond", { text: val, stage_id: standup.stage_id || "" });
+                    if (responseState.state) {
+                        setHud(responseState.state);
+                        setResourcesFromEconomics(responseState.state.economics, responseState.state.org || state.org);
+                        if (responseState.state.org) setOrgPanel(responseState.state.org);
+                    }
+                    if ((responseState.adapted_stage_ids || []).length) {
+                        lens("reasoning", `World Designer adapted ${responseState.adapted_stage_ids.length} pending stage(s) from your live stand-up response`);
+                    }
 
                     // 2. Transform the input card into static message
                     fsCard.innerHTML = `<div class="council-top">`
@@ -3370,6 +4725,7 @@ async function theaterOpen(ch, ownerName, lastDecision) {
         <div class="th-deploy">${esc((ch.owner_role || "role").toUpperCase())}_MODEL &middot; Microsoft Foundry</div>
         <div class="th-steps"></div>`;
     el.hidden = false;
+    setStageLayer("theater", true);
     const steps = el.querySelector(".th-steps");
 
     await theaterStep(steps, "&#9656;", "Brief received", esc(ch.goal || ch.title));
@@ -3420,6 +4776,7 @@ function theaterClose() {
     const el = $("theater");
     el.hidden = true;
     el.innerHTML = "";
+    setStageLayer("theater", false);
 }
 
 async function runNextChapter() {
@@ -3527,6 +4884,9 @@ async function runNextChapter() {
         mafTools: inv.maf_tools_called || [],
         mafMemory: inv.maf_memory || [],
         currentEvents: inv.current_events || [],
+        status: inv.status || "completed",
+        tokens_in: inv.tokens_in || 0,
+        tokens_out: inv.tokens_out || 0,
         reasoningTokens: inv.reasoning_tokens || 0,
         reasoningPreview: inv.reasoning_preview || "",
         latency: inv.latency_s ?? 0,
@@ -3588,6 +4948,7 @@ let dilemmaVoiceBound = false; // one-time bind of the dilemma mic to STT
 
 function hideDilemma() {
     $("dilemma-overlay").hidden = true;
+    setStageLayer("dilemma", false);
     $("dilemma-own-wrap").hidden = true;
     $("dilemma-own-input").value = "";
     const st = $("dilemma-own-status");
@@ -3659,11 +5020,15 @@ async function runDilemmaGate(stage) {
             + `<b>${i + 1} &middot; ${esc(o.option)}</b>`
             + `<span>tradeoff: ${esc(o.tradeoff || "none stated")}</span>`
             + (o.effect_line ? `<em>${esc(o.effect_line)}</em>` : "")
+            + (o.principle && o.principle.name
+                ? `<span class="dilemma-principle">&#128218; <b>${esc(o.principle.name)}</b> &mdash; ${esc(o.principle.insight || "")}</span>`
+                : "")
             + (o.rule_id ? `<small>${esc(o.rule_id)}</small>` : "");
         btn.addEventListener("click", () => decide(o, false));
         host.appendChild(btn);
     });
     $("dilemma-overlay").hidden = false;
+    setStageLayer("dilemma", true);
     // Reset the voice/own-path UI so a prior gate's transcript never carries over.
     $("dilemma-own-wrap").hidden = true;
     $("dilemma-own-input").value = "";
@@ -3718,7 +5083,8 @@ async function runDilemmaGate(stage) {
         document.querySelectorAll("#dilemma-options .dilemma-opt, #dilemma-own-btn, #dilemma-own-go").forEach((el) => { el.disabled = true; });
         setActionHint("Committing decision to company state...");
         let consequence = null;
-        let receiptMemory = null, receiptNext = null;
+        let receiptMemory = null, receiptNext = null, receiptPrinciple = null;
+        let councilPacket = null;
         try {
             const res = await api("/api/decision", {
                 stage_id: stage.id, option, tradeoff: tradeoff || "",
@@ -3728,10 +5094,13 @@ async function runDilemmaGate(stage) {
                 scene_id: dilemma.scene_id || "",
             });
             $("dilemma-overlay").hidden = true;
+            setStageLayer("dilemma", false);
             state.decisions = res.decisions || state.decisions;
             consequence = res.consequence || (res.recorded && res.recorded.consequence) || null;
             receiptMemory = res.memory || null;
             receiptNext = res.next_brief || null;
+            receiptPrinciple = res.principle || (typeof choice === "object" ? choice.principle : null) || null;
+            councilPacket = res.world_council || null;
             if (res.state) {
                 state.org = res.state.org || state.org;
                 state.stages = (res.state.world && res.state.world.stages) || state.stages;
@@ -3742,6 +5111,7 @@ async function runDilemmaGate(stage) {
         } catch (_) {
             dilemmaResolve = r;
             $("dilemma-overlay").hidden = false;
+            setStageLayer("dilemma", true);
             document.querySelectorAll("#dilemma-options .dilemma-opt, #dilemma-own-btn, #dilemma-own-go").forEach((el) => { el.disabled = false; });
             setActionHint("Decision did not persist - choose again to retry.");
             return;
@@ -3752,12 +5122,24 @@ async function runDilemmaGate(stage) {
         if (consequence) {
             setSceneHead("Decision effect", "The company changes",
                 "\u2692 deterministic consequence rule updated state, org, and economics");
-            renderDilemmaReceipt({ option, tradeoff, consequence, memory: receiptMemory, nextBrief: receiptNext });
+            renderDilemmaReceipt({ option, tradeoff, consequence, memory: receiptMemory, nextBrief: receiptNext, principle: receiptPrinciple });
             lens("reliability", `${consequence.rule_id} applied: org and economics mutated before the next chapter`);
             await narrate(`Decided: ${option}. ${summary}`);
             if (state.org) {
                 await renderMermaid(orgBlueprintMermaid(state.org));
                 await sleep(500);
+            }
+            // The Game Master council ratifies the move first (engine tier:
+            // World Designer + Antagonist + Org Designer), then the worker
+            // standup reacts (party tier). Both reuse the same transcript
+            // renderer; the council packet ships with the decision response so
+            // no extra round-trip is needed.
+            if (councilPacket && Array.isArray(councilPacket.turns) && councilPacket.turns.length) {
+                try {
+                    await renderAgentStandup(councilPacket, { interactive: false });
+                } catch (_) {
+                    lens("reasoning", "Game Master council skipped; decision state is still committed");
+                }
             }
             try {
                 const standup = await api("/api/world/standup", {
@@ -3792,15 +5174,15 @@ document.addEventListener("keydown", (e) => {
 });
 
 async function finale(s) {
-    state.phase = "done";
+    state.phase = "arc-complete";
     updateCommandControls();
     markProgress(state.stages.length, "done");
-    setSceneHead("Finale", "Your mission has a working loop");
+    setSceneHead("Act I complete", "Your venture has a working loop");
     if (A.complete) A.complete();
     await renderMermaid(companyGraphDef());
-    setWorker("narrator", "Venture: launched", "All stages verified", false);
-    setActionHint("Venture launched.");
-    await narrate(`${state.stages.length} stages, ${state.stages.length} verified gates. From one founder signal you now have an org, the systems it runs on, a launch plan, and the numbers behind it - level ${s.level ?? 1}, ${s.xp ?? 0} XP. That is the mission, mapped as a living system you changed.`);
+    setWorker("narrator", "Venture loop: launched", "Act I verified", false);
+    setActionHint("Act I complete. The company can keep operating; the larger mission is still ahead.");
+    await narrate(`${state.stages.length} stages, ${state.stages.length} verified gates. From one founder signal you now have an org, the systems it runs on, a launch plan, and the numbers behind it - level ${s.level ?? 1}, ${s.xp ?? 0} XP. That is the first operating loop, not the final win condition.`);
     await incomeBeat(s);
 }
 
@@ -3849,8 +5231,8 @@ async function incomeBeat(s) {
         if (A.chime && i % 2 === 0) A.chime();
         await sleep(1300);
     }
-    await narrate(`That is the thesis, closed: your skill set the direction, the gates kept it honest, and the workforce turned it into income - ${workers.length || "your"} digital workers, one human seal. This, times a billion founders, is how a desert turns green.`);
-    setActionHint("The loop is closed - Reset to run another venture.");
+    await narrate(`Act I is live: your skill set the direction, the gates kept it honest, and the workforce turned it into income - ${workers.length || "your"} digital workers, one human seal. The larger win is still ahead: scale this loop until it contributes to automating basic needs.`);
+    setActionHint("Act I launched. Continue operating, counter the rival, or Reset to run another venture.");
 }
 
 function updateCommandControls() {
@@ -3861,17 +5243,19 @@ function updateCommandControls() {
     const hasWorld = Array.isArray(state.stages) && state.stages.length > 0;
     const hasPendingReward = !!(state.game && Array.isArray(state.game.pending_rewards) && state.game.pending_rewards.length);
     const ready = state.phase === "ready" && hasWorld && !hasPendingReward && state.idx < state.stages.length;
-    const visible = state.phase !== "title" && state.phase !== "done" && hasWorld && !hasPendingReward;
+    const visible = state.phase !== "title" && state.phase !== "done" && hasWorld && state.idx < state.stages.length;
     form.hidden = !visible;
     input.disabled = !ready;
     send.disabled = !ready;
     input.placeholder = ready
         ? `Tell the workforce your move for stage ${state.idx + 1}...`
-        : (state.phase === "running" ? "Worker is executing your last move..." : "Waiting for the world to finish loading...");
+        : (hasPendingReward ? "Choose a reward card first - then brief the next worker..." : (state.phase === "running" ? "Worker is executing your last move..." : "Waiting for the world to finish loading..."));
     if (ready) {
         const stage = state.stages[state.idx] || {};
         const owner = stage.assigned_worker_title || ROLE_NAME[stage.owner_role] || stage.owner_role || "worker";
         setActionHint(`Ready: Send Move briefs ${owner} for stage ${state.idx + 1}.`);
+    } else if (hasPendingReward) {
+        setActionHint("Choose a reward card before briefing the next worker.");
     }
     queueFooterAwareLayoutSync();
 }
@@ -3884,11 +5268,21 @@ async function submitPlayerCommand(e) {
     input.value = "";
     if (text) {
         const stage = state.stages[state.idx] || {};
+        const owner = stage.assigned_worker_title || ROLE_NAME[stage.owner_role] || stage.owner_role || "worker";
         state.playerCommands.push({ stage_id: stage.id || "", text: text, ts: Date.now() });
-        setActionHint("Move registered. Briefing the worker...");
+        setActionHint(`Move registered. Briefing ${owner}...`);
+        showActionReceipt("CEO move captured", [`stage ${state.idx + 1}`, owner], `"${text}" is saved as worker memory and carried into the next stage brief.`, "good");
         try {
-            await api("/api/world/standup/respond", { text: text });
+            const saved = await api("/api/world/standup/respond", { text: text, stage_id: stage.id || "" });
+            if (saved.state) {
+                setHud(saved.state);
+                setResourcesFromEconomics(saved.state.economics, saved.state.org || state.org);
+                if (saved.state.org) setOrgPanel(saved.state.org);
+            }
             lens("reasoning", `CEO move recorded in memory before stage ${state.idx + 1}: "${text.slice(0, 54)}"`);
+            if ((saved.adapted_stage_ids || []).length) {
+                lens("reasoning", `World Designer bent ${saved.adapted_stage_ids.length} pending stage(s) to that CEO move`);
+            }
             await refreshLearned();
         } catch (_) {
             lens("reliability", "CEO move stayed local because memory service was unavailable; stage still continues");
@@ -4168,16 +5562,22 @@ $("begin").addEventListener("mouseenter", () => {
 // dossier (tool calls, reasoning, memory, receipts); tap again or press Escape
 // to return it to the board. No modal.
 (function wireCharacterCards() {
+    if (window.__CampaignStoryCharacterCardsWired) return;
+    window.__CampaignStoryCharacterCardsWired = true;
     const party = $("party");
     if (party) {
         party.addEventListener("click", (e) => {
             const tile = e.target.closest(".party-agent");
-            if (tile && tile.dataset.owner) { setPartyFlip(tile.dataset.owner); if (A.cardDraw) { try { A.cardDraw(); } catch (_) {} } }
+            if (tile && tile.dataset.owner) {
+                openAgentInspector(tile.dataset.owner);
+                if (A.cardDraw) { try { A.cardDraw(); } catch (_) {} }
+            }
         });
         party.addEventListener("keydown", (e) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
             const tile = e.target.closest(".party-agent");
-            if (tile && tile.dataset.owner) { e.preventDefault(); setPartyFlip(tile.dataset.owner); }
+            if (!tile || !tile.dataset.owner) return;
+            if (e.key === "Enter") { e.preventDefault(); openAgentInspector(tile.dataset.owner); }
+            if (e.key === " ") { e.preventDefault(); setPartyFlip(tile.dataset.owner); }
         });
         party.addEventListener("mouseover", (e) => {
             if (!e.target.closest(".party-agent")) return;
@@ -4190,35 +5590,49 @@ $("begin").addEventListener("mouseenter", () => {
     // (or the close button / Escape / outside) to dismiss.
     const workerMini = $("worker");
     if (workerMini) {
-        workerMini.setAttribute("role", "button");
-        workerMini.setAttribute("tabindex", "0");
-        workerMini.setAttribute("title", "Inspect this agent's dossier");
-        workerMini.addEventListener("click", () => {
-            toggleAgentInspector();
+        workerMini.setAttribute("title", "Inspect Game Master dossiers");
+        workerMini.addEventListener("click", (e) => {
+            const gm = e.target.closest("[data-gm-role]") || workerMini.querySelector('[data-gm-role="narrator"]');
+            if (!gm) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const role = gm.dataset.gmRole || "narrator";
+            const displayName = role === "orgdesigner" ? ROLE_NAME.orgdesigner : ROLE_NAME.narrator;
+            state.activeWorker = { role, deployLabel: "", stateText: role === "orgdesigner" ? "Designing workforce" : "Authoring world", displayName };
+            openAgentInspector(role);
             if (A.cardDraw) { try { A.cardDraw(); } catch (_) {} }
         });
         workerMini.addEventListener("keydown", (e) => {
             if (e.key !== "Enter" && e.key !== " ") return;
             e.preventDefault();
-            toggleAgentInspector();
+            const gm = e.target.closest("[data-gm-role]");
+            if (gm) {
+                const role = gm.dataset.gmRole || "narrator";
+                const displayName = role === "orgdesigner" ? ROLE_NAME.orgdesigner : ROLE_NAME.narrator;
+                state.activeWorker = { role, deployLabel: "", stateText: role === "orgdesigner" ? "Designing workforce" : "Authoring world", displayName };
+                openAgentInspector(role);
+            }
         });
     }
     const castStage = $("cast-stage");
     if (castStage) {
-        castStage.addEventListener("click", (e) => {
-            if (e.target.closest(".cast-close")) closeAgentInspector();
-        });
+        bindInspectorInteractions(castStage);
     }
     // Click anywhere outside the open dossier (and not on its trigger) closes it.
     document.addEventListener("click", (e) => {
         // A click outside the hand rail returns any flipped card to its front.
         if (!e.target.closest("#party")) clearPartyFlip();
-        if (!inspectorOpen) return;
-        if (e.target.closest("#cast-stage") || e.target.closest("#worker") || e.target.closest("#party")) return;
-        closeAgentInspector();
+        if (inspectorOpen) {
+            if (e.target.closest("#cast-stage") || e.target.closest("#worker") || e.target.closest("#party")) return;
+            closeAgentInspector();
+        }
+        if (workerInspectorOpen) {
+            if (e.target.closest("#worker-stage") || e.target.closest("#worker") || e.target.closest("#party")) return;
+            closeWorkerInspector();
+        }
     });
     document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") { closeAgentInspector(); clearPartyFlip(); }
+        if (e.key === "Escape") { closeAgentInspector(); closeWorkerInspector(); clearPartyFlip(); }
     });
 })();
 
@@ -4404,6 +5818,25 @@ setupCharacterCreation();
 // On page load: if there is a prior run on the server, offer to resume it.
 // This runs in the background - never blocks form interaction.
 async function bootFromSavedRun() {
+    // Prefer the multi-run library: every designed run persists as its own slot,
+    // so the player resumes a chosen company/product instead of one autosave.
+    let slots = [], activeRunId = "";
+    try {
+        const res = await fetch("/api/slots");
+        if (res.ok) {
+            const data = await res.json();
+            slots = Array.isArray(data.slots) ? data.slots : [];
+            activeRunId = data.active_run_id || "";
+        }
+    } catch (_) { /* fall through to legacy single-run resume */ }
+
+    if (slots.length) {
+        renderSlotsLibrary(slots, activeRunId);
+        return;
+    }
+
+    // Legacy fallback: a run created before slots existed still lives in
+    // state.json with no run_id. Offer the single resume card for it.
     let snap;
     try {
         const res = await fetch("/api/state");
@@ -4415,6 +5848,7 @@ async function bootFromSavedRun() {
     const stages = (s && s.world && s.world.stages) || [];
     const company = (s && s.name) || "";
     if (!stages.length || !company) return;
+    hydrateFounderInputsFromSavedState(s);
 
     const completedCount = stages.filter((ch) => ch.status === "completed").length;
     const resumeCard = document.createElement("div");
@@ -4438,15 +5872,102 @@ async function bootFromSavedRun() {
     if (dismissBtn) dismissBtn.addEventListener("click", () => resumeCard.remove());
 }
 
+// The multi-run save-slot picker: a library of saved companies/products the
+// player can resume or delete. Renders above the new-run form so a fresh
+// company is always one click away (no slot is overwritten by starting new).
+function renderSlotsLibrary(slots, activeRunId) {
+    const host = document.querySelector(".creator-card .cc-step[data-step='1']");
+    if (!host) return;
+    document.getElementById("slots-card")?.remove();
+
+    if (activeRunId) {
+        apiGet("/api/state").then((snap) => {
+            const activeState = snap && snap.state;
+            if (activeState && activeState.run_id === activeRunId) hydrateFounderInputsFromSavedState(activeState);
+        }).catch(() => { /* active slot metadata is enough for the picker */ });
+    }
+
+    const card = document.createElement("div");
+    card.id = "slots-card";
+    card.className = "slots-card";
+
+    const statusLabel = (st) => st === "victory" ? "won" : st === "defeat" ? "lost" : "in progress";
+    const rowHtml = (slot) => {
+        const total = slot.stages_total || 0;
+        const done = slot.stages_done || 0;
+        const isActive = slot.run_id && slot.run_id === activeRunId;
+        const threat = Math.round(slot.threat_level || 0);
+        const sub = total
+            ? `${done}/${total} stages &middot; ${statusLabel(slot.run_status)} &middot; rival ${threat}/100`
+            : statusLabel(slot.run_status);
+        return `<div class="slot-row${isActive ? " active" : ""}" data-run="${esc(slot.run_id)}">
+            <div class="slot-main">
+                <div class="slot-name">${esc(slot.name || "Untitled run")}${isActive ? ` <em class="slot-active">active</em>` : ""}</div>
+                <div class="slot-sub">${sub}</div>
+            </div>
+            <div class="slot-actions">
+                <button type="button" class="cta small slot-resume" data-run="${esc(slot.run_id)}">Resume &rarr;</button>
+                <button type="button" class="cc-flip-btn small slot-delete" data-run="${esc(slot.run_id)}" title="Delete this saved run">&times;</button>
+            </div>
+        </div>`;
+    };
+
+    card.innerHTML =
+        `<div class="slots-kicker">Saved companies &middot; ${slots.length}</div>`
+        + `<div class="slots-list">${slots.map(rowHtml).join("")}</div>`
+        + `<div class="slots-foot">Or start a new company below.</div>`;
+    host.prepend(card);
+
+    card.querySelectorAll(".slot-resume").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const runId = btn.getAttribute("data-run");
+            btn.disabled = true; btn.textContent = "Loading...";
+            try {
+                const res = await api("/api/slots/load", { run_id: runId });
+                card.remove();
+                if (res && res.state) restoreRunFromState(res.state);
+            } catch (_) {
+                btn.disabled = false; btn.textContent = "Resume \u2192";
+                setActionHint("Could not load that run - try again.");
+            }
+        });
+    });
+    card.querySelectorAll(".slot-delete").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const runId = btn.getAttribute("data-run");
+            const row = btn.closest(".slot-row");
+            if (row && !row.classList.contains("confirm-del")) {
+                row.classList.add("confirm-del");
+                btn.textContent = "\u2713";
+                btn.title = "Click again to confirm delete";
+                setTimeout(() => { row.classList.remove("confirm-del"); btn.innerHTML = "&times;"; btn.title = "Delete this saved run"; }, 2600);
+                return;
+            }
+            try {
+                const res = await api("/api/slots/delete", { run_id: runId });
+                if (res && Array.isArray(res.slots) && res.slots.length) {
+                    renderSlotsLibrary(res.slots, activeRunId);
+                } else {
+                    card.remove();
+                }
+            } catch (_) {
+                setActionHint("Could not delete that run - try again.");
+            }
+        });
+    });
+}
+
 // Restore a saved server-state into the UI so the player can continue without
 // re-running world design. Sets up the game layer, party, and stage progress.
 function restoreRunFromState(s) {
     if (!s) return;
+    syncLatestState(s);
     const stages = (s.world && s.world.stages) || [];
     if (!stages.length) return;
 
     state.company = s.name || "";
     state.pitch = s.pitch || "";
+    state.url = founderSignalFromSavedState(s).url || "";
     state.org = s.org || null;
     state.stages = stages;
     state.decisions = (s.world && s.world.decisions) || [];
@@ -4466,8 +5987,7 @@ function restoreRunFromState(s) {
     if (stageEl) stageEl.classList.remove("prestart", "rail-hidden");
 
     // Pre-fill form so a later reset works correctly.
-    if ($("in-company")) $("in-company").value = state.company;
-    if ($("in-pitch")) $("in-pitch").value = state.pitch;
+    hydrateFounderInputsFromSavedState(s, { overwrite: true });
     if ($("begin")) $("begin").disabled = true;
     if ($("reset")) $("reset").disabled = false;
 
@@ -4500,6 +6020,7 @@ function restoreRunFromState(s) {
         + `<div class="kicker">Run resumed</div>`
         + `<h1>${esc(state.company)}</h1>`
         + `<p>${done} of ${stages.length} stages complete &mdash; send a move to continue.</p>`
+        + `${ventureModelHTML(s)}`
         + `</div>`;
 
     const hasNext = state.phase !== "done";

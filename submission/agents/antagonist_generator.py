@@ -103,6 +103,81 @@ ANTAGONIST_PROFILES = {
 }
 
 
+def _mission_terms(mission_brief: str) -> List[str]:
+    stop = {
+        "the", "and", "for", "with", "that", "this", "from", "into", "your",
+        "our", "their", "company", "business", "startup", "venture", "service",
+        "product", "build", "building", "using", "create", "help", "helps"
+    }
+    words = [
+        w.strip(".,:;!?()[]{}\"'").title()
+        for w in (mission_brief or "").replace("/", " ").split()
+    ]
+    terms = [w for w in words if len(w) >= 4 and w.lower() not in stop]
+    return terms[:4]
+
+
+def _contextual_name(base_names: List[str], archetype: str, mission_brief: str, target_customer: str) -> str:
+    """Pick a rival name from mission context, not just founder archetype.
+
+    The old fallback used only founder_archetype, so the default Builder path
+    always became "The Infinite Trust." This keeps deterministic behavior while
+    making each run's rival read like it belongs to the actual market.
+    """
+    seed = f"{archetype}|{mission_brief}|{target_customer}"
+    hash_val = sum(ord(c) for c in seed)
+    base = base_names[hash_val % len(base_names)] if base_names else "The Market"
+    terms = _mission_terms(mission_brief)
+    if not terms:
+        return base
+    # Keep iconic "The X" names when they fit, but brand them with the market.
+    if base.startswith("The "):
+        return f"The {terms[0]} {base[4:]}"
+    suffix = base.split()[-1] if base else "Syndicate"
+    return f"{terms[0]} {suffix}"
+
+
+def _rival_org(archetype: str, name: str, mission_brief: str, target_customer: str) -> Dict[str, Any]:
+    target = target_customer or "your target customers"
+    terms = _mission_terms(mission_brief)
+    market = " ".join(terms[:2]) if terms else "market"
+    role_sets = {
+        "Builder": [
+            ("Automation CTO", "Clones your workflow with cheaper infrastructure.", "technical"),
+            ("Data Moat Lead", "Locks up proprietary usage data before you can learn.", "data"),
+            ("Platform Integrations", "Bundles the rival into channels you need.", "distribution"),
+        ],
+        "Seller": [
+            ("Enterprise Closer", f"Signs exclusivity with {target}.", "sales"),
+            ("Pricing Enforcer", "Starts a discount war to starve your runway.", "financial"),
+            ("Lobbyist", "Frames your cooperative model as risky or amateur.", "policy"),
+        ],
+        "Designer": [
+            ("Attention Designer", "Turns the category into a dopamine loop.", "cultural"),
+            ("Launch Hype Lead", "Floods the market with spectacle before proof.", "marketing"),
+            ("Retention Manipulator", "Makes switching emotionally expensive.", "retention"),
+        ],
+        "Operator": [
+            ("Cost Cutter", "Undercuts you with outsourced delivery.", "ops"),
+            ("Supply Gatekeeper", "Controls the vendors and channels you rely on.", "supply"),
+            ("Process Auditor", "Weaponizes compliance friction against you.", "compliance"),
+        ],
+    }
+    roles = [
+        {"title": title, "mandate": mandate, "pressure_lane": lane}
+        for title, mandate, lane in role_sets.get(archetype, role_sets["Seller"])
+    ]
+    return {
+        "organization_name": f"{name} Counter-Org",
+        "organization_model": (
+            f"A rival operating team trying to capture the {market} opportunity before "
+            "the player's digital workforce can turn it into durable, trusted revenue."
+        ),
+        "organization_roles": roles,
+        "active_operation": f"Contest {market} demand, poach {target}, and force the player to prove trust before scaling.",
+    }
+
+
 def generate_antagonist(
     founder_archetype: str,
     founder_skill: str = "",
@@ -128,11 +203,8 @@ def generate_antagonist(
     antagonist_archetype = ARCHETYPE_OPPOSITES.get(founder_archetype, "Seller")
     profile = ANTAGONIST_PROFILES.get(antagonist_archetype, {})
 
-    # Pick a name from the templates
     name_templates = profile.get("name_templates", ["The Market"])
-    # Use sum(ord(c)) for a deterministic choice instead of Python's unstable hash()
-    hash_val = sum(ord(c) for c in founder_archetype)
-    name = name_templates[hash_val % len(name_templates)]
+    name = _contextual_name(name_templates, antagonist_archetype, mission_brief, target_customer)
 
     # Refine threat description based on mission if available
     threat_description = profile.get("threat_description", "A formidable competitor has entered the market.")
@@ -144,6 +216,7 @@ def generate_antagonist(
         )
 
     # Create the antagonist
+    org = _rival_org(antagonist_archetype, name, mission_brief, target_customer)
     antagonist = AntagonistState(
         name=name,
         archetype=antagonist_archetype,
@@ -154,6 +227,10 @@ def generate_antagonist(
         signature_tactic=profile.get("signature_tactic", "Execute faster and better."),
         target_customer_overlap=target_customer or "similar customer segment",
         motivation=profile.get("motivation", "Beat the incumbent."),
+        organization_name=org["organization_name"],
+        organization_model=org["organization_model"],
+        organization_roles=org["organization_roles"],
+        active_operation=org["active_operation"],
     )
 
     return antagonist

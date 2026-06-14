@@ -131,3 +131,23 @@ def human_median_fallback_usd(lifecycle_stage: str, seniority: str = "ic") -> in
         base = int(base * _LEAD_MEDIAN_MULTIPLIER)
     return base
 
+
+# A digital worker's PRICE to the company (its monthly burn), expressed as a
+# fraction of what the human in the same seat would cost. The underlying compute
+# (inference_usd) is far cheaper; this fraction is a deliberate game-balance
+# knob so that burn is a REAL constraint the player feels, not a rounding error.
+# Default 0.75: a worker costs three quarters of the human it replaces, so the
+# savings headline is the remaining quarter. Env-overridable.
+WORKER_COST_FRACTION_OF_HUMAN = max(
+    0.0, min(1.0, float(os.getenv("WORKER_COST_FRACTION_OF_HUMAN", "0.75") or 0.75))
+)
+
+
+def worker_cost_from_human(human_median_usd: int) -> int:
+    """A worker's monthly burn derived from the human salary it replaces.
+
+    Single source for the cost ratio: burn = human salary * the fraction above.
+    `inference_usd` stays the (much cheaper) real compute, kept separately for
+    the efficiency dossier; this is the price the player actually pays.
+    """
+    return int(round(max(0, int(human_median_usd or 0)) * WORKER_COST_FRACTION_OF_HUMAN))

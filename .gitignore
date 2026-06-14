@@ -79,6 +79,7 @@ Thumbs.db
 *.temp
 .cache/
 submission/state/*.json
+submission/state/slots/
 submission/replay/*.json
 submission/replay/*.jsonl
 submission/replay/*.log

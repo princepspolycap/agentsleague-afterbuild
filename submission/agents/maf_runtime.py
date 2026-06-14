@@ -307,6 +307,7 @@ def run_maf_group_chat(
         "narrator": "World Designer",
         "orgdesigner": "Org Designer",
         "founder": "Human Operator",
+        "antagonist": "The Rival",
     }
     role_portrait = {
         "strategist": "strategist",
@@ -316,6 +317,7 @@ def run_maf_group_chat(
         "narrator": "narrator",
         "orgdesigner": "orgdesigner",
         "founder": "founder",
+        "antagonist": "villain",
     }
     role_text_style = {
         "strategist": "market posture",
@@ -325,6 +327,7 @@ def run_maf_group_chat(
         "narrator": "world-state posture",
         "orgdesigner": "org-design posture",
         "founder": "CEO direction",
+        "antagonist": "adversarial posture",
     }
     role_debate_frame = {
         "strategist": (
@@ -352,8 +355,12 @@ def run_maf_group_chat(
             "Protect role fit. Challenge unclear ownership and name the worker "
             "or handoff the company now needs."
         ),
+        "antagonist": (
+            "You are the rival, not a teammate. Press your advantage: name the "
+            "market lane you are contesting, cite your live threat level, and "
+            "dare the founder to use the counterplay before their next gate."
+        ),
     }
-
     def default_speaker_profile(name: str, role: str, worker_id: str) -> Dict[str, Any]:
         portrait = role_portrait.get(role, role_portrait["narrator"])
         return {
@@ -457,9 +464,15 @@ def run_maf_group_chat(
                 str(x.get("speaker") or x.get("display_name") or x.get("role") or "agent")
                 for x in participants
             )
+            identity_line = (
+                f"You are {name}, the RIVAL competing against the company '{company_name}' "
+                f"(its pitch: '{pitch[:500]}'). You are an adversary at this table, not an employee.\n"
+                if role == "antagonist"
+                else f"You are {name}, the {role} for the company '{company_name}' (pitch: '{pitch[:500]}').\n"
+            )
             system_instructions = (
-                f"You are {name}, the {role} for the company '{company_name}' (pitch: '{pitch[:500]}').\n"
-                f"The CEO just made a decision at the gate of the stage '{stage_title}':\n"
+                identity_line
+                + f"The CEO just made a decision at the gate of the stage '{stage_title}':\n"
                 f"  Choice: \"{option}\"\n"
                 f"  Consequence: {consequence_summary}\n\n"
                 f"Round table: {participant_names}.\n"

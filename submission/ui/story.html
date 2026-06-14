@@ -127,8 +127,9 @@
                          but it must stay above the party hand and never steal pointer focus.
                      - #party is the persistent card hand above the canvas and below the
                          footer; do not put dossiers directly in this rail.
-                     - #cast-stage.inspect is the only interactive dossier layer and is
-                         allowed to dim/blur the scene while it owns focus.
+                     - #cast-stage.inspect and #worker-stage.inspect are the two
+                         interactive dossier layers and are allowed to dim/blur
+                         the scene while they own focus.
                      - footer is the top HUD/control layer. Dynamic footer height flows
                          back into --hand-bottom from story.js. ---- */
         #stage {
@@ -148,9 +149,11 @@
             overflow: hidden;
         }
         /* A speaking game-master card replaces the center narration bar, so the
-           world can reclaim that vertical space while still reserving the hand. */
+           world can reclaim that vertical space while still reserving the hand.
+           !important so it beats the measured base reserve story.js writes
+           inline on #scene (syncFooterAwareLayout) for the default play state. */
         body.spotlight-active #scene {
-            --lower-stage-reserve: calc(var(--hand-bottom) + var(--hand-card-h) + 34px);
+            --lower-stage-reserve: calc(var(--hand-bottom) + var(--hand-card-h) + 34px) !important;
         }
         #stage.rail-hidden #scene { padding-right: 44px; }
         #stage.rail-hidden #scene-head { right: 44px; }
@@ -164,6 +167,20 @@
             position: relative;
             overflow: hidden;
         }
+        /* Tall takeover boards (the decision-receipt card, reasoning fallbacks)
+           carry no .world-canvas and hide the party rail, so the centered+clipped
+           flow cut them off at top and bottom. Give those the full stage as a
+           top-aligned scroll column, so the whole card is reachable - never
+           clipped under the footer. The org-chart canvas keeps its centered flow. */
+        #scene:not(:has(#diagram .world-canvas)) #diagram {
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-block: 6px 18px;
+        }
+        #scene:not(:has(#diagram .world-canvas)) #diagram::-webkit-scrollbar { display: none; }
         .world-canvas {
             width: min(1040px, 100%);
             max-height: 100%;
@@ -652,6 +669,28 @@
         .resume-company { font-size: 18px; font-weight: 700; color: var(--ink); }
         .resume-progress { font-size: 12px; color: var(--ink-dim); }
         .resume-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+        /* Multi-run save-slot library: a list of saved companies to resume. */
+        .slots-card { background: rgba(91,140,255,0.06); border: 1px solid rgba(91,140,255,0.28);
+            border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 9px; }
+        .slots-kicker { font-size: 11px; font-family: var(--font-mono); letter-spacing: .08em;
+            text-transform: uppercase; color: var(--blue); }
+        .slots-list { display: flex; flex-direction: column; gap: 7px; }
+        .slot-row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px;
+            background: rgba(255,255,255,0.02); transition: border-color 140ms ease, background 140ms ease; }
+        .slot-row:hover { border-color: var(--blue); background: rgba(91,140,255,0.08); }
+        .slot-row.active { border-color: var(--gold-soft); background: rgba(245,200,122,0.07); }
+        .slot-row.confirm-del { border-color: #e0626d; background: rgba(224,98,109,0.10); }
+        .slot-main { min-width: 0; }
+        .slot-name { font-size: 14px; font-weight: 700; color: var(--ink); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+        .slot-active { font-style: normal; font-family: var(--font-mono); font-size: 9.5px;
+            letter-spacing: .06em; text-transform: uppercase; color: var(--gold-soft); margin-left: 5px; }
+        .slot-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
+        .slot-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+        .cta.small { padding: 6px 11px; font-size: 12px; }
+        .slot-delete { width: 26px; height: 26px; padding: 0; line-height: 1; font-size: 16px; }
+        .slots-foot { font-size: 11px; color: var(--ink-faint); }
         .cc-ready .kicker {
             font-family: var(--font-mono); font-size: 10.5px;
             letter-spacing: 0.34em; text-transform: uppercase; color: #bcd2ff; margin: 0;
@@ -788,6 +827,27 @@
             -webkit-text-fill-color: transparent;
         }
         .founding .founding-arch { color: var(--ink-dim); font-size: 14px; font-family: var(--font-mono); }
+        .venture-model {
+            width: min(820px, calc(100vw - 72px)); margin: 22px auto 0;
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+            text-align: left;
+        }
+        .venture-model div {
+            min-height: 62px; padding: 9px 10px;
+            border: 1px solid rgba(44,58,94,0.72); border-radius: 7px;
+            background: linear-gradient(180deg, rgba(12,18,32,0.74), rgba(7,10,20,0.58));
+        }
+        .venture-model span {
+            display: block; margin-bottom: 5px;
+            font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.14em;
+            text-transform: uppercase; color: var(--ink-faint);
+        }
+        .venture-model b {
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+            color: var(--ink); font-size: 11.5px; line-height: 1.28; font-weight: 650;
+        }
+        .venture-model .rival { border-color: rgba(251,113,133,0.32); background: rgba(251,113,133,0.055); }
+        .venture-model .rival b { color: var(--bad); }
 
         .field { text-align: left; margin: 0 auto 11px; max-width: 540px; }
         .field label {
@@ -921,7 +981,7 @@
         .maf-row { font-size: 11px; color: var(--ink-dim); margin-top: 5px; line-height: 1.7; }
         .maf-row b { color: var(--ink); font-weight: 600; font-size: 10.5px; }
         .maf-chip { display: inline-block; font-family: var(--font-mono); font-size: 9.5px;
-            border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 2px 8px; margin: 2px 3px 0 0;
+            border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; margin: 2px 3px 0 0;
             color: var(--ink-dim); background: rgba(255,255,255,0.03); }
         .maf-chip.called { color: var(--good-soft); border-color: rgba(52,211,153,0.35); }
         .maf-chip.mem { color: var(--designer-soft); border-color: rgba(192,132,252,0.35); }
@@ -1071,6 +1131,33 @@
             background: rgba(45,212,191,0.05);
         }
         .org-handnote b { color: var(--ops); }
+        /* Workforce management: hire to grow (burn rises, customers come) or lay
+           off to extend runway. Distinct from the agent hand - this is the money
+           view of the team, not the card/dossier view. */
+        .org-manage { margin: 10px 0 4px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,0.02); }
+        .org-manage-h { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+        .org-hire-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
+        .org-hire-row.muted { font-size: 10.5px; color: var(--ink-faint); font-family: var(--font-mono); }
+        .org-hire-btn {
+            font-size: 10.5px; color: var(--ink); cursor: pointer;
+            border: 1px solid rgba(52,211,153,0.32); border-radius: 8px; padding: 6px 9px;
+            background: rgba(52,211,153,0.06); transition: 140ms ease;
+        }
+        .org-hire-btn:hover:not(:disabled) { background: rgba(52,211,153,0.13); border-color: var(--good); transform: translateY(-1px); }
+        .org-hire-btn:disabled { opacity: 0.5; cursor: default; }
+        .org-hire-btn b { color: var(--good); font-weight: 600; }
+        .org-hire-btn .hire-cust { font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gold-soft); margin-left: 4px; }
+        .org-fire-list { display: flex; flex-direction: column; gap: 5px; }
+        .org-fire-row { position: relative; display: flex; align-items: center; gap: 7px; padding-left: 14px; font-size: 11px; }
+        .org-fire-name { color: var(--ink); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .org-fire-cost { font-family: var(--font-mono); font-size: 9.5px; color: var(--marketer); }
+        .org-fire-btn {
+            font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+            color: var(--ink-dim); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px;
+            background: transparent; transition: 140ms ease;
+        }
+        .org-fire-btn:hover:not(:disabled) { color: var(--bad); border-color: rgba(251,113,133,0.4); background: rgba(251,113,133,0.06); }
+        .org-fire-btn:disabled { opacity: 0.4; cursor: default; }
         .org-export {
             display: block; width: 100%; margin-top: 10px; padding: 8px 10px;
             font-family: var(--font-mono); font-size: 10.5px;
@@ -1100,6 +1187,16 @@
             pointer-events: none;
         }
         body.prestart #party { display: none; }
+        /* One occupant per stage band. The party hand rides with the world
+           canvas only; whenever the diagram instead shows a full narrative
+           panel (founding splash, council, live stand-up, or a decision
+           receipt - none of which carry .world-canvas), that panel owns the
+           center and the hand steps aside, so the two never stack. Visibility
+           is derived from what the diagram is actually rendering, so it stays
+           correct at every site that swaps the canvas with no per-call wiring.
+           This is the single source of truth for party-vs-panel; do not add a
+           second per-mode toggle. */
+        #scene:not(:has(#diagram .world-canvas)) #party { display: none !important; }
         #stage.rail-hidden #party { right: 44px; }
         .party-agent {
             flex: 0 0 auto;
@@ -1163,14 +1260,18 @@
         .pa-back .cc-spoken-line { font-size: 8.5px; padding: 5px 7px; margin-top: 4px; }
         .pa-back .cc-chip { font-size: 8px; padding: 2px 7px; }
         .pa-back .cc-trace { font-size: 8.5px; }
+        .pa-back .cc-gm-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+        .pa-back .cc-gm-grid div,
+        .pa-back .cc-stage-row,
+        .pa-back .cc-replay-line { padding: 5px 6px; }
+        .pa-back .cc-stage-row b,
+        .pa-back .cc-replay-line em { font-size: 8.5px; }
         .pa-back .cc-metric-grid { gap: 5px; }
         .pa-back .cc-metric { padding: 6px; }
         .pa-back .cc-metric-top { font-size: 7.5px; }
-        .pa-back .cc-badge-back {
-            margin-top: 4px; text-align: center;
-            font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.13em;
-            text-transform: uppercase; color: var(--gold-soft); opacity: 0.85;
-        }
+        .pa-back .cc-section.is-collapsible:not(.open) .cc-section-body { display: none; }
+        .pa-back .cc-section-toggle { pointer-events: none; }
+        .pa-back .cc-suggestion { display: none; }
         .pa-layer {
             align-self: flex-start; font-family: var(--font-mono); font-size: 7px;
             letter-spacing: 0.16em; text-transform: uppercase;
@@ -1301,6 +1402,22 @@
         .cc-score b { font-size: 26px; color: var(--good-soft); font-variant-numeric: tabular-nums; }
         .cc-score span { font-size: 12px; color: var(--ink-faint); }
         .cc-section { margin-bottom: 15px; }
+        .cc-section-toggle {
+            width: 100%; padding: 0; margin: 0 0 7px; border: 0; background: transparent;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            color: inherit; font: inherit; text-align: left; cursor: pointer;
+        }
+        .cc-section-toggle .cc-h { margin-bottom: 0; }
+        .cc-more {
+            font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.1em;
+            text-transform: uppercase; color: var(--gold-soft); opacity: 0.78;
+        }
+        .cc-section.is-collapsible:not(.open) .cc-section-body {
+            display: none;
+        }
+        .cc-section.is-collapsible.open .cc-more::after { content: " open"; color: var(--ink-faint); }
+        .cast-back-panel .cc-section.is-collapsible .cc-section-body { display: block; }
+        .cast-back-panel .cc-more { display: none; }
         .cc-h {
             font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.16em;
             text-transform: uppercase; color: var(--ink-dim); margin-bottom: 7px;
@@ -1316,17 +1433,55 @@
         .cc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
         .cc-chip {
             font-family: var(--font-mono); font-size: 10px; color: var(--blue-soft);
-            border: 1px solid rgba(91,140,255,0.32); border-radius: var(--radius-pill);
+            border: 1px solid rgba(91,140,255,0.32); border-radius: 6px;
             padding: 3px 9px; background: rgba(91,140,255,0.06);
         }
         .cc-chip.mem { color: var(--ops); border-color: rgba(45,212,191,0.32); background: rgba(45,212,191,0.06); }
         .cc-chip.dim { color: var(--ink-faint); border-color: var(--line); background: transparent; }
+        .cc-suggestions { display: flex; flex-direction: column; gap: 7px; }
+        .cc-suggestion {
+            width: 100%; text-align: left; cursor: pointer;
+            border: 1px solid rgba(45,212,191,0.28); border-radius: 9px;
+            padding: 8px 9px; color: var(--ink); background: rgba(45,212,191,0.055);
+            font: inherit; font-size: 11.5px; line-height: 1.35; transition: 140ms ease;
+        }
+        .cc-suggestion:hover { border-color: var(--ops); background: rgba(45,212,191,0.12); transform: translateY(-1px); }
         .cc-trace { font-family: var(--font-mono); font-size: 10.5px; }
         .cc-trace-line { padding: 6px 0; border-bottom: 1px solid rgba(29,39,64,0.5); }
         .cc-call { color: var(--gold-soft); }
         .cc-args { color: var(--ink-faint); margin-left: 8px; }
         .cc-res { color: var(--good-soft); margin-top: 3px; }
         .cc-ms { color: var(--ink-faint); }
+        .cc-gm-grid {
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px;
+        }
+        .cc-gm-grid div,
+        .cc-stage-row,
+        .cc-replay-line {
+            border: 1px solid rgba(255,255,255,0.06); border-radius: 10px;
+            background: rgba(255,255,255,0.025);
+        }
+        .cc-gm-grid div { padding: 8px 9px; display: flex; flex-direction: column; gap: 3px; }
+        .cc-gm-grid span,
+        .cc-stage-row span,
+        .cc-replay-line span,
+        .cc-replay-line b {
+            font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.1em;
+            text-transform: uppercase; color: var(--ink-faint);
+        }
+        .cc-gm-grid b { color: var(--ink); font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+        .cc-stage-list,
+        .cc-replay { display: flex; flex-direction: column; gap: 6px; }
+        .cc-stage-row,
+        .cc-replay-line { padding: 7px 9px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 8px; }
+        .cc-stage-row b,
+        .cc-replay-line em {
+            color: var(--ink); font-size: 11px; line-height: 1.25; font-style: normal;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .cc-stage-row em { grid-column: 2; color: var(--ink-faint); font-size: 10px; font-style: normal; }
+        .cc-replay-line b { color: var(--gold-soft); }
+        .cc-replay-line em { grid-column: 1 / -1; color: var(--ink-dim); }
         .cc-metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
         .cc-metric-grid.owned { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         /* Per-worker economics grid on the card back (run cost vs human seat). */
@@ -1373,7 +1528,8 @@
         /* Hidden until the footer agent chip is clicked. The stage stays quiet
            by default: narration, graph, and the agent hand own the screen; the
            full character card is an intentional inspect action. */
-        #cast-stage {
+        #cast-stage,
+        #worker-stage {
             position: fixed; left: 28px; bottom: calc(var(--hand-bottom) + 12px); z-index: 6;
             width: min(28vw, 360px);
             height: clamp(320px, calc(100vh - var(--hand-bottom) - 72px), 560px);
@@ -1384,32 +1540,95 @@
         /* On-demand inspector: clicking the footer agent mini summons that
            agent's gorgeous card with its dossier, raised above the footer so it
            is interactive. This is the only state in which the card is shown. */
-        #cast-stage.inspect {
+        #worker-stage {
+            left: auto; right: 28px;
+            width: min(30vw, 380px);
+        }
+        #cast-stage.inspect,
+        #worker-stage.inspect {
             display: block; pointer-events: auto; z-index: 30;
         }
         body.inspecting-agent #diagram,
         body.inspecting-agent #scene-head,
         body.inspecting-agent #party,
         body.inspecting-agent #theater,
-        body.inspecting-agent #narration {
+        body.inspecting-agent #narration,
+        body.inspecting-worker #diagram,
+        body.inspecting-worker #scene-head,
+        body.inspecting-worker #party,
+        body.inspecting-worker #theater,
+        body.inspecting-worker #narration {
             opacity: 0.22;
             filter: blur(5px);
             pointer-events: none;
             transition: opacity 240ms ease, filter 240ms ease;
         }
-        /* The character art stays gorgeous and visible up top; the dossier is a
-           glass panel over the lower portion of the card so the agent and its
-           receipts read together (front + back, both on screen). */
-        #cast-stage.inspect .cast-card-plate { display: none; }
+        /* Full-art inspector: the character remains the card face; receipts live
+           in a draggable bottom sheet over it, and double-tap flips to deep receipts. */
+        .inspect .cast-card-plate { display: none; }
+        .cast-card-inner {
+            position: relative; width: 100%; height: 100%;
+            transform-style: preserve-3d;
+            transition: transform 540ms cubic-bezier(.2,.7,.2,1);
+        }
+        .cast-card.flipped .cast-card-inner { transform: rotateY(180deg); }
+        .cast-face {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column; gap: 8px;
+            -webkit-backface-visibility: hidden; backface-visibility: hidden;
+        }
+        .cast-back { transform: rotateY(180deg); }
+        .cast-back-panel {
+            height: 100%; overflow-y: auto; padding: 16px 14px 14px;
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(10,15,28,0.96), rgba(6,9,17,0.98));
+            border: 1px solid rgba(245,200,122,0.28);
+        }
+        .cast-back-kicker {
+            font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.16em;
+            text-transform: uppercase; color: var(--gold-soft); margin: 2px 0 12px;
+        }
+        .worker-card-label {
+            position: absolute; left: 18px; right: 48px; top: 18px; z-index: 2;
+            display: flex; flex-direction: column; gap: 2px;
+            pointer-events: none;
+        }
+        .worker-card-label span {
+            align-self: flex-start; font-family: var(--font-mono); font-size: 8px;
+            letter-spacing: 0.14em; text-transform: uppercase; color: var(--ops);
+            border: 1px solid rgba(45,212,191,0.34); border-radius: 999px;
+            background: rgba(45,212,191,0.08); padding: 2px 8px;
+        }
+        .worker-card-label b { font-family: var(--font-display); font-size: 20px; line-height: 1.05; color: var(--ink); }
+        .worker-card-label em { font-style: normal; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); }
+        .worker-flip-zone {
+            position: absolute; left: 10px; right: 10px; top: 10px; bottom: 32%; z-index: 1;
+            cursor: pointer;
+        }
         .cast-dossier {
-            position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 2;
-            max-height: 54%; overflow-y: auto; padding: 14px;
+            position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+            height: var(--sheet-h, 49%); min-height: 118px; overflow-y: auto; padding: 22px 14px 14px;
             border-radius: 14px;
             background: linear-gradient(180deg, rgba(10,15,28,0.92), rgba(6,9,17,0.98));
             -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
             border: 1px solid rgba(255,255,255,0.07);
             display: flex; flex-direction: column; gap: 12px;
+            box-shadow: 0 -18px 46px -32px rgba(0,0,0,0.92);
+            transition: height 220ms cubic-bezier(.2,.7,.2,1);
         }
+        .cast-dossier[data-sheet="peek"] { --sheet-h: 28%; }
+        .cast-dossier[data-sheet="mid"] { --sheet-h: 49%; }
+        .cast-dossier[data-sheet="full"] { --sheet-h: calc(100% - 18px); }
+        .cast-sheet-handle {
+            position: absolute; left: 50%; top: 7px; width: 46px; height: 10px;
+            transform: translateX(-50%); border: 0; border-radius: 999px;
+            background: transparent; cursor: ns-resize; padding: 0;
+        }
+        .cast-sheet-handle::before {
+            content: ""; display: block; width: 46px; height: 4px; border-radius: 999px;
+            background: rgba(245,200,122,0.55); box-shadow: 0 0 16px -5px rgba(245,200,122,0.8);
+        }
+        .cast-sheet-handle:hover::before { background: rgba(245,200,122,0.86); }
         .cast-dossier::-webkit-scrollbar { width: 6px; }
         .cast-dossier::-webkit-scrollbar-track { background: transparent; }
         .cast-dossier::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.34); border-radius: 999px; }
@@ -1460,6 +1679,10 @@
                 linear-gradient(160deg, var(--card-accent), rgba(7,10,20,0.55) 62%),
                 linear-gradient(180deg, rgba(12,18,32,0.96), rgba(7,10,20,0.98));
             border-color: var(--card-accent);
+            box-shadow:
+                0 0 0 1px rgba(0,0,0,0.4) inset,
+                0 30px 70px -28px rgba(0,0,0,0.85),
+                0 0 42px -14px var(--card-accent);
         }
         #cast-stage.speaking .cast-card {
             box-shadow:
@@ -1481,14 +1704,63 @@
             background-position: bottom center; background-repeat: no-repeat;
             background-size: contain;
         }
-        #cast-stage.inspect .cast-card-art .cast-fig {
+        .inspect .cast-card-art .cast-fig {
             background-position: top center;
-            background-size: min(112%, 330px) auto;
+            background-size: auto 100%;
+        }
+        .inspect .cast-card-art { position: absolute; inset: 0; flex: none; }
+        .inspect .cast-card-art { flex: none; }
+        .inspect .cast-card.gm .cast-card-art { flex: none; }
+        .inspect .cast-card.worker .cast-card-art { flex: none; }
+        .inspect .cast-card.worker .cast-card-art {
+            inset: 0;
+            border-color: var(--card-accent);
+            background:
+                radial-gradient(82% 64% at 50% 34%, var(--cast-aura, rgba(91,140,255,0.4)), transparent 72%),
+                linear-gradient(180deg, #0b1322, #070a14);
+        }
+        .inspect .cast-card.worker .cast-card-art .cast-fig {
+            background-position: center top;
+            background-size: auto 96%;
+        }
+        .cast-card.worker .cast-dossier {
+            border-color: var(--card-accent);
+        }
+        .cast-card.worker .cast-sheet-handle::before {
+            background: var(--card-accent);
+            box-shadow: 0 0 16px -5px var(--card-accent);
+        }
+
+        @media (min-width: 1000px) and (max-height: 840px) {
+            #worker-stage.inspect {
+                width: min(48vw, 620px);
+                height: min(58vh, 430px);
+                right: 28px;
+            }
+            #worker-stage.inspect .cast-card.worker .cast-card-art {
+                inset: 10px 50% 10px 10px;
+            }
+            #worker-stage.inspect .worker-card-label {
+                right: 52%;
+            }
+            #worker-stage.inspect .worker-flip-zone {
+                right: 50%; bottom: 10px;
+            }
+            #worker-stage.inspect .cast-card.worker .cast-dossier {
+                left: 50%; right: 10px; top: 10px; bottom: 10px;
+                height: auto; min-height: 0; border-radius: 12px;
+            }
+            #worker-stage.inspect .cast-card.worker .cast-dossier[data-sheet="peek"],
+            #worker-stage.inspect .cast-card.worker .cast-dossier[data-sheet="mid"],
+            #worker-stage.inspect .cast-card.worker .cast-dossier[data-sheet="full"] {
+                height: auto;
+            }
+            #worker-stage.inspect .cast-card.worker .cast-sheet-handle { display: none; }
         }
         /* Digital-worker avatar: a role icon, not a full-body cast hero. Render
            it as a centered badge floating on the role aura so a worker card is
            instantly distinct from the gold game-master hero card. */
-        #cast-stage.inspect .cast-card-art.icon .cast-fig {
+        .inspect .cast-card-art.icon .cast-fig {
             background-position: center;
             background-size: min(56%, 188px) auto;
         }
@@ -1593,6 +1865,34 @@
         }
         @keyframes castCaret { 50% { opacity: 0; } }
 
+        /* World-master announcement: when a game master (World/Org Designer) takes
+           the spotlight it reads as a deliberate announcement, not a worker aside.
+           The gold seal grammar frames it; a herald eyebrow names the act. This is
+           the one overlay that differentiates the world masters from the rest of
+           the game while they are announcing a change to the run. */
+        .cast-announce {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-family: var(--font-mono); font-size: 8.5px;
+            letter-spacing: 0.22em; text-transform: uppercase;
+            color: var(--gold-soft); margin-bottom: 7px;
+            padding-bottom: 6px; border-bottom: 1px solid rgba(244,201,93,0.24);
+        }
+        #cast-stage.speaking.gm-announce .cast-card {
+            border-color: rgba(245,200,122,0.78);
+            box-shadow:
+                0 0 0 1px rgba(0,0,0,0.4) inset,
+                0 30px 70px -28px rgba(0,0,0,0.85),
+                0 0 72px -4px rgba(244,201,93,0.5);
+            animation: castCardIn 420ms cubic-bezier(.16,.84,.24,1) both, gmAnnouncePulse 3.4s ease-in-out 0.5s infinite;
+        }
+        @keyframes gmAnnouncePulse {
+            0%, 100% { box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset, 0 30px 70px -28px rgba(0,0,0,0.85), 0 0 64px -8px rgba(244,201,93,0.42); }
+            50% { box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset, 0 30px 70px -28px rgba(0,0,0,0.85), 0 0 84px 0 rgba(244,201,93,0.6); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            #cast-stage.speaking.gm-announce .cast-card { animation: castCardIn 420ms cubic-bezier(.16,.84,.24,1) both; }
+        }
+
         @media (max-width: 1180px) {
             #cast-stage { left: 16px; width: min(84vw, 360px); height: min(70vh, 560px); }
             #cast-stage:not(.inspect):not(.speaking) { display: none; }
@@ -1650,23 +1950,78 @@
         .council-says.quote::after { content: "\201D"; }
         .standup-member { min-height: 178px; }
 
+        /* Three agent classes, one transcript grammar: the world masters that
+           author the run (gm = gold), the rival that pressures it (red), and the
+           player's digital workers that react (teal). A class-colored left rail +
+           wash separates authorship from reaction at a glance; the gm card also
+           carries a herald "announces" kicker so a world-master change reads as a
+           deliberate announcement, not just another message. */
+        .council-member.agent-gm {
+            border-color: rgba(244,201,93,0.4);
+            background: linear-gradient(180deg, rgba(244,201,93,0.07), rgba(255,255,255,0.018));
+            box-shadow: inset 3px 0 0 0 var(--gold-soft);
+        }
+        .council-member.agent-rival {
+            border-color: rgba(251,113,133,0.42);
+            background: linear-gradient(180deg, rgba(251,113,133,0.06), rgba(255,255,255,0.016));
+            box-shadow: inset 3px 0 0 0 var(--bad);
+        }
+        .council-member.agent-dw { box-shadow: inset 3px 0 0 0 rgba(45,212,191,0.7); }
+        .standup-announce {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-family: var(--font-mono); font-size: 8.5px;
+            letter-spacing: 0.16em; text-transform: uppercase;
+            color: var(--gold-soft); margin-bottom: 9px;
+            padding: 4px 8px; border: 1px solid rgba(244,201,93,0.4);
+            background: rgba(244,201,93,0.08); border-radius: 6px;
+        }
+
         /* Scrollable conversation transcript: the standup becomes a vertical log
            you can scroll back through (earlier turns + your own responses).
            Same card grammar as the council, but one column so message media
-           (images, Mermaid diagrams) get full width. */
+           (images, Mermaid diagrams) get full width. It is presented as a
+           centered OVERLAY console - framed, translucent, with a backdrop behind
+           it (see body.standup-active #diagram::before) - so the stand-up reads
+           as a deliberate takeover of the stage, not loose content sitting in the
+           canvas with empty space beside it. */
         .council.standup-log {
             display: flex;
             flex-direction: column;
             grid-template-columns: none;
             gap: 12px;
-            width: min(680px, 100%);
+            width: min(820px, 100%);
             max-height: 100%;
-            align-self: stretch;
+            align-self: center;
             overflow-y: auto;
-            padding: 2px 10px 2px 2px;
-            scrollbar-width: thin;
-            scrollbar-color: var(--line-bright) transparent;
+            padding: 16px 18px 18px;
+            border: 1px solid rgba(244,201,93,0.18);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(12,18,32,0.62), rgba(7,10,20,0.5));
+            box-shadow: 0 30px 80px -44px rgba(0,0,0,0.9), 0 0 60px -30px rgba(244,201,93,0.22);
+            -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+            position: relative; z-index: 2;
             scroll-behavior: smooth;
+        }
+        /* Overlay header band: names the takeover so the empty space reads as a
+           framed console, not a gap. Sticky so it stays while the log scrolls. */
+        .council.standup-log::before {
+            content: "\265A  Agent stand-up \00B7 the workforce reacts to your call";
+            position: sticky; top: -16px; z-index: 3;
+            margin: -16px -18px 4px; padding: 12px 18px;
+            font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em;
+            text-transform: uppercase; color: var(--gold-soft);
+            background: linear-gradient(180deg, #0e1424 0%, #0e1424 78%, rgba(14,20,36,0.92) 100%);
+            border-bottom: 1px solid rgba(244,201,93,0.2);
+            border-radius: 18px 18px 0 0;
+        }
+        /* Backdrop: dim + blur the rest of the stage so the console floats above
+           it as a true overlay. The scene behind keeps its world/party context
+           but recedes. */
+        body.standup-active #diagram::before {
+            content: ""; position: absolute; inset: 0; z-index: 1;
+            background: radial-gradient(120% 90% at 50% 30%, rgba(5,8,16,0.62), rgba(5,8,16,0.86));
+            -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+            pointer-events: none;
         }
         .council.standup-log::-webkit-scrollbar { width: 8px; }
         .council.standup-log::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 999px; }
@@ -1678,10 +2033,26 @@
             flex: 0 0 auto;
         }
         /* During a standup the transcript owns the stage: the party roster is
-           redundant (those workers are in the log) and would overlap it, so it
-           steps aside and the transcript claims the freed vertical band. */
-        body.standup-active #party { display: none !important; }
-        body.standup-active #scene { --lower-stage-reserve: 260px; }
+           redundant (those workers are in the log) and would overlap it. The
+           party hand is hidden by the world-canvas occupancy rule above (the
+           standup-log is not a world canvas); here we only reclaim the freed
+           vertical band for the transcript. !important so it beats the measured
+           base reserve story.js writes inline on #scene for the play state. */
+        body.standup-active #scene { --lower-stage-reserve: 260px !important; }
+
+        /* Footer-quiet: a single body class set by setStageLayer() in story.js
+           (the one coordinator that owns every stage-layer toggle). When any
+           takeover layer (standup transcript / CEO input, an agent or worker
+           inspector, or the dilemma gate) owns the stage, the footer's
+           playable cluster - the card hand and the command line - would
+           overlap that layer, so it steps aside. The worker mini + econ HUD on
+           the left stay visible as persistent context. */
+        body.footer-quiet #card-hand,
+        body.footer-quiet #player-command,
+        body.footer-quiet #player-command-status,
+        body:has(.standup-log) #card-hand,
+        body:has(.standup-log) #player-command,
+        body:has(.standup-log) #player-command-status { display: none !important; }
 
         /* Inline message media: an image or a Mermaid diagram inside a turn.
            Both are height-bounded so a tall image or diagram can never blow up
@@ -1809,6 +2180,9 @@
         .receipt-adapted { color: #7ee7a8; }
         .receipt-decision { font-family: var(--font-display); font-size: 17px; line-height: 1.3; color: var(--ink); }
         .receipt-tradeoff { margin-top: 5px; font-size: 11.5px; color: var(--ink-dim); }
+        .receipt-principle { margin-top: 7px; font-size: 11.5px; line-height: 1.45; color: var(--blue-soft, #bcd2ff);
+            border-top: 1px dashed var(--line); padding-top: 6px; }
+        .receipt-principle b { color: var(--ink); font-weight: 700; }
         .receipt-step.consequence h2 { font-size: 20px; margin: 0 0 9px; }
         .receipt-memory { font-size: 12.5px; line-height: 1.45; color: var(--ink); }
         .receipt-next b { color: var(--ink); font-size: 14px; }
@@ -1821,8 +2195,8 @@
         /* ---- Reasoning theater: the agent's plan, center stage ---- */
         #theater {
             position: absolute; inset: 0; z-index: 30;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            padding: 56px 64px 140px; gap: 14px;
+            display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+            padding: 44px 64px var(--lower-stage-reserve, 150px); gap: 14px;
             background: rgba(5,8,16,0.86); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
             animation: sceneIn 400ms ease;
         }
@@ -1835,7 +2209,7 @@
         .th-head .pulse { width: 8px; height: 8px; }
         .th-worker { font-family: var(--font-display); font-size: 26px; color: var(--ink); margin-bottom: 2px; }
         .th-deploy { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); margin-bottom: 16px; }
-        .th-steps { width: 100%; max-width: 660px; display: flex; flex-direction: column; gap: 10px; }
+        .th-steps { width: 100%; max-width: 660px; display: flex; flex-direction: column; gap: 10px; max-height: min(54vh, 460px); overflow-y: auto; overflow-x: hidden; padding-right: 4px; }
         .th-step {
             display: flex; gap: 12px; align-items: flex-start;
             border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px;
@@ -1886,12 +2260,20 @@
         .arch-card:hover { border-color: var(--blue); }
         .arch-card.sel { border-color: var(--blue); background: rgba(91,140,255,0.12); }
         .field-help { margin: -4px 0 10px; color: var(--ink-dim); font-size: 12px; line-height: 1.45; }
-        #dilemma-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center;
-            justify-content: center; background: rgba(5,8,16,0.72); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+        #dilemma-overlay {
+            position: fixed; inset: 0; z-index: 60;
+            display: flex; align-items: flex-start; justify-content: center;
+            padding: clamp(12px, 2.4vh, 28px) clamp(12px, 3vw, 36px);
+            overflow: auto;
+            background: rgba(5,8,16,0.72); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+        }
         #dilemma-overlay[hidden] { display: none; }
-        .dilemma-card { width: min(640px, 92vw); background: linear-gradient(180deg, #0e1424, #0a0f1d);
+        .dilemma-card { width: min(960px, 100%); max-height: calc(100dvh - clamp(24px, 4.8vh, 56px)); overflow-y: auto;
+            background: linear-gradient(180deg, #0e1424, #0a0f1d);
             border: 1px solid var(--line); border-radius: 16px; padding: 26px 28px;
             box-shadow: 0 24px 80px rgba(0,0,0,0.55); }
+        .dilemma-card::-webkit-scrollbar { width: 8px; }
+        .dilemma-card::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 999px; }
         /* Provenance: who poses the dilemma and the reasoning trail that led
            here - the popup never appears out of nowhere. */
         .dilemma-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
@@ -1900,7 +2282,7 @@
         .dilemma-head-text { min-width: 0; }
         .dilemma-trail { margin-top: 6px; line-height: 1.9; }
         .dilemma-trail .tchip { display: inline-block; font-family: var(--font-mono);
-            font-size: 9.5px; border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 2px 8px;
+            font-size: 9.5px; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
             margin: 0 4px 0 0; color: var(--ink-dim); background: rgba(255,255,255,0.03); }
         .dilemma-trail .tchip.gold { color: var(--gold-soft); border-color: rgba(244,201,93,0.35); }
         .dilemma-trail .tchip.rival { color: #ff9b8a; border-color: rgba(255,107,90,0.42); background: rgba(255,107,90,0.07); }
@@ -1916,7 +2298,7 @@
             background: rgba(91,140,255,0.07); }
         .dilemma-tool code { font-family: var(--font-mono); color: var(--blue-soft); font-size: 11px; }
         .dilemma-tool span { color: var(--ink-dim); font-size: 11px; line-height: 1.4; }
-        .dilemma-options { display: flex; flex-direction: column; gap: 10px; }
+        .dilemma-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
         .dilemma-opt { background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 12px;
             padding: 13px 16px; cursor: pointer; text-align: left; color: var(--ink); font-family: inherit;
             transition: border-color 150ms ease, background 150ms ease; width: 100%; }
@@ -1928,6 +2310,10 @@
         .dilemma-opt small { display: inline-block; margin-top: 7px; font-family: var(--font-mono);
             font-size: 10px; color: var(--ink-faint); letter-spacing: 0.04em; }
         .dilemma-opt:disabled { opacity: 0.55; cursor: wait; }
+        /* Business principle this choice tests - the pedagogy line. */
+        .dilemma-principle { display: block; margin-top: 8px; font-size: 11.5px; line-height: 1.45;
+            color: var(--blue-soft, #bcd2ff); border-top: 1px dashed var(--line); padding-top: 7px; }
+        .dilemma-principle b { color: var(--ink); font-weight: 700; }
         /* Worker proposer chip: the choice is championed by a named digital worker. */
         .dilemma-by { display: flex; align-items: center; gap: 7px; margin-bottom: 7px;
             font-size: 11px; color: var(--ink-faint); letter-spacing: 0.02em; }
@@ -1996,6 +2382,7 @@
             text-align: left; min-height: 170px; border: 1px solid var(--line);
             border-radius: 12px; padding: 13px; color: var(--ink);
             background: rgba(255,255,255,0.03); cursor: pointer; transition: 140ms ease;
+            font-family: inherit;
         }
         .card-hand.reward-draft { align-items: stretch; gap: 10px; padding-top: 3px; }
         .card-hand.reward-draft .reward-pick {
@@ -2007,7 +2394,8 @@
         .card-hand.reward-draft .reward-pick em { margin-top: 6px; font-size: 9px; }
         .reward-pick:hover:not(:disabled) { border-color: var(--gold-soft); background: rgba(244,201,93,0.08); transform: translateY(-1px); }
         .reward-pick:disabled { opacity: 0.55; cursor: wait; }
-        .reward-pick b { display: block; font-family: var(--font-display); font-size: 17px; line-height: 1.12; margin-bottom: 8px; }
+        .reward-pick b { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; font-family: var(--font-display); font-size: 17px; line-height: 1.12; margin-bottom: 8px; }
+        .reward-title { min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         /* Direct-child only: the nested .game-card-cost badge keeps its gold circle. */
         .reward-pick > span { display: block; font-size: 12px; color: var(--ink-dim); line-height: 1.4; }
         .reward-pick em { display: block; margin-top: 11px; font-style: normal; font-family: var(--font-mono); font-size: 10px; color: var(--gold-soft); }
@@ -2026,6 +2414,27 @@
         .dilemma-mic-status { margin-top: 8px; font-family: var(--font-mono); font-size: 10px;
             letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); min-height: 14px; }
         .dilemma-mic-status.live { color: var(--bad); }
+        @media (min-width: 900px) {
+            .dilemma-tools { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .dilemma-tool { grid-template-columns: 1fr; gap: 4px; }
+        }
+        @media (max-width: 760px), (max-height: 760px) {
+            #dilemma-overlay { padding: 10px; }
+            .dilemma-card { max-height: calc(100dvh - 20px); padding: 18px; border-radius: 12px; }
+            .dilemma-head { margin-bottom: 8px; }
+            .dilemma-avatar { width: 36px; height: 36px; flex-basis: 36px; }
+            .dilemma-kicker { font-size: 9px; margin-bottom: 6px; }
+            .dilemma-trail { line-height: 1.55; }
+            .dilemma-trail .tchip { font-size: 8.5px; padding: 2px 6px; }
+            .dilemma-prompt { font-size: 19px; margin-bottom: 12px; }
+            .dilemma-tools { margin-bottom: 10px; }
+            .dilemma-tool { padding: 6px 8px; }
+            .dilemma-options { grid-template-columns: 1fr; gap: 8px; }
+            .dilemma-opt { padding: 10px 12px; }
+            .dilemma-principle { margin-top: 6px; padding-top: 6px; }
+            #dilemma-own-wrap { flex-wrap: wrap; }
+            #dilemma-own-wrap input { flex-basis: 100%; }
+        }
         .income-beat { display: flex; flex-direction: column; align-items: center; gap: 22px; width: min(560px, 90%); }
         .income-num { text-align: center; }
         #income-counter { display: block; font-family: var(--font-display); font-size: 56px; color: var(--good);
@@ -2109,7 +2518,7 @@
             background: linear-gradient(180deg, rgba(7,10,20,0.86), rgba(7,10,20,0.62));
             box-shadow: 0 22px 60px -40px rgba(0,0,0,0.9);
             -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-            padding: 12px 16px;
+            padding: 10px 16px;
             display: flex; flex-direction: column; justify-content: center;
         }
         .progress { display: flex; align-items: center; gap: 7px; }
@@ -2120,7 +2529,38 @@
             display: flex; align-items: center; gap: 8px;
             padding: 0 0 2px;
         }
-        .footer-center { min-width: 0; display: grid; gap: 8px; }
+        .footer-center { min-width: 0; display: grid; gap: 6px; }
+        /* Company dashboard strip: the always-visible answer to "what company is
+           this, what does it sell, how does it make money, and who builds/sells/
+           operates it." Uniform tiles that wrap responsively; every tile carries
+           a tooltip that defines the concept and shows the full value. */
+        .company-context {
+            display: flex; flex-wrap: nowrap; gap: 6px; align-items: stretch;
+            min-width: 0; overflow-x: auto; padding-bottom: 2px;
+        }
+        .company-context::-webkit-scrollbar { display: none; }
+        .company-context[hidden] { display: none; }
+        .ccx-tile {
+            flex: 1 1 120px; min-width: 108px; min-height: 34px; padding: 5px 8px;
+            border: 1px solid rgba(44,58,94,0.72); border-radius: 7px;
+            background: rgba(255,255,255,0.025); cursor: help;
+        }
+        .ccx-tile span {
+            display: block; margin-bottom: 3px; font-family: var(--font-mono);
+            font-size: 7.5px; letter-spacing: 0.12em; text-transform: uppercase;
+            color: var(--ink-faint);
+        }
+        .ccx-tile b {
+            display: block; color: var(--ink); font-size: 10.5px; line-height: 1.22;
+            font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ccx-tile.lead { border-color: rgba(91,140,255,0.32); background: rgba(91,140,255,0.055); }
+        .ccx-tile.lead b { font-family: var(--font-display); font-size: 13px; }
+        .ccx-tile.owner { border-color: rgba(45,212,191,0.22); background: rgba(45,212,191,0.035); }
+        .ccx-tile.owner b { color: var(--ops); font-size: 10px; }
+        .ccx-tile.owner.gap b { color: var(--marketer); }
+        .ccx-tile.rival { border-color: rgba(251,113,133,0.28); background: rgba(251,113,133,0.045); }
+        .ccx-tile.rival b { color: var(--bad); }
         /* Active worker mini in the footer (identity only; receipts on cards) */
         .hud-worker { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 320px; cursor: pointer; border-radius: var(--radius-sm); padding: 2px 6px; margin: -2px -6px; transition: background 140ms ease; }
         .hud-worker:hover { background: rgba(255,255,255,0.04); }
@@ -2132,12 +2572,31 @@
         .hud-worker-deploy { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.08em; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .hud-worker-state { font-family: var(--font-mono); font-size: 10px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
         .hud-worker-state .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); animation: pulse 1.2s ease-in-out infinite; flex: 0 0 auto; }
+        .gm-console { display: flex; flex-direction: column; gap: 8px; }
+        .gm-console [hidden] { display: none !important; }
+        .gm-console-head {
+            font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.16em;
+            text-transform: uppercase; color: var(--ink-faint);
+        }
+        .gm-console-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .gm-console-card {
+            min-width: 0; display: flex; align-items: center; gap: 8px;
+            border: 1px solid var(--line); border-radius: 8px;
+            background: rgba(255,255,255,0.025); color: var(--ink);
+            padding: 7px 8px; cursor: pointer; text-align: left; font: inherit;
+            transition: 140ms ease;
+        }
+        .gm-console-card:hover { border-color: rgba(245,200,122,0.46); background: rgba(245,200,122,0.07); transform: translateY(-1px); }
+        .gm-console-card img { width: 30px; height: 30px; border-radius: 7px; object-fit: cover; border: 1px solid rgba(255,255,255,0.08); flex: 0 0 auto; }
+        .gm-console-card span { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .gm-console-card b { font-family: var(--font-display); font-size: 12px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .gm-console-card em { font-style: normal; font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
         /* Economy HUD: digital workforce cost + leverage */
         .econ-hud { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .econ-pill {
             display: inline-flex; align-items: baseline; gap: 5px;
             font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dim);
-            padding: 5px 11px; border: 1px solid var(--line); border-radius: var(--radius-pill);
+            padding: 5px 11px; border: 1px solid var(--line); border-radius: 6px;
             background: rgba(255,255,255,0.025);
             transition: all 150ms ease;
         }
@@ -2210,9 +2669,28 @@
         }
         .cmd-status:empty { display: none; }
         .cmd-status.live { color: var(--blue); }
+        .cmd-status.action-receipt {
+            display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+            min-height: 32px; padding: 7px 9px;
+            border: 1px solid rgba(52,211,153,0.26); border-radius: var(--radius-sm);
+            background: rgba(52,211,153,0.055);
+            color: var(--ink-dim); animation: receiptIn 220ms ease;
+        }
+        .cmd-status.action-receipt.warn { border-color: rgba(245,158,11,0.34); background: rgba(245,158,11,0.06); }
+        .cmd-status.action-receipt.bad { border-color: rgba(251,113,133,0.34); background: rgba(251,113,133,0.06); }
+        .cmd-status.action-receipt b { color: var(--ink); font-weight: 700; }
+        .cmd-status.action-receipt div { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+        .cmd-status.action-receipt span {
+            display: inline-flex; align-items: center; min-height: 18px;
+            padding: 2px 6px; border: 1px solid rgba(91,140,255,0.26);
+            border-radius: 999px; color: var(--blue-soft); background: rgba(91,140,255,0.07);
+            white-space: nowrap;
+        }
+        .cmd-status.action-receipt em { flex-basis: 100%; font-style: normal; color: var(--ink-faint); line-height: 1.35; }
+        @keyframes receiptIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
         .card-hand {
             min-width: 0; max-width: none;
-            display: flex; align-items: stretch; gap: 9px; overflow-x: auto;
+            display: flex; align-items: stretch; justify-content: center; gap: 9px; overflow-x: auto;
             padding: 2px 4px 4px;
         }
         .card-hand[hidden] { display: none; }
@@ -2236,14 +2714,27 @@
             border-left: 3px solid var(--gc-accent, var(--blue));
             border-radius: var(--radius-sm); padding: 9px 10px;
             background: linear-gradient(180deg, rgba(12,18,32,0.92), rgba(7,10,20,0.8));
-            cursor: pointer; transition: 140ms ease;
+            cursor: pointer; transition: 140ms ease; font-family: inherit;
         }
         .game-card-btn:hover:not(:disabled) { border-color: var(--gc-accent, var(--gold-soft)); transform: translateY(-2px); box-shadow: 0 16px 32px -22px var(--gc-accent, rgba(91,140,255,0.6)); }
-        .game-card-btn:disabled { opacity: 0.42; cursor: not-allowed; }
+        .game-card-btn:disabled,
+        .game-card-btn[aria-disabled="true"] { opacity: 0.52; cursor: help; }
         /* Counterplay cards pulse when the rival is closing in - teaches the loop. */
         .game-card-btn.counter-hot:not(:disabled) { animation: counterHot 1.8s ease-in-out infinite; border-color: var(--bad); }
         @keyframes counterHot { 0%,100% { box-shadow: 0 0 12px -5px var(--bad); } 50% { box-shadow: 0 0 20px -2px var(--bad); } }
         .game-card-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+        .gc-cost-row { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+        .gc-help {
+            width: 16px; height: 16px; border-radius: 50%;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-family: var(--font-mono); font-size: 9px; line-height: 1;
+            color: var(--ink-dim); border: 1px solid var(--line);
+            background: rgba(255,255,255,0.035); cursor: help;
+            transition: 140ms ease;
+        }
+        .game-card-btn:hover .gc-help,
+        .reward-pick:hover .gc-help,
+        .end-turn-btn:hover .gc-help { color: var(--ink); border-color: var(--gc-accent, var(--gold-soft)); background: var(--gc-soft, rgba(244,201,93,0.09)); }
         .gc-kind {
             font-family: var(--font-mono); font-size: 7.5px; letter-spacing: 0.14em;
             text-transform: uppercase; color: var(--gc-accent, var(--ink-dim));
@@ -2277,6 +2768,35 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .game-card-btn.pending { border-color: rgba(244,201,93,0.38); border-left-color: var(--gold-soft); justify-content: center; }
+        /* End Turn: the always-available affordance that refills energy. Reads
+           as a control, not a playable card, but lives in the same hand row. */
+        .end-turn-btn {
+            flex: 0 0 120px; align-self: stretch; text-align: left;
+            display: flex; flex-direction: column; justify-content: center; gap: 4px;
+            color: var(--ink); border: 1px dashed var(--line-bright);
+            border-radius: var(--radius-sm); padding: 9px 11px;
+            background: rgba(255,255,255,0.02); cursor: pointer; transition: 140ms ease; font-family: inherit;
+        }
+        .end-turn-btn:hover { border-color: var(--gold-soft); background: rgba(255,255,255,0.05); transform: translateY(-2px); }
+        .end-turn-btn .et-label { font-family: var(--font-display); font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+        .end-turn-btn .et-sub { font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.06em; color: var(--ink-faint); text-transform: uppercase; }
+        .end-turn-btn.urgent { border-style: solid; border-color: var(--gold-soft); animation: counterHot 1.8s ease-in-out infinite; }
+        .hand-stat.tapped { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.05); }
+        .hand-stat .hand-tapped { color: var(--marketer); }
+        .move-tooltip {
+            position: fixed; z-index: 84; width: min(360px, calc(100vw - 24px));
+            display: flex; flex-direction: column; gap: 6px; padding: 12px 13px;
+            color: var(--ink); border: 1px solid rgba(91,140,255,0.34);
+            border-radius: var(--radius-sm);
+            background: linear-gradient(180deg, rgba(12,18,32,0.96), rgba(7,10,20,0.94));
+            box-shadow: 0 22px 62px -28px rgba(0,0,0,0.94), 0 0 24px -16px rgba(91,140,255,0.8);
+            -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+            pointer-events: none;
+        }
+        .move-tooltip[hidden] { display: none; }
+        .move-tooltip b { font-family: var(--font-display); font-size: 14px; line-height: 1.15; color: var(--ink); }
+        .move-tooltip span { display: block; font-size: 11.5px; line-height: 1.35; color: var(--ink-dim); }
+        .move-tooltip span:nth-child(2) { color: var(--gold-soft); }
         .seg { width: 30px; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.08); transition: background 300ms ease; }
         .seg.done { background: var(--blue); }
         .seg.active { background: linear-gradient(90deg, var(--blue), var(--designer)); box-shadow: 0 0 12px rgba(91,140,255,0.6); }
@@ -2305,7 +2825,7 @@
             color: var(--ink); font-weight: 700; font-family: var(--font-body); font-size: 12px;
         }
         .run-state {
-            padding: 2px 8px; border-radius: var(--radius-pill);
+            padding: 2px 8px; border-radius: 6px;
             border: 1px solid var(--line); background: rgba(255,255,255,0.035);
             color: var(--ink-dim);
         }
@@ -2646,8 +3166,10 @@
             .party-agent {
                 width: 152px;
             }
-            #cast-stage.inspect {
+            #cast-stage.inspect,
+            #worker-stage.inspect {
                 left: 12px;
+                right: 12px;
                 width: min(52vw, 360px);
                 height: min(66vh, 540px);
                 bottom: calc(var(--hand-bottom) + 8px);
@@ -2741,7 +3263,8 @@
             #narration-text {
                 font-size: clamp(13px, 3.6vw, 15px);
             }
-            #cast-stage.inspect {
+            #cast-stage.inspect,
+            #worker-stage.inspect {
                 left: 10px;
                 right: 10px;
                 width: auto;
@@ -2749,10 +3272,10 @@
                 bottom: calc(var(--footer-h) + 8px);
             }
             .cast-dossier {
-                max-height: 58%;
+                max-height: none;
             }
             #theater {
-                padding: 36px 16px 116px;
+                padding: 28px 16px var(--lower-stage-reserve, 116px);
             }
             footer {
                 padding: 8px 10px 10px;
@@ -2837,7 +3360,8 @@
                 width: 32px;
                 height: 32px;
             }
-            #cast-stage.inspect {
+            #cast-stage.inspect,
+            #worker-stage.inspect {
                 left: 8px;
                 right: 8px;
                 height: min(56vh, 460px);
@@ -2922,14 +3446,24 @@
 
         <footer>
             <div class="footer-card footer-left">
-                <!-- Active worker mini: who is on stage right now (identity only;
-                     the per-agent receipts live on the card backs). -->
-                <div id="worker" class="hud-worker">
-                    <img id="worker-portrait" class="hud-worker-face" src="/game/assets/generated/narrator.png" alt="" onerror="this.style.display='none'" />
-                    <div class="hud-worker-text">
-                        <div class="hud-worker-top"><span class="role-orb"></span><span id="worker-name">World Designer</span><span id="worker-deploy" class="hud-worker-deploy"></span></div>
-                        <div id="worker-state" class="hud-worker-state">Idle</div>
+                <!-- Game Master console: fixed authors/orchestrators only. Digital
+                     workers live in the hand cards and worker inspector. -->
+                <div id="worker" class="gm-console" role="group" aria-label="Game Masters">
+                    <div class="gm-console-head">Game Masters</div>
+                    <div class="gm-console-list">
+                        <button class="gm-console-card" type="button" data-gm-role="narrator" title="Inspect World Designer">
+                            <img src="/game/assets/generated/narrator.png" alt="" onerror="this.style.display='none'" />
+                            <span><b>World Designer</b><em>Quest graph</em></span>
+                        </button>
+                        <button class="gm-console-card" type="button" data-gm-role="orgdesigner" title="Inspect Org Designer">
+                            <img src="/game/assets/generated/orgdesigner.png" alt="" onerror="this.style.display='none'" />
+                            <span><b>Org Designer</b><em>Workforce</em></span>
+                        </button>
                     </div>
+                    <span id="worker-name" hidden>World Designer</span>
+                    <span id="worker-deploy" class="hud-worker-deploy" hidden></span>
+                    <span id="worker-state" class="hud-worker-state" hidden>Idle</span>
+                    <img id="worker-portrait" class="hud-worker-face" src="/game/assets/generated/narrator.png" alt="" hidden onerror="this.style.display='none'" />
                 </div>
                 <!-- Economy HUD: the company's running cost + leverage, the one
                      global thing worth tracking (everything else is per-agent). -->
@@ -2937,6 +3471,7 @@
             </div>
             <div class="footer-card footer-mid">
                 <div class="footer-center">
+                    <div id="company-context" class="company-context" hidden></div>
                     <span id="hint" class="hint action-hint">Enter a pitch to begin</span>
                     <form id="player-command" class="player-command" hidden>
                         <input id="player-command-input" autocomplete="off" placeholder="Tell the workforce your next move..." />
@@ -3019,7 +3554,7 @@
     </div>
 
     <script src="/game/game/audio.js?v=11"></script>
-    <script type="module" src="/game/game/story.js?v=199"></script>
+    <script type="module" src="/game/game/story.js?v=223"></script>
     <script src="/game/game/intro.js?v=30"></script>
 </body>
 </html>

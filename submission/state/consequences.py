@@ -17,6 +17,7 @@ from agents.worker_economics import (
     WORKER_MODEL,
     human_median_fallback_usd,
     monthly_cost_for_role,
+    worker_cost_from_human,
 )
 
 
@@ -34,10 +35,40 @@ DAYS_PER_MONTH = 30.0
 # from engaged play over time, never from the wall-clock running unwatched.
 ANTAGONIST_MAX_CATCHUP_DAYS = max(0.5, float(os.getenv("ANTAGONIST_MAX_CATCHUP_DAYS", "3") or 3))
 
+# AFK guard for the money clock. Normal polling still charges each observed
+# slice of play time, but a single catch-up read after a long browser/server idle
+# cannot silently bankrupt the company or trigger surprise contractions before
+# the player makes their next move. Set to 0 to charge the full wall-clock gap.
+ECONOMY_MAX_CATCHUP_DAYS = max(0.0, float(os.getenv(
+    "ECONOMY_MAX_CATCHUP_DAYS",
+    os.getenv("ANTAGONIST_MAX_CATCHUP_DAYS", "3"),
+) or 0))
+
 # A solo founder's bootstrap capital: the fixed seed the treasury starts with.
 # Because a digital workforce runs cheap, this is a healthy runway - the live
 # threat is the antagonist and the narrative meters, not payroll. Env-overridable.
 FOUNDER_SEED_USD = max(1000, int(float(os.getenv("FOUNDER_SEED_USD", "25000") or 25000)))
+
+# Forced contraction: an unprofitable company can't sustain its workforce, so it
+# sheds its most expensive worker over time until burn fits revenue again. This
+# turns "you're not making money" into a real, visible pressure on the org (the
+# workforce shrinks, burn falls), not just a treasury number ticking to zero.
+#   - Only contract while BLEEDING (revenue < burn) AND runway is short.
+#   - Rate-limited: at most one layoff per cooldown of in-game days, so burn
+#     decreases gradually over time rather than gutting the org at once.
+#   - Never below a minimum core, so the company can still operate and finish.
+CONTRACTION_RUNWAY_DAYS = max(1.0, float(os.getenv("CONTRACTION_RUNWAY_DAYS", "30") or 30))
+CONTRACTION_COOLDOWN_DAYS = max(0.5, float(os.getenv("CONTRACTION_COOLDOWN_DAYS", "4") or 4))
+MIN_DIGITAL_WORKERS = max(1, int(float(os.getenv("MIN_DIGITAL_WORKERS", "2") or 2)))
+# Grace period before any forced layoff: a fresh org (and a fresh hire) gets
+# this many in-game days to win revenue before the workforce starts contracting,
+# so the designed team and deliberate hires are durable, not clawed back at t~0.
+CONTRACTION_GRACE_DAYS = max(0.0, float(os.getenv("CONTRACTION_GRACE_DAYS", "10") or 10))
+
+# Average revenue per paying customer per month. Makes money concrete: the
+# addressable market and the company's revenue both convert to a customer COUNT
+# through this single price, so the player reads "N customers x $arpu = $rev/mo".
+REVENUE_PER_CUSTOMER_USD = max(1, int(float(os.getenv("REVENUE_PER_CUSTOMER_USD", "220") or 220)))
 
 
 ECON_KEYS = ("proof", "trust", "velocity", "burn_pressure", "autonomy", "runway_months")
@@ -229,6 +260,79 @@ RULES: Dict[str, Dict[str, Any]] = {
 }
 
 
+# The real business principle each consequence rule tests. The fantasy framing
+# above keeps the world fun; this names the actual concept a founder is deciding,
+# so the dilemma gate teaches as it plays. One source of truth, keyed by rule_id,
+# kept beside RULES so a new rule is paired with its lesson in the same edit.
+_PRINCIPLE_BY_RULE: Dict[str, Dict[str, str]] = {
+    "strategist.depth": {
+        "name": "Beachhead strategy",
+        "insight": "Dominate one narrow segment end to end before you widen - a strong wedge beats broad-but-shallow.",
+    },
+    "strategist.breadth": {
+        "name": "Optionality vs. focus",
+        "insight": "Testing several fronts buys market learning, but spreads proof thin and slows any single win.",
+    },
+    "designer.ship": {
+        "name": "Build-measure-learn",
+        "insight": "A 70% product in real users' hands teaches you more than a perfect one still in the lab.",
+    },
+    "designer.polish": {
+        "name": "Quality as moat",
+        "insight": "Polish defends trust and brand, but every extra week of quality is paid in speed and burn.",
+    },
+    "marketer.adoption": {
+        "name": "Land-grab pricing",
+        "insight": "Low price maximizes adoption and network effects - at the cost of thin margins and support load.",
+    },
+    "marketer.runway": {
+        "name": "Move upmarket",
+        "insight": "Fewer, higher-value accounts buy durable revenue and runway, but lengthen the sales cycle.",
+    },
+    "ops.automate": {
+        "name": "Operating leverage",
+        "insight": "Automation protects margin and scales cheaply, but risks the customer relationship at the edges.",
+    },
+    "ops.human_loop": {
+        "name": "Trust over margin",
+        "insight": "Keeping a human in the loop defends the promise to customers, paid for in higher burn.",
+    },
+    "ops.shareholder": {
+        "name": "Blitzscaling",
+        "insight": "Outside capital buys speed and scale by trading away founder autonomy and control.",
+    },
+    "ops.cooperative": {
+        "name": "Stakeholder model",
+        "insight": "Shared ownership trades the growth ceiling for durable trust and resilience.",
+    },
+    "custom.default": {
+        "name": "Constraint-driven strategy",
+        "insight": "An explicit constraint, carried forward, focuses every later decision the company makes.",
+    },
+}
+
+
+_FLAG_BY_RULE: Dict[str, str] = {
+    "strategist.breadth": "competitor_leakage",
+    "designer.ship": "competitor_friction",
+    "marketer.adoption": "competitor_pricing_clash",
+    "ops.automate": "competitor_churn_risk",
+    "ops.shareholder": "competitor_consolidation",
+    "ops.cooperative": "coop_alliance_active",
+}
+
+
+def principle_for_rule(rule_id: str) -> Dict[str, str]:
+    """The real business principle a CEO choice tests (name + one-line insight).
+
+    Single source for the dilemma gate's pedagogy: the option button and the
+    decision receipt both read this, so the lesson shown at choose-time matches
+    the one shown after committing. Unknown rules degrade to the custom lesson.
+    """
+    principle = _PRINCIPLE_BY_RULE.get(rule_id) or _PRINCIPLE_BY_RULE["custom.default"]
+    return {"name": str(principle.get("name", "")), "insight": str(principle.get("insight", ""))}
+
+
 def initialize_economics_from_org(org: Optional[OrgBlueprint]) -> CompanyEconomics:
     worker_count = int(getattr(org, "digital_worker_count", 0) or 0)
     burn = int(getattr(org, "monthly_burn_usd", 0) or 0)
@@ -265,6 +369,8 @@ def initialize_economics_from_org(org: Optional[OrgBlueprint]) -> CompanyEconomi
         # dollar of revenue still has to be WON as market share, stage by stage.
         market_share=0.0,
         addressable_market_usd=_addressable_market_usd(worker_count),
+        arpu_usd=REVENUE_PER_CUSTOMER_USD,
+        paying_customers=0,
     )
 
 
@@ -279,26 +385,44 @@ def _addressable_market_usd(worker_count: int) -> int:
 
 
 def _recompute_runway(econ: CompanyEconomics) -> None:
-    """Recompute net profit and runway from current revenue/burn/treasury.
+    """Recompute net profit, daily burn, and runway from revenue/burn/treasury.
 
-    Single source for the net+runway math so the decision path and the stage
-    outcome path can never drift. Profitable companies show a long runway.
+    Single source for ALL net + burn + runway math so every path that changes
+    the workforce or revenue (a hire, a layoff, a card, a CEO decision) and the
+    real-time payroll clock (tick_economy) report the same numbers. Runway is
+    expressed in days (the lethal unit the clock charges in) and months is a
+    derived view of it, so the two never drift.
     """
-    econ.net_profit_usd = int(econ.monthly_revenue_usd - econ.monthly_burn_usd)
-    if econ.net_profit_usd >= 0:
-        econ.runway_months = 36
+    daily_burn = econ.monthly_burn_usd / DAYS_PER_MONTH
+    daily_rev = econ.monthly_revenue_usd / DAYS_PER_MONTH
+    net_daily = daily_burn - daily_rev
+    econ.net_profit_usd = int(round(econ.monthly_revenue_usd - econ.monthly_burn_usd))
+    econ.daily_burn_usd = int(round(daily_burn))
+    if net_daily > 0:
+        econ.runway_days = int(max(0, econ.points) // max(1, int(round(net_daily))))
     else:
-        econ.runway_months = max(1, min(36, econ.points // max(1, abs(econ.net_profit_usd))))
+        # Profitable (or break-even): treasury is not draining - show a long,
+        # bounded runway rather than infinity so the HUD stays readable.
+        econ.runway_days = 999
+    econ.runway_months = max(0, min(36, int(econ.runway_days // 30)))
 
 
 def _revenue_from_share(econ: CompanyEconomics) -> int:
     """Recurring monthly revenue = the slice of the addressable market the
     company currently holds. Single source so every path that moves market
-    share books the same revenue."""
+    share books the same revenue - and the same paying-customer count.
+
+    Customers make the money concrete: revenue / arpu = paying customers, set
+    here as a side effect so every revenue change updates the count in lockstep.
+    """
     if not econ.addressable_market_usd:
         econ.addressable_market_usd = _addressable_market_usd(
             int(getattr(econ, "digital_worker_count", 0) or 0))
-    return max(0, int(round(econ.market_share / 100.0 * econ.addressable_market_usd)))
+    if not getattr(econ, "arpu_usd", 0):
+        econ.arpu_usd = REVENUE_PER_CUSTOMER_USD
+    revenue = max(0, int(round(econ.market_share / 100.0 * econ.addressable_market_usd)))
+    econ.paying_customers = max(0, int(round(revenue / max(1, econ.arpu_usd))))
+    return revenue
 
 
 def add_market_share(state: CompanyState, share_gain: float, *, deal_fraction: float = 0.0) -> Dict[str, Any]:
@@ -315,6 +439,7 @@ def add_market_share(state: CompanyState, share_gain: float, *, deal_fraction: f
     share_before = float(getattr(econ, "market_share", 0.0) or 0.0)
     econ.market_share = round(max(0.0, min(100.0, share_before + share_gain)), 2)
     rev_before = int(econ.monthly_revenue_usd or 0)
+    customers_before = int(getattr(econ, "paying_customers", 0) or 0)
     econ.monthly_revenue_usd = _revenue_from_share(econ)
     deal_cash = int(round(econ.monthly_revenue_usd * deal_fraction)) if (deal_fraction and share_gain > 0) else 0
     if deal_cash:
@@ -328,6 +453,303 @@ def add_market_share(state: CompanyState, share_gain: float, *, deal_fraction: f
         "monthly_revenue_usd": econ.monthly_revenue_usd,
         "deal_cash_usd": deal_cash,
         "net_profit_usd": econ.net_profit_usd,
+        "customers_before": customers_before,
+        "paying_customers": int(getattr(econ, "paying_customers", 0) or 0),
+        "customers_gained": int(getattr(econ, "paying_customers", 0) or 0) - customers_before,
+    }
+
+
+def _sync_econ_from_org(state: CompanyState) -> None:
+    """Re-anchor the economics burn/headcount to the live org.
+
+    The single source of the burn the clock charges is the org's role costs.
+    The decision and stage paths already write econ <- org, but re-syncing at
+    the start of every tick guarantees the clock can never charge a stale burn
+    after the workforce changes (a layoff, a mid-game hire) by any path.
+    """
+    org = state.org
+    econ = state.economics
+    if org is None or econ is None:
+        return
+    econ.monthly_burn_usd = int(getattr(org, "monthly_burn_usd", 0) or 0)
+    econ.digital_worker_count = int(getattr(org, "digital_worker_count", 0) or 0)
+    econ.leverage_ratio = float(getattr(org, "leverage_ratio", 0.0) or 0.0)
+
+
+def _reassign_stages_from_worker(state: CompanyState, laid_off: OrgRole) -> List[str]:
+    """Move a laid-off worker's not-yet-shipped stages to a surviving worker.
+
+    Keeps the world model consistent after a layoff: pending stages owned by the
+    departed worker are rebound to a survivor of the same function (else any
+    survivor, else unbound). Completed stages keep their attribution - who
+    shipped them is history.
+    """
+    world = getattr(state, "world", None)
+    org = state.org
+    if not world or not org:
+        return []
+    survivors = [r for r in org.roles if r.kind != "human"]
+    moved: List[str] = []
+    for s in world.stages:
+        if s.assigned_worker_id != laid_off.id or s.status == "completed":
+            continue
+        repl = next((r for r in survivors if (r.deployment_hint or "") == (s.owner_role or "")), None) \
+            or (survivors[0] if survivors else None)
+        if repl:
+            s.assigned_worker_id = repl.id
+            s.assigned_worker_title = repl.title
+        else:
+            s.assigned_worker_id = None
+            s.assigned_worker_title = None
+        moved.append(s.id)
+    return moved
+
+
+def _contract_workforce_if_insolvent(state: CompanyState) -> Optional[Dict[str, Any]]:
+    """Shed the most expensive worker when the company can't sustain its burn.
+
+    The economic feedback loop: not making money -> can't afford the workforce
+    -> lay off the biggest cost -> burn falls -> runway extends. Gradual
+    (rate-limited per cooldown), bounded (never below a minimum core), and
+    fully reflected in the org, the world graph, the economics, and the runway.
+    Returns the layoff receipt for the caller to log + remember, or None.
+    """
+    org = state.org
+    econ = state.economics
+    if org is None or econ is None:
+        return None
+    # Startup grace: a freshly chartered company (and any deliberate hire) needs
+    # a runway to try to become profitable before the workforce starts shedding
+    # seats. Without this, a fresh org sits below the runway threshold from day
+    # ~0 and gets amputated instantly, undermining both the designed org and the
+    # CEO's hires. Contraction is a LATE pressure, not a day-zero one.
+    if float(econ.days_elapsed or 0.0) < CONTRACTION_GRACE_DAYS:
+        return None
+    # Only contract while actually bleeding and short on runway.
+    if int(econ.monthly_revenue_usd or 0) >= int(econ.monthly_burn_usd or 0):
+        return None
+    if int(econ.runway_days or 0) > CONTRACTION_RUNWAY_DAYS:
+        return None
+    digital = [r for r in org.roles if r.kind != "human"]
+    if len(digital) <= MIN_DIGITAL_WORKERS:
+        return None
+    # Rate limit: at most one layoff per cooldown of in-game days.
+    last = float(getattr(econ, "last_contraction_day", 0.0) or 0.0)
+    if last and (econ.days_elapsed - last) < CONTRACTION_COOLDOWN_DAYS:
+        return None
+
+    # Cut the most expensive worker first - the biggest burn relief per layoff.
+    target = max(digital, key=lambda r: int(r.monthly_cost_usd or 0))
+    burn_before = int(org.monthly_burn_usd or 0)
+    org.roles = [r for r in org.roles if r.id != target.id]
+    reassigned = _reassign_stages_from_worker(state, target)
+    _recompute_org_stats(org)
+    _sync_econ_from_org(state)
+    _recompute_runway(econ)
+    econ.last_contraction_day = econ.days_elapsed
+    _append_org_note(org, f"Laid off {target.title}: unprofitable, trimming burn to extend runway.")
+    return {
+        "laid_off_id": target.id,
+        "laid_off_title": target.title,
+        "monthly_cost_usd": int(target.monthly_cost_usd or 0),
+        "burn_before_usd": burn_before,
+        "burn_after_usd": int(org.monthly_burn_usd or 0),
+        "worker_count_after": int(org.digital_worker_count or 0),
+        "reassigned_stage_ids": reassigned,
+        "runway_days": int(econ.runway_days or 0),
+        "day": round(float(econ.days_elapsed or 0.0), 2),
+    }
+
+
+# A catalog of seats the CEO can hire mid-run. Each is a real digital-worker
+# seat priced exactly like any other (burn = a fraction of the human salary it
+# replaces, cheap inference tracked separately), so a hire is a legible profit
+# trade: burn rises now, and the seat earns it back by winning/keeping
+# customers. Go-to-market seats also open immediate pipeline (a small market
+# share win on hire); build/ops seats add capacity that pays off as stages ship.
+PLAYER_HIRE_PREFIX = "player_hire"
+HIREABLE_ROLES: Dict[str, Dict[str, Any]] = {
+    "sales": {
+        "title": "Sales Closer",
+        "lifecycle_stage": "gtm",
+        "deployment_hint": "marketer",
+        "mandate": "Open pipeline and close paying customers.",
+        "kpis": ["pipeline_opened", "deals_closed", "win_rate"],
+        "tools": ["crm", "outreach", "proposal_writer"],
+        "why": "A dedicated closer turns interest into recurring revenue - the seat that most directly wins market share.",
+        "share_on_hire": 0.8,
+    },
+    "marketer": {
+        "title": "Growth Marketer",
+        "lifecycle_stage": "gtm",
+        "deployment_hint": "marketer",
+        "mandate": "Build demand and feed the funnel with qualified leads.",
+        "kpis": ["reach", "qualified_leads", "cac"],
+        "tools": ["content_studio", "campaign_planner", "analytics"],
+        "why": "Demand generation widens the top of the funnel so the closer has more to convert.",
+        "share_on_hire": 0.5,
+    },
+    "engineer": {
+        "title": "Product Engineer",
+        "lifecycle_stage": "mvp",
+        "deployment_hint": "designer",
+        "mandate": "Ship product capacity so the roadmap moves faster.",
+        "kpis": ["features_shipped", "reliability", "cycle_time"],
+        "tools": ["code_interpreter", "deploy", "test_runner"],
+        "why": "More build capacity means stages ship sooner - and shipped stages are what win share.",
+        "share_on_hire": 0.0,
+    },
+    "support": {
+        "title": "Customer Success",
+        "lifecycle_stage": "retention",
+        "deployment_hint": "ops",
+        "mandate": "Keep customers happy so revenue compounds instead of churning.",
+        "kpis": ["retention", "csat", "expansion"],
+        "tools": ["helpdesk", "playbooks", "health_scoring"],
+        "why": "Retention protects the share you already won, so revenue compounds.",
+        "share_on_hire": 0.0,
+    },
+    "analyst": {
+        "title": "Discovery Analyst",
+        "lifecycle_stage": "discovery",
+        "deployment_hint": "strategist",
+        "mandate": "Sharpen positioning with evidence so every other seat aims true.",
+        "kpis": ["insights", "validated_assumptions", "positioning_clarity"],
+        "tools": ["research", "survey", "synthesis"],
+        "why": "Better evidence makes the whole workforce's bets land - leverage on every later stage.",
+        "share_on_hire": 0.0,
+    },
+}
+
+
+def _hire_cost_usd(spec: Dict[str, Any]) -> int:
+    """Monthly burn for a hireable seat - same pricing as any worker."""
+    human_median = human_median_fallback_usd(spec.get("lifecycle_stage", "ops"), "ic")
+    return worker_cost_from_human(human_median)
+
+
+def hireable_options() -> List[Dict[str, Any]]:
+    """The hire menu with each seat's real monthly cost, for the UI.
+
+    Single source so the panel never recomputes the cost formula - it asks the
+    backend what a seat costs, keeping the price math in one place.
+    """
+    options: List[Dict[str, Any]] = []
+    for key, spec in HIREABLE_ROLES.items():
+        options.append({
+            "key": key,
+            "title": spec["title"],
+            "monthly_cost_usd": _hire_cost_usd(spec),
+            "lifecycle_stage": spec.get("lifecycle_stage", ""),
+            "why": spec.get("why", ""),
+            "wins_customers": float(spec.get("share_on_hire") or 0.0) > 0.0,
+        })
+    return options
+
+
+def hire_worker(state: CompanyState, role_key: str) -> Dict[str, Any]:
+    """CEO hires a digital worker mid-run: burn rises, capacity (and for GTM
+    seats, immediate market share) grows. The single source for a player hire,
+    so burn/headcount/runway all stay in lockstep with the org.
+    """
+    spec = HIREABLE_ROLES.get((role_key or "").lower())
+    if not spec:
+        raise ValueError(f"Unknown hire: {role_key}")
+    if state.org is None:
+        raise ValueError("No org to hire into yet.")
+    org = state.org
+    if state.economics is None:
+        state.economics = initialize_economics_from_org(org)
+    econ = state.economics
+
+    # Unique, stable id so the CEO can hire several of the same seat.
+    existing = sum(1 for r in org.roles if r.id.startswith(f"{PLAYER_HIRE_PREFIX}_{role_key}"))
+    role_id = f"{PLAYER_HIRE_PREFIX}_{role_key}_{existing + 1}"
+    human_median = human_median_fallback_usd(spec.get("lifecycle_stage", "ops"), "ic")
+    run_cost = worker_cost_from_human(human_median)
+    inference = monthly_cost_for_role(spec.get("deployment_hint", "ops"), WORKER_MODEL)
+    burn_before = int(org.monthly_burn_usd or 0)
+
+    org.roles.append(OrgRole(
+        id=role_id,
+        title=spec["title"],
+        kind="digital_worker",
+        mandate=spec.get("mandate", ""),
+        reports_to=_parent_role_id(org, spec.get("deployment_hint", "ops")),
+        kpis=list(spec.get("kpis") or []),
+        tools=list(spec.get("tools") or []),
+        deployment_hint=spec.get("deployment_hint", "ops"),
+        lifecycle_stage=spec.get("lifecycle_stage", "ops"),
+        seniority="ic",
+        monthly_cost_usd=run_cost,
+        inference_usd=inference,
+        runs_on_model=WORKER_MODEL,
+        human_median_usd=human_median,
+        why=spec.get("why", ""),
+    ))
+    _recompute_org_stats(org)
+    _sync_econ_from_org(state)
+
+    # Go-to-market hires open pipeline immediately: a small market-share win that
+    # routes through the one revenue sink, so the hire is a real profit lever.
+    share_gain = float(spec.get("share_on_hire") or 0.0)
+    if share_gain > 0.0:
+        add_market_share(state, share_gain)
+    _recompute_runway(econ)
+    _append_org_note(org, f"Hired {spec['title']}: +${run_cost:,}/mo burn for new capacity.")
+
+    return {
+        "hired_id": role_id,
+        "hired_title": spec["title"],
+        "role_key": role_key,
+        "monthly_cost_usd": run_cost,
+        "burn_before_usd": burn_before,
+        "burn_after_usd": int(org.monthly_burn_usd or 0),
+        "worker_count_after": int(org.digital_worker_count or 0),
+        "market_share": round(float(econ.market_share or 0.0), 2),
+        "share_gained": round(share_gain, 2),
+        "monthly_revenue_usd": int(econ.monthly_revenue_usd or 0),
+        "runway_days": int(econ.runway_days or 0),
+    }
+
+
+def fire_worker(state: CompanyState, role_id: str) -> Dict[str, Any]:
+    """CEO lays off a digital worker by choice: burn falls, runway extends, and
+    the worker's pending stages are reassigned. Mirrors the automatic
+    contraction path but player-initiated (no cooldown/runway gating), and never
+    cuts below the minimum core or the human operator.
+    """
+    org = state.org
+    econ = state.economics
+    if org is None or econ is None:
+        raise ValueError("No org to change yet.")
+    target = next((r for r in org.roles if r.id == role_id), None)
+    if not target:
+        raise ValueError(f"Worker not found: {role_id}")
+    if target.kind == "human":
+        raise ValueError("The founder cannot be laid off.")
+    digital = [r for r in org.roles if r.kind != "human"]
+    if len(digital) <= MIN_DIGITAL_WORKERS:
+        raise ValueError("Cannot cut below the minimum core workforce.")
+
+    burn_before = int(org.monthly_burn_usd or 0)
+    org.roles = [r for r in org.roles if r.id != role_id]
+    reassigned = _reassign_stages_from_worker(state, target)
+    _recompute_org_stats(org)
+    _sync_econ_from_org(state)
+    _recompute_runway(econ)
+    _append_org_note(org, f"Laid off {target.title}: -${int(target.monthly_cost_usd or 0):,}/mo burn, extending runway.")
+
+    return {
+        "laid_off_id": target.id,
+        "laid_off_title": target.title,
+        "monthly_cost_usd": int(target.monthly_cost_usd or 0),
+        "burn_before_usd": burn_before,
+        "burn_after_usd": int(org.monthly_burn_usd or 0),
+        "worker_count_after": int(org.digital_worker_count or 0),
+        "reassigned_stage_ids": reassigned,
+        "runway_days": int(econ.runway_days or 0),
+        "by": "founder",
     }
 
 
@@ -359,27 +781,38 @@ def tick_economy(state: CompanyState) -> Dict[str, Any]:
     econ.last_tick_epoch = now
     if days <= 0:
         return {"ticked": False, "days_advanced": 0.0}
+    active_days = min(days, ECONOMY_MAX_CATCHUP_DAYS) if ECONOMY_MAX_CATCHUP_DAYS else days
+
+    # The burn the clock charges is always the live org's run cost - re-sync so a
+    # workforce change by any path (layoff, hire) is reflected before charging.
+    _sync_econ_from_org(state)
 
     daily_burn = econ.monthly_burn_usd / DAYS_PER_MONTH
     daily_rev = econ.monthly_revenue_usd / DAYS_PER_MONTH
-    charge = int(round(days * (daily_burn - daily_rev)))
-    econ.days_elapsed += days
+    charge = int(round(active_days * (daily_burn - daily_rev)))
+    econ.days_elapsed += active_days
     econ.points -= charge
-    econ.daily_burn_usd = int(round(daily_burn))
-    econ.net_profit_usd = int(round(econ.monthly_revenue_usd - econ.monthly_burn_usd))
-
-    net_daily = daily_burn - daily_rev
-    econ.runway_days = int(max(0, econ.points) // max(1, int(round(net_daily)))) if net_daily > 0 else 999
-    econ.runway_months = max(0, int(econ.runway_days // 30))
+    # Single source for net/daily-burn/runway (days + months) - same helper the
+    # hire/fire/decision paths use, so the clock and those paths never drift.
+    _recompute_runway(econ)
 
     bankrupt = False
     if econ.points <= 0:
         econ.points = 0
         econ.runway_days = 0
+        econ.runway_months = 0
         if game is not None and getattr(game, "run_status", "active") == "active":
             game.run_status = "defeat"
             game.defeat_reason = "Out of cash - payroll could not be met."
             bankrupt = True
+
+    # Forced contraction: while bleeding and short on runway (but still solvent),
+    # the company sheds its most expensive worker to bring burn down. This is the
+    # gradual pressure BEFORE the hard bankruptcy floor - "not making money" now
+    # visibly shrinks the workforce and lowers the burn the next tick charges.
+    contraction = None
+    if not bankrupt:
+        contraction = _contract_workforce_if_insolvent(state)
 
     # Tie the same elapsed time into the arc: the antagonist gains ground while
     # you operate, so a stalled company loses to the rival (the live threat now
@@ -389,13 +822,16 @@ def tick_economy(state: CompanyState) -> Dict[str, Any]:
         from state.game_state import tick_antagonist_over_time
         # The rival is the lethal meter; bound how much a single catch-up tick
         # can advance it so an idle/away gap can never jump straight to defeat.
-        antagonist = tick_antagonist_over_time(state, min(days, ANTAGONIST_MAX_CATCHUP_DAYS))
+        antagonist = tick_antagonist_over_time(state, min(active_days, ANTAGONIST_MAX_CATCHUP_DAYS))
     except Exception:
         antagonist = {}
 
-    return {"ticked": True, "days_advanced": round(days, 3),
+    return {"ticked": True, "days_advanced": round(active_days, 3),
+            "wall_clock_days": round(days, 3),
+            "idle_days_skipped": round(max(0.0, days - active_days), 3),
             "charged_usd": charge, "treasury_usd": econ.points,
-            "bankrupt": bankrupt, "antagonist": antagonist}
+            "bankrupt": bankrupt, "antagonist": antagonist,
+            "contraction": contraction}
 
 
 # Market share is won unevenly by role: the marketer's GTM work moves share the
@@ -676,21 +1112,21 @@ def _upsert_consequence_role(org: OrgBlueprint, stage: Stage, rule_id: str, rule
     kind = spec.get("kind", "digital_worker")
     lifecycle = spec.get("lifecycle_stage", stage.owner_role)
     deploy_hint = spec.get("deployment_hint", stage.owner_role)
-    # A worker hired by a CEO decision is paid the same way as any worker: the
-    # player runs payroll and pays its normal wage (the burn). The cheap compute
-    # to actually run it is tracked separately for the efficiency story.
+    # A worker hired by a CEO decision is priced the same way as any worker: its
+    # burn is a fixed fraction of the human salary it replaces, while the cheap
+    # compute to actually run it is tracked separately for the efficiency story.
     if kind == "human":
         run_cost = int(spec.get("monthly_cost_usd") or 0)
         inference = 0
         human_median = 0
         runs_on = ""
     else:
-        # Burn = the real, cheap cost of running this worker (same pinned model
-        # as the rest of the workforce). human_median is what a person in the
-        # seat would cost - kept only for the savings headline, never charged.
+        # human_median is what a person in the seat would cost; the worker's
+        # burn is WORKER_COST_FRACTION_OF_HUMAN of that (savings is the rest).
+        # inference is the much cheaper real compute, kept for the dossier.
         human_median = human_median_fallback_usd(lifecycle, "ic")
         inference = monthly_cost_for_role(deploy_hint, WORKER_MODEL)
-        run_cost = inference
+        run_cost = worker_cost_from_human(human_median)
         runs_on = WORKER_MODEL
     org.roles.append(OrgRole(
         id=role_id,
@@ -735,12 +1171,32 @@ def _remove_old_consequence(state: CompanyState, old_entry: Optional[Dict[str, A
         _apply_economics_delta(state, {k: -v for k, v in old_delta.items() if isinstance(v, (int, float))})
     old_rule_id = consequence.get("rule_id")
     if old_rule_id and old_rule_id in RULES:
+        _remove_rule_flag_if_unused(state, old_entry, old_rule_id)
         old_rev_delta = int(RULES[old_rule_id].get("revenue_delta") or 0)
         if old_rev_delta and state.economics and state.economics.addressable_market_usd:
             share_delta = old_rev_delta / float(state.economics.addressable_market_usd) * 100.0
             state.economics.market_share = round(
                 max(0.0, min(100.0, float(state.economics.market_share or 0.0) - share_delta)), 2)
             state.economics.monthly_revenue_usd = _revenue_from_share(state.economics)
+
+
+def _remove_rule_flag_if_unused(
+    state: CompanyState,
+    old_entry: Optional[Dict[str, Any]],
+    old_rule_id: str,
+) -> None:
+    """Remove a rule side-effect flag when replacing its last decision."""
+    flag = _FLAG_BY_RULE.get(old_rule_id)
+    if not flag:
+        return
+    old_stage_id = (old_entry or {}).get("stage_id")
+    decisions = (state.world.decisions if state.world else [])
+    still_used = any(
+        d.get("stage_id") != old_stage_id and d.get("rule_id") == old_rule_id
+        for d in decisions
+    )
+    if not still_used:
+        state.business_flags.pop(flag, None)
 
 
 def _apply_economics_delta(state: CompanyState, delta: Dict[str, Any]) -> None:

@@ -393,6 +393,25 @@ def derive_run_name(pitch: str, fallback: str = "") -> str:
     raw = (pitch or "").strip()
     if not raw:
         return fallback
+    # Reject any URL / domain patterns: the onboarding field accepts a profile URL,
+    # and a link/domain is never a venture name.
+    low = raw.lower()
+    if "://" in low or low.startswith("www.") or low.startswith("http"):
+        return fallback
+    # Robust token-level checks for URLs, paths, and domains (except common acronyms like A.I.)
+    for token in raw.split():
+        t_low = token.lower()
+        if "://" in t_low or t_low.startswith("www.") or t_low.startswith("http"):
+            return fallback
+        if "/" in token:
+            return fallback
+        if "." in token:
+            # Allow A.I. or U.S. or similar short acronyms, but reject things like acme.io or google.com
+            if not re.match(r"^[a-zA-Z]\.[a-zA-Z]\.?$", token):
+                if re.search(r"\.[a-zA-Z]{2,4}", token):
+                    return fallback
+    if " " not in raw and "." in raw.strip(".") and "@" not in raw:
+        return fallback
     # Tokenize on whitespace, normalize punctuation we don't want in a name.
     tokens = re.sub(r"[\"'`]+", "", raw).replace(",", " ").split()
     # Peel leading identity/selling words.
@@ -434,13 +453,37 @@ def derive_run_name(pitch: str, fallback: str = "") -> str:
 ADAPT_SYSTEM = (
     "You are the World Designer of a startup-RPG, mid-run. The 8-stage Story Circle "
     "is fixed, but the company has changed: stages already played, a CEO decision just "
-    "landed, and the live metrics moved. Rewrite ONLY the still-pending stages so the "
-    "quest line visibly bends to the company that now exists. Keep each stage's beat "
+    "landed, and the live metrics moved. The workforce ALSO just reported back from the "
+    "stage they executed - the live market signal they researched and the knowledge they "
+    "grounded in. Rewrite ONLY the still-pending stages so the quest line visibly bends to "
+    "the company that now exists, letting the workforce's real findings (not just the CEO's "
+    "choice) steer where the pending stages point. Keep each stage's beat "
     "(the 'BEAT:' title prefix), its owner_role, and its intent; sharpen the title, goal, "
-    "and success_metric to fit the current proof/trust/velocity/burn/runway/threat and "
-    "the latest CEO choice. Return ONLY JSON: "
+    "and success_metric to fit the current proof/trust/velocity/burn/runway/threat, the "
+    "latest CEO choice, and what the workforce discovered. Return ONLY JSON: "
     "{\"stages\": [{\"id\": str, \"title\": str, \"goal\": str, \"success_metric\": str}, ...]}."
 )
+
+
+def worker_report_clause(report: Optional[Dict[str, Any]]) -> str:
+    """One directive clause naming what the workforce just brought back.
+
+    Single source of truth for "the GM reacts to the workers": turns the real
+    field report ({signal, source, ...} from server._worker_field_report) into a
+    short phrase reused by the live narrator prompt, the offline-safe
+    adaptation, and the player-facing 'world adapted' receipt - so the worker ->
+    Game Master loop reads the same finding everywhere, never invented.
+    """
+    if not report:
+        return ""
+    signal = str(report.get("signal") or "").strip()
+    source = str(report.get("source") or "").strip()
+    if signal:
+        return f"the workforce surfaced a live market signal - {signal[:90]}"
+    if source:
+        return f"the workforce grounded its work in {source[:60]}"
+    return ""
+
 
 
 def _pressure_lens(ws: Dict[str, Any]) -> str:
@@ -463,25 +506,30 @@ def _pressure_lens(ws: Dict[str, Any]) -> str:
     return "Hold the current advantage and compound it"
 
 
-def _adapt_deterministic(downstream: List[Any], ws: Dict[str, Any], latest: Dict[str, Any]) -> List[str]:
+def _adapt_deterministic(downstream: List[Any], ws: Dict[str, Any], latest: Dict[str, Any],
+                         worker_report: Optional[Dict[str, Any]] = None) -> List[str]:
     """Offline-safe adaptation: recompose each pending stage from its base text."""
     clause = _pressure_lens(ws)
     option = str(latest.get("option") or "").strip()
+    worker_clause = worker_report_clause(worker_report)
     changed: List[str] = []
     for stage in downstream:
         base_goal = stage.base_goal or stage.goal
         stage.goal = f"{clause}: {base_goal}"
         base_metric = stage.base_success_metric or stage.success_metric
+        extra: List[str] = []
         if option:
-            stage.success_metric = f"{base_metric} Honor the CEO call: '{option[:60]}'."
-        else:
-            stage.success_metric = base_metric
+            extra.append(f"Honor the CEO call: '{option[:60]}'.")
+        if worker_clause:
+            extra.append(f"Build on what the workforce found: {worker_clause}.")
+        stage.success_metric = (base_metric + (" " + " ".join(extra) if extra else "")).strip()
         changed.append(stage.id)
     return changed
 
 
 def _adapt_via_llm(deployment: str, brief: str, played: List[Any], downstream: List[Any],
-                   ws: Dict[str, Any], latest: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+                   ws: Dict[str, Any], latest: Dict[str, Any],
+                   worker_report: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, str]]:
     """Narrator rewrites pending stages from their base intent + live state."""
     played_lines = "\n".join(f"- {s.title} ({s.status})" for s in played) or "- (none yet)"
     pending_payload = [{
@@ -491,11 +539,22 @@ def _adapt_via_llm(deployment: str, brief: str, played: List[Any], downstream: L
         "base_goal": s.base_goal or s.goal,
         "base_success_metric": s.base_success_metric or s.success_metric,
     } for s in downstream]
+    report_line = ""
+    if worker_report:
+        report_line = (
+            "Workforce field report (what your digital workers just brought back): "
+            + json.dumps({
+                "signal": str(worker_report.get("signal") or ""),
+                "source": str(worker_report.get("source") or ""),
+                "tools_called": list(worker_report.get("tools_called") or [])[:5],
+            }) + "\n"
+        )
     user = (
         f"Brief: {brief[:400]}\n\n"
         f"Stages already played:\n{played_lines}\n\n"
         f"Live company world-state: {json.dumps(ws)}\n"
-        f"Latest CEO decision: {json.dumps({k: latest.get(k) for k in ('option', 'tradeoff', 'consequence_summary')})}\n\n"
+        f"Latest CEO decision: {json.dumps({k: latest.get(k) for k in ('option', 'tradeoff', 'consequence_summary')})}\n"
+        f"{report_line}\n"
         f"Still-pending stages to rewrite (keep id + beat prefix + intent):\n{json.dumps(pending_payload)}"
     )
     resp = create_chat_completion(
@@ -519,14 +578,17 @@ def _adapt_via_llm(deployment: str, brief: str, played: List[Any], downstream: L
 
 def adapt_remaining_stages(world: Any, current_stage_id: str, world_state: Dict[str, Any],
                            decisions: Optional[List[Dict[str, Any]]] = None,
-                           brief: str = "") -> List[str]:
+                           brief: str = "",
+                           worker_report: Optional[Dict[str, Any]] = None) -> List[str]:
     """Bend the not-yet-played stages to the company that now exists.
 
     Operates on `world.stages` (WorldGraph) in place. Only stages after
     `current_stage_id` that are still `not-started` are adapted; ids, owner
     roles, dependencies, and the 8-stage count are preserved. Live narrator
     rewrite when Foundry is configured, deterministic recomposition otherwise.
-    Returns the ids that changed.
+    The World Designer reacts to BOTH the latest CEO decision and the workforce's
+    real field report (`worker_report`), so the world bends to what the digital
+    workers discovered, not only to the player's choices. Returns ids that changed.
     """
     stages = list(getattr(world, "stages", []) or [])
     ids = [s.id for s in stages]
@@ -551,7 +613,7 @@ def adapt_remaining_stages(world: Any, current_stage_id: str, world_state: Dict[
     if client and deployment:
         try:
             adapted = _adapt_via_llm(deployment, brief or getattr(world, "brief", ""),
-                                     played, downstream, world_state, latest)
+                                     played, downstream, world_state, latest, worker_report)
             changed: List[str] = []
             for stage in downstream:
                 a = adapted.get(stage.id)
@@ -568,4 +630,4 @@ def adapt_remaining_stages(world: Any, current_stage_id: str, world_state: Dict[
                 return changed
         except Exception:
             pass
-    return _adapt_deterministic(downstream, world_state, latest)
+    return _adapt_deterministic(downstream, world_state, latest, worker_report)

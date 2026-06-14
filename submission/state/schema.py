@@ -79,6 +79,10 @@ class AntagonistState(BaseModel):
     signature_tactic: str = ""  # The key move the antagonist uses (narrative tension point)
     target_customer_overlap: str = ""  # Where their ICP overlaps with founder's target
     motivation: str = ""  # Why this antagonist exists/competes (story depth)
+    organization_name: str = ""
+    organization_model: str = ""
+    organization_roles: List[Dict[str, Any]] = Field(default_factory=list)
+    active_operation: str = ""
 
 
 class AntagonistMove(BaseModel):
@@ -90,6 +94,9 @@ class AntagonistMove(BaseModel):
     tactic: str = ""
     pressure_type: str = "market"  # market | technical | cultural | financial | operational
     target_metric: str = "trust"
+    rival_role_title: str = ""
+    rival_role_mandate: str = ""
+    rival_pressure_lane: str = ""
     pressure_delta: int = 0
     narrative: str = ""
     counterplay: str = ""
@@ -122,6 +129,8 @@ class WorkerPartyMember(BaseModel):
     morale: int = 70
     fatigue: int = 0
     trust: int = 60
+    xp: int = 0
+    level: int = 1
     current_stage_id: str = ""
     tools: List[str] = Field(default_factory=list)
     traits: List[str] = Field(default_factory=list)
@@ -183,6 +192,43 @@ class PlayerMove(BaseModel):
     effects_applied: Dict[str, Any] = Field(default_factory=dict)
 
 
+class WorldCouncilTurn(BaseModel):
+    """One Game Master's spoken turn in a world-council deliberation."""
+    speaker: str
+    role: str = "narrator"  # narrator | orgdesigner | antagonist
+    role_label: str = ""
+    worker_id: str = ""
+    tool: str = ""
+    message: str = ""
+    handoff_to: str = ""
+    source: str = "simulation"  # simulation | maf
+    framework: str = ""
+
+
+class WorldCouncilDeliberation(BaseModel):
+    """A persisted Game Master council session.
+
+    The World Designer, Org Designer, and Antagonist Director deliberate
+    together after a move (CEO decision or rival escalation) and ratify how the
+    world bends forward. Unlike the worker standup (the party reacting to the
+    CEO), this is the engine/referee tier collaborating on world state. It is
+    persisted so the roguelike world keeps evolving across reloads - the
+    council's verdicts accumulate over the run.
+    """
+    id: str
+    day_index: int = 0
+    stage_id: str = ""
+    trigger: str = ""  # short label of what convened the council
+    summary: str = ""
+    turns: List[WorldCouncilTurn] = Field(default_factory=list)
+    adapted_stage_ids: List[str] = Field(default_factory=list)
+    antagonist_move_id: str = ""
+    threat_before: int = 0
+    threat_after: int = 0
+    forward_motion: str = ""  # the binding next step the council committed to
+    source: str = "simulation"  # simulation | foundry
+
+
 class GameRunState(BaseModel):
     """Durable roguelike layer over the business simulation."""
     run_id: str = "run_default"
@@ -203,6 +249,10 @@ class GameRunState(BaseModel):
     inventory: List[InventoryItem] = Field(default_factory=list)
     encounters: List[EncounterState] = Field(default_factory=list)
     antagonist_arc: AntagonistArc = Field(default_factory=AntagonistArc)
+    # Game Master council: the world-engine agents' deliberation history. Each
+    # entry is one collaborative world-bending move, persisted so the roguelike
+    # world keeps evolving across reloads (most recent last, bounded).
+    council_log: List[WorldCouncilDeliberation] = Field(default_factory=list)
     # Deterministic run variance (seeded shuffle / event outcomes).
     rng_seed: int = 0
     rng_state: int = 0
@@ -267,6 +317,8 @@ class OrgRole(BaseModel):
     runs_on_model: str = ""       # cheap model this worker runs on
     human_median_usd: int = 0     # present-world wage for this seat (== cost)
     why: str = ""                 # educational: why this role must exist
+    xp: int = 0
+    level: int = 1
 
 
 class OrgBlueprint(BaseModel):
@@ -318,6 +370,12 @@ class CompanyEconomics(BaseModel):
     # the workforce actually won and kept customers - never a seeded number.
     market_share: float = 0.0          # 0-100, percent of the addressable market
     addressable_market_usd: int = 0    # monthly addressable market the share is a slice of
+    # Paying customers make the money concrete: revenue is no longer an abstract
+    # slice of a market - it is N customers each paying ~arpu_usd/month. Both are
+    # DERIVED from market share (customers = revenue / arpu), so winning share
+    # wins customers, and the HUD can read "5.6% market = N customers = $X/mo".
+    paying_customers: int = 0          # current paying customers (derived from revenue)
+    arpu_usd: int = 0                  # average revenue per customer per month
     # Real-time payroll clock: the player pays the workforce its normal wages
     # over time. 1 real minute == 1 in-game day (GAME_MINUTES_PER_DAY), so the
     # treasury (points, in USD) drains by the daily wage each day. Running out
@@ -328,6 +386,11 @@ class CompanyEconomics(BaseModel):
     days_elapsed: float = 0.0          # in-game days that have passed
     daily_burn_usd: int = 0            # wages charged per in-game day
     runway_days: int = 0               # days of treasury left at current net
+    # Forced contraction: an unprofitable company sheds its most expensive
+    # worker over time (it cannot sustain the burn). The in-game day of the last
+    # layoff rate-limits this so the workforce contracts gradually, not all at
+    # once. Zero == no layoff yet.
+    last_contraction_day: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +566,10 @@ class CompanyState(BaseModel):
     description: str
     pitch: str
     stage: str = "idea"  # idea, validated, launched
+    # Stable id for this run, used to persist it as its own save slot so the
+    # player can keep and resume multiple companies/products. Empty until a run
+    # becomes real (world designed); assigned once and never reused.
+    run_id: str = ""
     xp: int = 0
     level: int = 1
     founder: Optional[FounderState] = None
@@ -512,6 +579,12 @@ class CompanyState(BaseModel):
     world: Optional[WorldGraph] = None
     org: Optional[OrgBlueprint] = None
     economics: CompanyEconomics = Field(default_factory=CompanyEconomics)
+    # Canonical company dashboard model for the UI: product/service, customer,
+    # business model, revenue model, ownership gaps, and antagonist provenance.
+    # Refreshed by the API contract from Founder Analyst + Org Designer + World
+    # Designer + live economics, so the footer does not infer durable business
+    # facts ad hoc from scattered fields.
+    venture_model: Dict[str, Any] = Field(default_factory=dict)
     knowledge_records: List[SearchDocument] = Field(default_factory=list)
     choices: List[ChoiceRecord] = Field(default_factory=list)
     days: List[WorldDay] = Field(default_factory=list)
@@ -576,18 +649,130 @@ class StateStore:
                 dirpath = os.path.dirname(os.path.abspath(self.filepath))
                 os.makedirs(dirpath, exist_ok=True)
 
-                fd, temp_path = tempfile.mkstemp(dir=dirpath, prefix="state_", suffix=".json.tmp")
+                payload = self.state.model_dump()
+                self._atomic_write(self.filepath, payload)
+                # Mirror the active run into its own save slot so multiple
+                # companies/products persist and can be resumed. One seam: every
+                # save writes both the live file and the slot, so a slot is never
+                # stale relative to the active run.
+                run_id = getattr(self.state, "run_id", "") or ""
+                if run_id:
+                    self._atomic_write(self._slot_path(run_id), payload)
+
+    @staticmethod
+    def _atomic_write(filepath: str, payload: Dict[str, Any]) -> None:
+        """Atomically write a JSON payload to filepath (temp file + os.replace)."""
+        dirpath = os.path.dirname(os.path.abspath(filepath))
+        os.makedirs(dirpath, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(dir=dirpath, prefix="state_", suffix=".json.tmp")
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(payload, f, indent=2)
+            os.replace(temp_path, filepath)
+        except Exception as e:
+            if os.path.exists(temp_path):
                 try:
-                    with os.fdopen(fd, 'w') as f:
-                        json.dump(self.state.model_dump(), f, indent=2)
-                    os.replace(temp_path, self.filepath)
-                except Exception as e:
-                    if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
-                    raise e
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise e
+
+    # --- Multi-run save slots ------------------------------------------------
+    # Each run is persisted as its own slot file next to state.json under a
+    # `slots/` directory, keyed by CompanyState.run_id. The live state.json stays
+    # the single working file the rest of the app reads; slots are the durable
+    # library the player picks from. All slot I/O lives here (single source).
+
+    def _slots_dir(self) -> str:
+        base = os.path.dirname(os.path.abspath(self.filepath)) if self.filepath else os.getcwd()
+        return os.path.join(base, "slots")
+
+    def _slot_path(self, run_id: str) -> str:
+        safe = "".join(c for c in str(run_id) if c.isalnum() or c in ("-", "_")) or "run"
+        return os.path.join(self._slots_dir(), f"{safe}.json")
+
+    def _slot_summary(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Lightweight metadata for the slot picker - never the full state."""
+        world = data.get("world") or {}
+        stages = world.get("stages") or [] if isinstance(world, dict) else []
+        done = sum(1 for s in stages if isinstance(s, dict) and s.get("status") == "completed")
+        econ = data.get("economics") or {}
+        game = data.get("game") or {}
+        arc = (game.get("antagonist_arc") or {}) if isinstance(game, dict) else {}
+        return {
+            "run_id": data.get("run_id", ""),
+            "name": data.get("name", "Untitled run"),
+            "pitch": (data.get("pitch", "") or "")[:160],
+            "stages_total": len(stages),
+            "stages_done": done,
+            "run_status": game.get("run_status", "active") if isinstance(game, dict) else "active",
+            "threat_level": arc.get("threat_level", 0) if isinstance(arc, dict) else 0,
+            "treasury_usd": int(econ.get("points", 0) or 0) if isinstance(econ, dict) else 0,
+            "days_elapsed": float(econ.get("days_elapsed", 0) or 0) if isinstance(econ, dict) else 0,
+            "updated_epoch": float(econ.get("last_tick_epoch", 0) or 0) if isinstance(econ, dict) else 0,
+        }
+
+    def list_slots(self) -> List[Dict[str, Any]]:
+        """Return slot summaries, newest activity first."""
+        slots_dir = self._slots_dir()
+        summaries: List[Dict[str, Any]] = []
+        if not os.path.isdir(slots_dir):
+            return summaries
+        for fname in os.listdir(slots_dir):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                filepath = os.path.join(slots_dir, fname)
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not data.get("run_id"):
+                data["run_id"] = fname[:-5]
+            summary = self._slot_summary(data)
+            if not summary.get("updated_epoch") or summary.get("updated_epoch") == 0.0:
+                try:
+                    summary["updated_epoch"] = os.path.getmtime(filepath)
+                except Exception:
+                    summary["updated_epoch"] = 0.0
+            summaries.append(summary)
+        summaries.sort(key=lambda s: s.get("updated_epoch", 0), reverse=True)
+        return summaries
+
+    def load_slot(self, run_id: str) -> Optional[CompanyState]:
+        """Make a saved slot the active run: load it and mirror into state.json."""
+        path = self._slot_path(run_id)
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        with self._lock:
+            self.state = CompanyState(**data)
+            if not self.state.run_id:
+                self.state.run_id = run_id
+            self.save()
+            return self.state
+
+    def delete_slot(self, run_id: str) -> bool:
+        """Remove a saved slot. If it is the active run, clear active too."""
+        path = self._slot_path(run_id)
+        removed = False
+        with self._lock:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    removed = True
+                except OSError:
+                    removed = False
+            if self.state and getattr(self.state, "run_id", "") == run_id:
+                self.state = None
+                if self.filepath and os.path.exists(self.filepath):
+                    try:
+                        os.remove(self.filepath)
+                    except OSError:
+                        pass
+        return removed
 
     def log_event(self, event_type: str, actor: str, message: str, payload: Optional[Dict[str, Any]] = None) -> None:
         with self._lock:

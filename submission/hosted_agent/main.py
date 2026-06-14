@@ -65,6 +65,12 @@ async def handle_invoke(request: Request):
         )
 
     company = (data.get("company_name") or "").strip()
+    run_context = data.get("state") or data.get("world_state") or {}
+    run_id = ""
+    stage_id = ""
+    if isinstance(run_context, dict):
+        run_id = str(run_context.get("run_id") or "")
+        stage_id = str(run_context.get("stage_id") or run_context.get("current_stage_id") or "")
 
     narrator = MasterNarrator()
     steps = narrator.decompose_pitch(pitch)
@@ -74,6 +80,12 @@ async def handle_invoke(request: Request):
     return JSONResponse({
         "session_id": request.state.session_id,
         "invocation_id": request.state.invocation_id,
+        "state_scope": "stateless_hosted_agent",
+        "state_note": (
+            "Hosted invocations do not read local state.json or save slots. "
+            "Pass any active run context in the request body as `state`/`world_state`."
+        ),
+        "run_context": {"run_id": run_id, "stage_id": stage_id},
         "lore": lore.get("lore", ""),
         "steps": steps,
         "mode": "live" if is_live() else "simulation",
