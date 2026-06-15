@@ -61,8 +61,11 @@ ui/assets/generated/lore/video/*
 # Keep the one committed intro film so the deployed app plays it.
 !ui/assets/generated/lore/video/film.voiced.mp4
 
-# --- Unused alternate art (the server serves only the top-level
-#     generated/*.png set via _ROLE_PORTRAIT; these dirs are superseded /
-#     pre-versioned variants the runtime never references). ---
-ui/assets/generated/characters/
+# --- Unused alternate art. The cast/party worker portraits
+#     (generated/characters/*.png) ARE referenced by the floating cast + worker
+#     cards (story.js castPortraitSrc), so they MUST ship - keep only the 7
+#     top-level PNGs and drop the heavy alt-art (_v1_prewakanda/) + motion
+#     (characters/video/) subdirs and the pre-versioned lore stills. ---
+ui/assets/generated/characters/_v1_prewakanda/
+ui/assets/generated/characters/video/
 ui/assets/generated/lore/_prev/

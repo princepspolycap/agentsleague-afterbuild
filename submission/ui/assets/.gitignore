@@ -14,6 +14,13 @@ local/
 !generated/
 !generated/*.png
 !generated/CREDITS.md
+# The cast/party worker portraits (generated/characters/*.png) ARE used by the
+# floating cast and worker cards (story.js castPortraitSrc), so they must ship -
+# otherwise every worker face 404s in a fresh clone / the deployed app. Only the
+# 7 top-level character PNGs ship; the heavy alt-art (_v1_prewakanda/) and motion
+# (characters/video/) subdirs stay local-only via the *.png/*.mp4 rules below.
+!generated/characters/
+!generated/characters/*.png
 !generated/lore/
 !generated/lore/*.png
 # Lore background stills (MAI-generated, ours under MIT) ship too, so the
