@@ -61,10 +61,15 @@
             --gold-grad: linear-gradient(180deg, var(--gold-soft), var(--gold-deep));
             /* screen grammar */
             --footer-h: 64px;
+            --footer-top: 64px;    /* actual measured footer top edge; set by story.js */
+            --party-overlap: 70px; /* px of each worker card tucked behind footer */
             --hand-bottom: 70px;
             --hand-card-h: 236px;
             --dialogue-bottom: calc(var(--hand-bottom) + var(--hand-card-h) + 22px);
-            --lower-stage-reserve: calc(var(--dialogue-bottom) + 102px);
+            /* Measured narration-caption height (story.js); the reserve grows
+               to clear a tall multi-line caption. Default covers ~2 lines. */
+            --dialogue-h: 102px;
+            --lower-stage-reserve: calc(var(--dialogue-bottom) + var(--dialogue-h) + 14px);
             /* breathing - one shared resting rhythm (~13 breaths/min) so every
                living component pulses together. Components opt in via .breathing
                and a local --breathe-glow color. */
@@ -150,10 +155,9 @@
         }
         /* A speaking game-master card replaces the center narration bar, so the
            world can reclaim that vertical space while still reserving the hand.
-           !important so it beats the measured base reserve story.js writes
-           inline on #scene (syncFooterAwareLayout) for the default play state. */
+           A direct #scene rule, so it overrides the inherited :root reserve. */
         body.spotlight-active #scene {
-            --lower-stage-reserve: calc(var(--hand-bottom) + var(--hand-card-h) + 34px) !important;
+            --lower-stage-reserve: calc(var(--hand-bottom) + var(--hand-card-h) + 34px);
         }
         #stage.rail-hidden #scene { padding-right: 44px; }
         #stage.rail-hidden #scene-head { right: 44px; }
@@ -183,6 +187,12 @@
         #scene:not(:has(#diagram .world-canvas)) #diagram::-webkit-scrollbar { display: none; }
         .world-canvas {
             width: min(1040px, 100%);
+            /* Definite height (not just max-height) so the artifact SVG inside
+               can resolve height:100% and stay capped to the reserved band - a
+               tall MRR chart was overflowing above the header because
+               max-height on an auto-height box never clamps a replaced SVG. */
+            height: 100%;
+            min-height: 0;
             max-height: 100%;
             display: flex;
             align-items: center;
@@ -210,7 +220,7 @@
                 radial-gradient(620px 300px at 50% 74%, rgba(45,212,191,0.06), transparent 70%);
             opacity: 0.72;
         }
-        /* Scenario surface: the room's brief on the world canvas while the
+        /* Scenario surface: the stage brief on the world canvas while the
            worker reasons - goal, success metric, toolbox - so the center is an
            in-world stage, never a blank gap. Replaced by the artifact when it
            lands. */
@@ -264,6 +274,16 @@
             height: auto !important;
             max-width: 100% !important;
             max-height: 100% !important; /* fits the currently reserved stage band */
+        }
+        /* Artifact SVGs (the MRR chart, the org graph) fit INSIDE the reserved
+           band by height, so they can never bleed above the header. Scoped to
+           .world-canvas (and out-specifies the #diagram svg rule above) so the
+           standup-transcript diagrams keep their own intrinsic sizing. */
+        #diagram .world-canvas svg {
+            height: 100% !important;
+            width: auto !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
         }
         #diagram .node rect,
         #diagram .node polygon,
@@ -365,6 +385,12 @@
         body.prestart #rail-toggle,
         body.prestart #narration,
         body.prestart footer { display: none; }
+        /* One visual contract: the onboarding card (character creation + the
+           "ready to begin" confirmation) belongs to prestart ONLY. The moment a
+           run is active the body leaves prestart, and this guarantees the static
+           title card can never bleed behind the live HUD/footer - even if a
+           begin/resume transition is interrupted before it swaps #diagram. */
+        body:not(.prestart) #diagram > .title-card.first-step { display: none; }
         body.prestart .title-card {
             width: min(1120px, 100%);
             max-width: 1120px;
@@ -444,6 +470,8 @@
         /* ---- Stupid-simple character creation card ---- */
         .creator-card {
             width: min(520px, 100%);
+            max-width: 100%;
+            min-width: 0;
             display: flex; flex-direction: column; gap: 16px;
             padding: 32px 30px 30px;
             border: 1px solid rgba(91,140,255,0.22);
@@ -1211,16 +1239,27 @@
             transform-style: preserve-3d;
             transition: transform 540ms cubic-bezier(.2,.7,.2,1);
         }
-        .party-agent.active { transform: translateY(-10px); }
+        /* Resting cards: gentle hover tease to signal interactivity. */
+        .party-agent:hover:not(.active):not(.flipped) { transform: translateY(-20px); }
+        /* Active (executing) and flipped (dossier open) cards pop fully above
+           the footer — translateY lifts by overlap + breathing room. */
+        .party-agent.active { transform: translateY(calc(-1 * var(--party-overlap, 70px) - 18px)); }
         .pa-face {
             position: absolute; inset: 0;
             -webkit-backface-visibility: hidden; backface-visibility: hidden;
             border: 1px solid rgba(44,58,94,0.62); border-radius: 14px;
-            background: linear-gradient(180deg, rgba(12,18,32,0.92), rgba(7,10,20,0.74));
-            -webkit-backdrop-filter: blur(9px); backdrop-filter: blur(9px);
+            background: linear-gradient(180deg, rgba(12,18,32,0.75) 0%, rgba(7,10,20,0.50) 100%);
+            -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
             box-shadow: 0 18px 48px -28px rgba(0,0,0,0.9);
             padding: 10px; overflow: hidden;
             display: flex; flex-direction: column;
+        }
+        /* Idle worker cards fade out at the bottom — the footer (z:20) sits on
+           top (party z:18) and covers the overlap; the mask softens the edge so
+           it reads as cards tucked into a holder rather than hard-clipped. */
+        .party-agent:not(.active):not(.flipped) {
+            -webkit-mask-image: linear-gradient(to top, transparent 0%, rgba(0,0,0,0.5) 22%, black 44%, black 100%);
+            mask-image: linear-gradient(to top, transparent 0%, rgba(0,0,0,0.5) 22%, black 44%, black 100%);
         }
         .party-agent.active .pa-front {
             border-color: var(--spk, rgba(91,140,255,0.78));
@@ -1244,8 +1283,14 @@
             border-color: rgba(245,200,122,0.42);
             box-shadow: 0 0 22px -6px rgba(245,200,122,0.45);
         }
-        .party-agent.flipped { z-index: 7; }
+        /* Flipped card shows the dossier — needs to be ABOVE the footer (z:22)
+           and lifted clear of the overlap so the receipts are fully readable. */
+        .party-agent.flipped { z-index: 22; transform: translateY(calc(-1 * var(--party-overlap, 70px) - 18px)); }
         .party-agent.flipped .pa-inner { transform: rotateY(180deg); }
+        /* Remove the fade mask when the card is lifted so it renders completely. */
+        .party-agent.active, .party-agent.flipped {
+            -webkit-mask-image: none; mask-image: none;
+        }
         .pa-back::-webkit-scrollbar { width: 4px; }
         .pa-back::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 999px; }
         .pa-back .cc-head { margin-bottom: 9px; padding-bottom: 8px; gap: 8px; }
@@ -1530,9 +1575,9 @@
            full character card is an intentional inspect action. */
         #cast-stage,
         #worker-stage {
-            position: fixed; left: 28px; bottom: calc(var(--hand-bottom) + 12px); z-index: 6;
+            position: fixed; left: 28px; bottom: calc(var(--footer-top, 64px) + 12px); z-index: 6;
             width: min(28vw, 360px);
-            height: clamp(320px, calc(100vh - var(--hand-bottom) - 72px), 560px);
+            height: clamp(320px, calc(100vh - var(--footer-top, 64px) - 72px), 560px);
             pointer-events: none;
             --card-accent: rgba(91,140,255,0.9);
             display: none;
@@ -1811,6 +1856,10 @@
             from { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.985); }
             to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
         }
+        @keyframes castFade {
+            from { opacity: 0; }
+            to   { opacity: 1; }
+        }
         @keyframes castSheen {
             0% { background-position: 200% 50%; }
             55%, 100% { background-position: -60% 50%; }
@@ -1877,20 +1926,137 @@
             color: var(--gold-soft); margin-bottom: 7px;
             padding-bottom: 6px; border-bottom: 1px solid rgba(244,201,93,0.24);
         }
+        /* Announcement = centered overlay (the user's ask). When a world master
+           (World/Org Designer) heralds a change it takes the whole stage as a
+           modal-style overlay over a soft scrim: the portrait becomes the gold
+           "card", large enough to actually read the master's icon, and the
+           spoken line is shown OUTSIDE/below it in a wider transcription panel -
+           so the card is no longer shrunk to fit the words. Only gm-announce is
+           centered; a normal worker aside stays a small side card. */
+        #cast-stage.speaking.gm-announce {
+            left: 0; right: 0; top: 0; bottom: 0;
+            width: auto; height: auto;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            /* center the herald in the stage ABOVE the footer, not the whole
+               viewport, so the transcription never collides with the HUD band. */
+            padding-bottom: var(--hand-bottom);
+            gap: 0; z-index: 24;
+        }
+        #cast-stage.speaking.gm-announce::before {
+            content: ""; position: fixed; inset: 0; z-index: -1;
+            background: radial-gradient(circle at 50% 42%, rgba(5,8,16,0.52), rgba(5,8,16,0.82));
+            -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+            animation: castFade 380ms ease both;
+        }
+        /* keep the world canvas centered behind the overlay (cancel the speaker
+           side-shift, which is only for a non-modal aside). */
+        #cast-stage.speaking.gm-announce + #diagram .world-canvas {
+            width: min(1040px, 100%); margin-left: 0;
+        }
+        /* the card frame goes transparent: portrait + transcription become two
+           stacked pieces, so the words read OUTSIDE the card. */
         #cast-stage.speaking.gm-announce .cast-card {
-            border-color: rgba(245,200,122,0.78);
+            position: relative; inset: auto;
+            width: min(360px, 86vw); max-height: 82vh;
+            background: none; border: 0; box-shadow: none; padding: 0;
+            gap: 16px; align-items: center;
+            animation: castCardIn 460ms cubic-bezier(.16,.84,.24,1) both;
+        }
+        /* the portrait IS the gold card now - big and legible */
+        #cast-stage.speaking.gm-announce .cast-card-art {
+            flex: 0 0 auto;
+            width: min(280px, 70vw); height: min(320px, 40vh);
+            border: 1px solid rgba(245,200,122,0.78);
             box-shadow:
                 0 0 0 1px rgba(0,0,0,0.4) inset,
                 0 30px 70px -28px rgba(0,0,0,0.85),
                 0 0 72px -4px rgba(244,201,93,0.5);
-            animation: castCardIn 420ms cubic-bezier(.16,.84,.24,1) both, gmAnnouncePulse 3.4s ease-in-out 0.5s infinite;
+            animation: gmAnnouncePulse 3.4s ease-in-out 0.5s infinite;
         }
+        /* transcription panel: outside the card, wider, easy to read */
+        #cast-stage.speaking.gm-announce .cast-speech {
+            width: min(560px, 92vw); padding: 14px 18px 16px; text-align: left;
+        }
+        #cast-stage.speaking.gm-announce .cast-announce { align-self: flex-start; }
         @keyframes gmAnnouncePulse {
             0%, 100% { box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset, 0 30px 70px -28px rgba(0,0,0,0.85), 0 0 64px -8px rgba(244,201,93,0.42); }
             50% { box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset, 0 30px 70px -28px rgba(0,0,0,0.85), 0 0 84px 0 rgba(244,201,93,0.6); }
         }
         @media (prefers-reduced-motion: reduce) {
-            #cast-stage.speaking.gm-announce .cast-card { animation: castCardIn 420ms cubic-bezier(.16,.84,.24,1) both; }
+            #cast-stage.speaking.gm-announce .cast-card { animation: none; }
+            #cast-stage.speaking.gm-announce .cast-card-art { animation: none; }
+        }
+
+        /* Centered Rival/Antagonist overlay */
+        #cast-stage.speaking.rival-announce {
+            left: 0; right: 0; top: 0; bottom: 0;
+            width: auto; height: auto;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding-bottom: var(--hand-bottom);
+            gap: 0; z-index: 24;
+        }
+        #cast-stage.speaking.rival-announce::before {
+            content: ""; position: fixed; inset: 0; z-index: -1;
+            background: radial-gradient(circle at 50% 42%, rgba(15,8,8,0.62), rgba(20,5,5,0.92));
+            -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+            box-shadow: inset 0 0 100px rgba(251,113,133,0.18);
+            animation: castFade 380ms ease both;
+        }
+        #cast-stage.speaking.rival-announce + #diagram .world-canvas {
+            width: min(1040px, 100%); margin-left: 0;
+        }
+        #cast-stage.speaking.rival-announce .cast-card {
+            position: relative; inset: auto;
+            width: min(360px, 86vw); max-height: 82vh;
+            background: none; border: 0; box-shadow: none; padding: 0;
+            gap: 16px; align-items: center;
+            animation: castCardIn 460ms cubic-bezier(.16,.84,.24,1) both;
+        }
+        #cast-stage.speaking.rival-announce .cast-card-art {
+            flex: 0 0 auto;
+            width: min(280px, 70vw); height: min(320px, 40vh);
+            border: 1px solid rgba(251,113,133,0.78);
+            box-shadow:
+                0 0 0 1px rgba(0,0,0,0.4) inset,
+                0 30px 70px -28px rgba(0,0,0,0.85),
+                0 0 72px -4px rgba(251,113,133,0.5);
+            animation: rivalAnnouncePulse 3.4s ease-in-out 0.5s infinite;
+        }
+        #cast-stage.speaking.rival-announce .cast-speech {
+            width: min(560px, 92vw); padding: 14px 18px 16px; text-align: left;
+            border: 1px solid rgba(251,113,133,0.3);
+            box-shadow: 0 0 24px -8px rgba(251,113,133,0.4);
+        }
+        #cast-stage.speaking.rival-announce .cast-announce {
+            align-self: flex-start;
+            color: #fda4af;
+            border-bottom: 1px solid rgba(251,113,133,0.3);
+        }
+        #cast-stage.speaking.rival-announce .cast-speech-name {
+            color: #f43f5e;
+        }
+        @keyframes rivalAnnouncePulse {
+            0%, 100% { box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset, 0 30px 70px -28px rgba(0,0,0,0.85), 0 0 64px -8px rgba(251,113,133,0.42); }
+            50% { box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset, 0 30px 70px -28px rgba(0,0,0,0.85), 0 0 84px 0 rgba(251,113,133,0.6); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            #cast-stage.speaking.rival-announce .cast-card { animation: none; }
+            #cast-stage.speaking.rival-announce .cast-card-art { animation: none; }
+        }
+
+        /* Digital Worker Diagnostic attention styling (side-spotlight with accent frame) */
+        #cast-stage.speaking.worker-attention .cast-card {
+            border: 2px solid var(--card-accent);
+            box-shadow:
+                0 0 0 1px rgba(0,0,0,0.4) inset,
+                0 30px 70px -28px rgba(0,0,0,0.85),
+                0 0 48px var(--card-accent);
+        }
+        #cast-stage.speaking.worker-attention .cast-announce {
+            color: var(--card-accent);
+            border-bottom: 1px solid rgba(255,255,255,0.15);
         }
 
         @media (max-width: 1180px) {
@@ -2036,9 +2202,9 @@
            redundant (those workers are in the log) and would overlap it. The
            party hand is hidden by the world-canvas occupancy rule above (the
            standup-log is not a world canvas); here we only reclaim the freed
-           vertical band for the transcript. !important so it beats the measured
-           base reserve story.js writes inline on #scene for the play state. */
-        body.standup-active #scene { --lower-stage-reserve: 260px !important; }
+           vertical band for the transcript. A direct #scene rule, so it
+           overrides the inherited :root reserve. */
+        body.standup-active #scene { --lower-stage-reserve: 260px; }
 
         /* Footer-quiet: a single body class set by setStageLayer() in story.js
            (the one coordinator that owns every stage-layer toggle). When any
@@ -2384,6 +2550,100 @@
             background: rgba(255,255,255,0.03); cursor: pointer; transition: 140ms ease;
             font-family: inherit;
         }
+        /* Diagnostics dialog — tabbed, live-refresh, pretty-JSON payloads. */
+        #diagnostics-overlay {
+            position: fixed; inset: 0; z-index: 72; display: flex; align-items: center;
+            justify-content: center; background: rgba(2,5,13,0.82);
+            -webkit-backdrop-filter: blur(11px); backdrop-filter: blur(11px);
+        }
+        #diagnostics-overlay[hidden] { display: none; }
+        .diag-card {
+            width: min(860px, 95vw); height: min(700px, calc(100dvh - 42px));
+            border-radius: var(--radius-lg); border: 1px solid var(--line-bright);
+            background: linear-gradient(180deg, #0e1424, #0a0f1d);
+            box-shadow: 0 28px 90px rgba(0,0,0,0.6);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .diag-head {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            padding: 12px 18px 9px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+        }
+        .diag-head h2 { margin: 0; font-family: var(--font-display); font-size: 17px; color: var(--ink); }
+        .diag-head p {
+            margin: 3px 0 0; font-size: 10px; color: var(--ink-faint);
+            font-family: var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
+        }
+        .diag-actions { display: flex; align-items: center; gap: 8px; }
+        .diag-tabs {
+            display: flex; gap: 2px; padding: 10px 16px 0;
+            border-bottom: 1px solid var(--line); flex-shrink: 0;
+        }
+        .diag-tab {
+            padding: 6px 12px 8px; border: 1px solid transparent; border-bottom: none;
+            border-radius: 8px 8px 0 0; background: none; color: var(--ink-dim);
+            font: inherit; font-size: 12px; cursor: pointer; transition: 120ms ease;
+            display: flex; align-items: center; gap: 6px; white-space: nowrap;
+        }
+        .diag-tab:hover { background: rgba(255,255,255,0.04); color: var(--ink); }
+        .diag-tab[aria-selected="true"] {
+            border-color: var(--line-bright) var(--line-bright) #0e1424;
+            background: #0e1424; color: var(--ink);
+        }
+        .diag-tab-cnt {
+            display: inline-flex; align-items: center; justify-content: center;
+            min-width: 17px; height: 17px; border-radius: 9px;
+            background: rgba(255,255,255,0.1); font-family: var(--font-mono); font-size: 9px; padding: 0 4px;
+        }
+        .diag-body { flex: 1; min-height: 0; overflow: hidden; }
+        .diag-stream {
+            margin: 0; padding: 10px 14px 14px; list-style: none;
+            overflow-y: auto; height: 100%; box-sizing: border-box;
+            display: none; flex-direction: column; gap: 7px;
+        }
+        .diag-stream.active { display: flex; }
+        .diag-stream li {
+            flex-shrink: 0; border: 1px solid rgba(255,255,255,0.08); border-radius: 9px;
+            background: rgba(255,255,255,0.025); padding: 9px 11px;
+        }
+        .diag-stream li b {
+            display: block; font-size: 11px; color: var(--ink); line-height: 1.3;
+            font-family: var(--font-mono); word-break: break-word;
+        }
+        .diag-stream .empty { border-style: dashed; text-align: center; color: var(--ink-faint); padding: 14px; }
+        /* Pretty-printed JSON payload */
+        .diag-payload-wrap { margin-top: 5px; }
+        .diag-payload-toggle {
+            font-size: 10px; color: var(--ink-faint); cursor: pointer;
+            font-family: var(--font-mono); user-select: none; list-style: none; padding: 0;
+        }
+        .diag-payload-toggle:hover { color: var(--blue-soft); }
+        .diag-payload-toggle::marker { display: none; }
+        .diag-payload {
+            margin: 5px 0 0; padding: 8px 10px; border-radius: 7px;
+            background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.06);
+            font-family: var(--font-mono); font-size: 10px; line-height: 1.55;
+            color: var(--ink-dim); white-space: pre; overflow-x: auto;
+            max-height: 200px; overflow-y: auto; tab-size: 2;
+        }
+        /* Stage grid on the run-resume splash */
+        .resume-stages {
+            display: grid; gap: 5px; margin-top: 18px;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); text-align: left;
+        }
+        .resume-stage {
+            display: flex; align-items: baseline; gap: 8px; padding: 7px 10px;
+            border: 1px solid var(--line); border-radius: 9px;
+            background: rgba(255,255,255,0.02); font-size: 12px;
+        }
+        .resume-stage.rs-done { border-color: rgba(52,211,153,0.35); background: rgba(52,211,153,0.04); }
+        .resume-stage.rs-next { border-color: rgba(91,140,255,0.4); background: rgba(91,140,255,0.05); }
+        .rs-beat { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.12em;
+            text-transform: uppercase; color: var(--ink-faint); flex-shrink: 0; }
+        .rs-title { flex: 1; color: var(--ink-dim); line-height: 1.3; }
+        .rs-done .rs-title { color: var(--ink); }
+        .rs-next .rs-title { color: var(--ink); font-weight: 600; }
+        .rs-status { font-family: var(--font-mono); font-size: 11px; color: var(--good); flex-shrink: 0; }
+        .rs-cur { color: var(--blue-soft) !important; }
         .card-hand.reward-draft { align-items: stretch; gap: 10px; padding-top: 3px; }
         .card-hand.reward-draft .reward-pick {
             flex: 1 0 176px; min-height: 78px; padding: 10px 12px;
@@ -3132,7 +3392,7 @@
                 --hand-bottom: 132px;
                 --hand-card-h: 208px;
                 --dialogue-bottom: calc(var(--hand-bottom) + var(--hand-card-h) + 16px);
-                --lower-stage-reserve: calc(var(--dialogue-bottom) + 84px);
+                --lower-stage-reserve: calc(var(--dialogue-bottom) + var(--dialogue-h) + 8px);
             }
             #scene {
                 padding: 56px 16px var(--lower-stage-reserve) 16px;
@@ -3172,7 +3432,7 @@
                 right: 12px;
                 width: min(52vw, 360px);
                 height: min(66vh, 540px);
-                bottom: calc(var(--hand-bottom) + 8px);
+                bottom: calc(var(--footer-top, 58px) + 8px);
             }
             #narration {
                 padding: 0 16px;
@@ -3485,6 +3745,7 @@
             <div class="footer-utility" aria-label="Run utilities">
                 <div class="controls">
                     <button id="mute" class="iconbtn" title="Toggle audio">&#9834;</button>
+                    <button id="diag-open" class="btn" type="button" title="Open diagnostics logs">Logs</button>
                     <button id="retry" class="btn primary is-hidden">Retry</button>
                     <button id="reset" class="btn" disabled>Reset</button>
                 </div>
@@ -3542,6 +3803,40 @@
         </div>
     </div>
 
+    <div id="diagnostics-overlay" hidden aria-hidden="true">
+        <div class="diag-card" role="dialog" aria-modal="true" aria-labelledby="diag-title">
+            <div class="diag-head">
+                <div>
+                    <h2 id="diag-title">System diagnostics</h2>
+                    <p id="diag-meta">Loading run logs</p>
+                </div>
+                <div class="diag-actions">
+                    <button id="diag-refresh" class="btn" type="button">Refresh</button>
+                    <button id="diag-close" class="btn primary" type="button">Close</button>
+                </div>
+            </div>
+            <div class="diag-tabs" role="tablist" aria-label="Log panels">
+                <button class="diag-tab" role="tab" type="button" data-panel="frontend"
+                    aria-selected="true" aria-controls="diag-frontend">
+                    Frontend <span id="diag-cnt-frontend" class="diag-tab-cnt"></span>
+                </button>
+                <button class="diag-tab" role="tab" type="button" data-panel="backend"
+                    aria-selected="false" aria-controls="diag-backend">
+                    Backend replay <span id="diag-cnt-backend" class="diag-tab-cnt"></span>
+                </button>
+                <button class="diag-tab" role="tab" type="button" data-panel="maf"
+                    aria-selected="false" aria-controls="diag-maf">
+                    MAF &amp; tools <span id="diag-cnt-maf" class="diag-tab-cnt"></span>
+                </button>
+            </div>
+            <div class="diag-body">
+                <ul id="diag-frontend" class="diag-stream active" role="tabpanel"></ul>
+                <ul id="diag-backend" class="diag-stream" role="tabpanel"></ul>
+                <ul id="diag-maf" class="diag-stream" role="tabpanel"></ul>
+            </div>
+        </div>
+    </div>
+
     <!-- Lore / tutorial intro: the game introduces itself before the first pitch.
          Fully skippable (Skip button / Esc). Append ?intro=0 to bypass on reload. -->
     <div id="intro-overlay" aria-hidden="false">
@@ -3554,7 +3849,7 @@
     </div>
 
     <script src="/game/game/audio.js?v=11"></script>
-    <script type="module" src="/game/game/story.js?v=223"></script>
+    <script type="module" src="/game/game/story.js?v=239"></script>
     <script src="/game/game/intro.js?v=30"></script>
 </body>
 </html>

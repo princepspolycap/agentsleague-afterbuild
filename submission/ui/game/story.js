@@ -25,6 +25,45 @@ const A = window.DungeonAudio || {};
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const DIAG_MAX_ENTRIES = 180;
+const diagnostics = {
+    frontend: [],
+};
+
+function diagLog(level, source, message, payload = null) {
+    diagnostics.frontend.unshift({
+        ts: Date.now(),
+        level: String(level || "info"),
+        source: String(source || "ui"),
+        message: String(message || ""),
+        payload,
+    });
+    if (diagnostics.frontend.length > DIAG_MAX_ENTRIES) diagnostics.frontend.length = DIAG_MAX_ENTRIES;
+}
+
+function diagLogError(source, err, message = "") {
+    const detail = err && err.message ? err.message : String(err || "unknown error");
+    diagLog("error", source, message ? `${message}: ${detail}` : detail);
+}
+
+// Sanitize antagonist-generated text: strip internal knowledge-base filenames
+// that leak from simulation templates, and replace harmful/inappropriate
+// language with neutral game-design equivalents. Apply wherever rival
+// descriptions, escalation pressure, and tooltip text are rendered.
+const _ANTAG_CLEAN = [
+    [/\bfascist[- ]style\b/gi, "exclusivity-based"],
+    [/\bworld_generation_playbook\.md\b/gi, "the growth playbook"],
+    [/\borg_design_playbook\.md\b/gi, "the org playbook"],
+    [/\bgtm_finance_playbook\.md\b/gi, "the finance playbook"],
+    [/\b[\w_]+_playbook\.md\b/gi, "the playbook"],
+    [/\bfrom\s+[\w_]+\.(md|yaml|json|txt)\b/gi, "from the playbook"],
+    [/\b[\w_]+\.md\b/gi, "the playbook"],
+];
+function sanitizeAntagonistDesc(text) {
+    if (!text) return text;
+    return _ANTAG_CLEAN.reduce((t, [pat, rep]) => String(t).replace(pat, rep), text);
+}
+
 const ROLE_NAME = {
     strategist: "Strategist",
     designer: "Designer",
@@ -36,25 +75,41 @@ const ROLE_NAME = {
 
 // --- API helpers -----------------------------------------------------------
 async function api(path, body) {
-    const res = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`${path} ${res.status} ${detail}`);
+    const started = Date.now();
+    try {
+        const res = await fetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body || {}),
+        });
+        if (!res.ok) {
+            const detail = await res.text().catch(() => "");
+            diagLog("warn", "api", `POST ${path} -> ${res.status}`, detail ? { detail: detail.slice(0, 280) } : null);
+            throw new Error(`${path} ${res.status} ${detail}`);
+        }
+        diagLog("info", "api", `POST ${path} ok`, { ms: Date.now() - started });
+        return res.json();
+    } catch (e) {
+        diagLogError("api", e, `POST ${path} failed`);
+        throw e;
     }
-    return res.json();
 }
 
 async function apiGet(path) {
-    const res = await fetch(path);
-    if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`${path} ${res.status} ${detail}`);
+    const started = Date.now();
+    try {
+        const res = await fetch(path);
+        if (!res.ok) {
+            const detail = await res.text().catch(() => "");
+            diagLog("warn", "api", `GET ${path} -> ${res.status}`, detail ? { detail: detail.slice(0, 280) } : null);
+            throw new Error(`${path} ${res.status} ${detail}`);
+        }
+        diagLog("info", "api", `GET ${path} ok`, { ms: Date.now() - started });
+        return res.json();
+    } catch (e) {
+        diagLogError("api", e, `GET ${path} failed`);
+        throw e;
     }
-    return res.json();
 }
 
 // --- Narration typewriter --------------------------------------------------
@@ -108,8 +163,13 @@ function founderNameFromProfileUrl(url) {
         const inIdx = parts.indexOf("in");
         const raw = inIdx >= 0 ? parts[inIdx + 1] : parts[0];
         if (!raw) return "Founder";
-        return raw
-            .replace(/[-_]+/g, " ")
+        // Drop the id tail LinkedIn appends (e.g. "jordan-rivera-9f8e" ->
+        // "Jordan Rivera"): real name tokens never contain digits. Mirrors the
+        // server's _humanize_handle so client and backend agree on the name.
+        const tokens = raw.replace(/[-_]+/g, " ").split(" ").filter(Boolean);
+        const nameTokens = tokens.filter((t) => !/\d/.test(t));
+        const clean = (nameTokens.length ? nameTokens : tokens).join(" ");
+        return clean
             .replace(/\b\w/g, (m) => m.toUpperCase())
             .slice(0, 40);
     } catch (_) {
@@ -129,6 +189,17 @@ function ventureNameFromProfile(profile, founderName) {
     const name = (founderName && founderName !== "Founder") ? founderName.trim() : "";
     if (name) return `${name}'s Venture`;
     return DEFAULT_COMPANY;
+}
+
+// Scrub a digit-bearing id tail out of an already-built display name (e.g. a
+// legacy saved slot named "Jordan Rivera 9f8e's Venture" -> "Jordan Rivera's
+// Venture"). New runs never produce these (founderNameFromProfileUrl now drops
+// digit tokens), but old slots persisted before the fix should still read clean.
+function cleanRunDisplayName(name) {
+    const raw = String(name || "").trim();
+    if (!raw) return raw;
+    const out = raw.replace(/\b[a-z]*\d[a-z\d]*\b/gi, "").replace(/\s+/g, " ").replace(/\s+(['’])/g, "$1").trim();
+    return out || raw;
 }
 
 function cleanProfileSummaryForPlayer(summary) {
@@ -556,7 +627,7 @@ function renderSvg(svgString) {
 }
 
 // The world canvas as a SCENARIO surface: before a worker's artifact renders,
-// the center shows what this room is about - the chapter goal, the success
+// the center shows what this stage is about - the chapter goal, the success
 // metric the agent is aiming for, and who owns it. This is the "show the player
 // information about the scenario" beat - the middle is a stage, not a blank gap.
 function renderScenarioCanvas(ch, ownerName) {
@@ -1010,17 +1081,50 @@ function companyContextTip(label, meaning, value, detail, source) {
 function ventureModelHTML(run = null) {
     const vm = ventureModelData(run);
     const M = COMPANY_CONTEXT_META;
-    const cell = (cls, label, value, tip) =>
-        `<div${cls ? ` class="${cls}"` : ""} title="${esc(tip)}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`;
+    const S = COMPANY_CONTEXT_SOURCE;
+    // Honor server-supplied per-key meanings/sources when present, exactly like
+    // the footer's syncCompanyContext, so both surfaces teach the same definitions.
+    const meaning = (key) => (vm.meanings && vm.meanings[key]) || M[key];
+    const source = (key) => (vm.sources && vm.sources[key]) || S[key];
+    const cell = (cls, label, key, value, detail) => {
+        const tip = escText(companyContextTip(label, meaning(key), value, detail, source(key)));
+        return `<div${cls ? ` class="${cls}"` : ""} data-move-tip="${tip}" tabindex="0" role="button" aria-label="${tip}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`;
+    };
     return `<div class="venture-model" aria-label="Venture model">`
-        + cell("", "Offer", vm.offer, `${M.offer}\n\n${vm.offer}`)
-        + cell("", "Customer", vm.customer, `${M.customer}\n\n${vm.customer}`)
-        + cell("", "Business model", vm.model, `${M.model}\n\n${vm.model}`)
-        + cell("", "Revenue model", vm.revenueShort, `${M.revenue}\n\n${vm.revenueDetail}`)
-        + cell("", "Build", vm.builder, M.build)
-        + cell("", "Sell", vm.growth, M.sell)
-        + cell("", "Operate", vm.ops, M.ops)
-        + cell("rival", "Rival", vm.antagonist, M.rival)
+        + cell("", "Offer", "offer", vm.offer)
+        + cell("", "Customer", "customer", vm.customer)
+        + cell("", "Business model", "model", vm.model)
+        + cell("", "Revenue model", "revenue", vm.revenueShort, vm.revenueDetail)
+        + cell("", "Build", "build", vm.builder)
+        + cell("", "Sell", "sell", vm.growth)
+        + cell("", "Operate", "ops", vm.ops)
+        + cell("rival", "Rival", "rival", vm.antagonist)
+        + `</div>`;
+}
+
+// The run-resume splash: instead of repeating the venture-model tiles (the
+// footer's company-context strip already shows those), show the actual run
+// progress - each Story Circle stage, what is shipped, and which stage is next.
+// This is the one place the resumed player sees the shape of their run.
+function resumeStageGrid(stages) {
+    const list = Array.isArray(stages) ? stages : [];
+    if (!list.length) return "";
+    const firstIncomplete = list.findIndex((s) => String(s.status || "").toLowerCase() !== "completed");
+    return `<div class="resume-stages" aria-label="Run progress">`
+        + list.map((s, i) => {
+            const status = String(s.status || "").toLowerCase();
+            const done = status === "completed";
+            const isNext = i === firstIncomplete;
+            const title = String(s.title || `Stage ${i + 1}`);
+            const split = title.split(/:\s*/);
+            const beat = split.length > 1 ? split[0] : `Stage ${i + 1}`;
+            const name = split.length > 1 ? split.slice(1).join(": ") : title;
+            const cls = ["resume-stage", done ? "rs-done" : "", isNext ? "rs-next" : ""].filter(Boolean).join(" ");
+            const mark = done ? `<span class="rs-status">\u2713</span>`
+                : (isNext ? `<span class="rs-status rs-cur">\u25b6</span>` : `<span class="rs-status" style="color:var(--ink-faint)">\u00b7</span>`);
+            return `<div class="${cls}"><span class="rs-beat">${esc(beat)}</span>`
+                + `<span class="rs-title">${esc(name)}</span>${mark}</div>`;
+        }).join("")
         + `</div>`;
 }
 
@@ -1356,7 +1460,7 @@ const STAGE_LAYERS = new Set();
 // stay - they are identity and live pressure, not controls). The stand-up has
 // its own CEO input, the inspector is a focused read, and the dilemma is a modal
 // decision - in all three the footer hand is unusable or overlapping.
-const FOOTER_QUIETING_LAYERS = new Set(["standup-active", "inspecting-agent", "inspecting-worker", "dilemma"]);
+const FOOTER_QUIETING_LAYERS = new Set(["standup-active", "inspecting-agent", "inspecting-worker", "dilemma", "diagnostics"]);
 
 function setStageLayer(name, on) {
     if (!name) return;
@@ -1378,27 +1482,26 @@ function syncFooterAwareLayout() {
     const footer = document.querySelector("footer");
     if (!scene || !footer) return;
     document.body.classList.toggle("compact-ui", window.innerWidth <= 1100);
-    const footerRect = footer.getBoundingClientRect();
-    const footerHeight = Math.ceil(footerRect.height || 0);
+    const footerHeight = Math.ceil(footer.getBoundingClientRect().height || 0);
     if (!footerHeight) return;
-    // Keep stage overlays (party rail, dialogue reserve, inspector lift) tied
-    // to the REAL footer stack height, not static breakpoint assumptions.
-    scene.style.setProperty("--hand-bottom", `${footerHeight + 28}px`);
-    // The scene's lower reserve MUST track the real lower band, not a static
-    // :root calc (which resolved against the stale default --hand-bottom and
-    // let the canvas slide under the footer). Reserve from the topmost element
-    // actually occupying the bottom band - the footer, plus the floating party
-    // hand when it is on stage - down to the viewport bottom, with a small gap.
-    const vh = window.innerHeight || footerRect.bottom;
-    let bandTop = footerRect.top;
-    const party = $("party");
-    const partyShown = party
-        && !document.body.classList.contains("footer-quiet")
-        && getComputedStyle(party).display !== "none"
-        && party.getBoundingClientRect().height > 1;
-    if (partyShown) bandTop = Math.min(bandTop, party.getBoundingClientRect().top);
-    const reserve = Math.max(96, Math.ceil(vh - bandTop) + 18);
-    scene.style.setProperty("--lower-stage-reserve", `${reserve}px`);
+    // ONE measured input for the whole lower band. --hand-bottom drives the
+    // party hand position; --footer-top is the actual footer top edge used by
+    // inspectors and anything that must float *above* the footer. The party
+    // cards intentionally dip PARTY_OVERLAP px behind the footer (footer
+    // z-index 20 > party z-index 18 covers the overlap), creating the card-hand
+    // "tucked in" look. Inspectors and the speaking card use --footer-top so
+    // they stay above the footer even though --hand-bottom is now lower.
+    const PARTY_OVERLAP = 70;
+    const root = document.documentElement;
+    root.style.setProperty("--hand-bottom", `${Math.max(footerHeight - PARTY_OVERLAP, 4)}px`);
+    root.style.setProperty("--footer-top", `${footerHeight}px`);
+    root.style.setProperty("--party-overlap", `${PARTY_OVERLAP}px`);
+    // The narration caption above the hand grows with its line count, so feed
+    // its real height in too; the reserve calc grows to clear a tall caption
+    // instead of guessing a fixed budget (same single-source pattern).
+    const narration = $("narration");
+    const dialogueH = narration ? Math.ceil(narration.getBoundingClientRect().height || 0) : 0;
+    if (dialogueH) root.style.setProperty("--dialogue-h", `${dialogueH}px`);
 }
 
 function queueFooterAwareLayoutSync() {
@@ -1417,22 +1520,16 @@ function ensureFooterLayoutObserver() {
     footerLayoutObserver = new ResizeObserver(() => queueFooterAwareLayoutSync());
     footerLayoutObserver.observe(footer);
     if (hand) footerLayoutObserver.observe(hand);
-    // The party rail's visibility is derived from what #diagram renders (the
-    // :has(.world-canvas) rule in story.html) - a content swap there can show or
-    // hide the rail with NO JS running. Re-derive the stage reserve whenever the
-    // diagram content changes so the world-canvas band always clears the rail
-    // (no per-call-site wiring; one observer keeps the geometry in sync).
-    const diagram = $("diagram");
-    if (diagram && typeof MutationObserver !== "undefined") {
-        new MutationObserver(() => queueFooterAwareLayoutSync())
-            .observe(diagram, { childList: true });
-    }
+    // The narration caption changes height as a line types in; observe it so
+    // the reserve grows to clear it the moment it does.
+    const narration = $("narration");
+    if (narration) footerLayoutObserver.observe(narration);
 }
 
 function renderGameHand(game) {
     const host = $("card-hand");
     if (!host) return;
-    if (!game) {
+    if (!game || state.phase === "done" || state.phase === "arc-complete" || state.phase === "running" || String(game.run_status || "active").toLowerCase() !== "active") {
         host.hidden = true;
         host.innerHTML = "";
         host.classList.remove("reward-draft");
@@ -1524,7 +1621,8 @@ function renderRewardDraft(game, forceOpen = false) {
     const pending = game && Array.isArray(game.pending_rewards) ? game.pending_rewards : [];
     overlay.hidden = true;
     if (overlayHost) overlayHost.innerHTML = "";
-    if (!pending.length) {
+    if (!pending.length || state.phase === "done" || state.phase === "arc-complete" || state.phase === "running" || String(game.run_status || "active").toLowerCase() !== "active") {
+        host.hidden = true;
         host.classList.remove("reward-draft");
         return;
     }
@@ -1586,6 +1684,15 @@ function maybeShowRunOver(game) {
     if (status !== "victory" && status !== "defeat") {
         if (!overlay.hidden) { overlay.hidden = true; overlay.classList.remove("show"); overlay.setAttribute("aria-hidden", "true"); }
         overlay.dataset.shownFor = "";
+        return;
+    }
+    // Defeat is urgent and can surface immediately. Victory should wait until
+    // the finale/income beat has had the stage; otherwise the run-over overlay
+    // can cover the live ending the moment the final /run-next response lands.
+    if (status === "victory" && state.phase !== "done" && state.phase !== "arc-complete") {
+        overlay.hidden = true;
+        overlay.classList.remove("show");
+        overlay.setAttribute("aria-hidden", "true");
         return;
     }
     // Guard against re-rendering the same outcome every poll/sync.
@@ -1719,7 +1826,10 @@ async function claimRewardCard(cardId) {
 
 async function runRewardDraftGate(game) {
     const pending = game && Array.isArray(game.pending_rewards) ? game.pending_rewards : [];
-    if (!pending.length) return null;
+    const runStatus = String((game && game.run_status) || "active").toLowerCase();
+    if (!pending.length || runStatus !== "active") return null;
+    state.phase = "reward";
+    updateCommandControls();
     renderRewardDraft(game, true);
     setActionHint("Next: choose one reward card for the run deck.");
     return new Promise((resolve) => {
@@ -1934,7 +2044,7 @@ function setParty(activeKey, line, activeName) {
         const statusLine = active
             ? (line || "working with you")
             : done
-                ? "sealed their room"
+                ? "sealed their stage"
                 : (m.title || "waiting for the brief");
         const hasCard = !!cardEvidence[m.name];
         const score = hasCard ? clamp(cardEvidence[m.name].score) : null;
@@ -2869,11 +2979,24 @@ function showSpeakerSpotlight(role, displayName, opts = {}) {
     // reads as a deliberate announcement to the player, not a worker aside.
     // Workers / the rival (rare on this spotlight) keep the role-colored frame.
     const agentClass = agentClassForRole(role);
-    const announce = agentClass === "gm"
-        ? `<div class="cast-announce">&#9818; Announcement</div>`
-        : "";
-    const cardClass = agentClass === "gm" ? "cast-card"
-        : agentClass === "rival" ? "cast-card worker rival" : "cast-card worker";
+    let announce = "";
+    let stageClass = "speaking show";
+    let cardClass = "cast-card worker";
+
+    if (agentClass === "gm") {
+        announce = `<div class="cast-announce">&#9818; Announcement</div>`;
+        stageClass = "speaking show gm-announce";
+        cardClass = "cast-card";
+    } else if (agentClass === "rival") {
+        announce = `<div class="cast-announce">&#9876; Competitive Threat</div>`;
+        stageClass = "speaking show rival-announce";
+        cardClass = "cast-card worker rival";
+    } else {
+        announce = `<div class="cast-announce">&#9783; Digital Worker Report</div>`;
+        stageClass = "speaking show worker-attention";
+        cardClass = "cast-card worker";
+    }
+
     stage.innerHTML =
         `<div class="${cardClass}">`
         + `<div class="cast-card-art"><div class="cast-fig" style="background-image:url('${src}')"></div></div>`
@@ -2881,7 +3004,7 @@ function showSpeakerSpotlight(role, displayName, opts = {}) {
         + `<div class="cast-speech">${announce}<div class="cast-speech-name">${esc(heroName)}<span>${esc(roleLabel)}</span></div>`
         + `<div class="cast-speech-line" id="cast-speech-line"></div></div>`
         + `</div>`;
-    stage.className = agentClass === "gm" ? "speaking show gm-announce" : "speaking show";
+    stage.className = stageClass;
     // CSS uses this body class to resize the world canvas and remove the hidden
     // narration reserve. Always clear it in hideSpeakerSpotlight/openInspector.
     setStageLayer("spotlight-active", true);
@@ -3007,6 +3130,7 @@ function lens(dim, evidence) {
     row.classList.add("lit");
     row.querySelector(".lens-count").textContent = `\u00d7${lensState[dim]}`;
     if (evidence) row.querySelector(".lens-evidence").textContent = evidence;
+    if (evidence) diagLog("info", `lens:${dim}`, evidence);
 }
 
 // Agent Memory panel: what the workers have LEARNED from this CEO (separate
@@ -3044,6 +3168,161 @@ async function refreshLearned() {
         div.style.animationDelay = `${i * 110}ms`;
         div.innerHTML = `<div class="mem-src">${k.ico} ${k.label}</div><div class="mem-body">${esc(m.text.slice(0, 150))}</div>`;
         host.appendChild(div);
+    });
+}
+
+function diagTime(ts) {
+    try {
+        return new Date(ts || Date.now()).toLocaleTimeString();
+    } catch (_) {
+        return "--:--:--";
+    }
+}
+
+function diagRenderList(host, entries, emptyLabel) {
+    if (!host) return;
+    if (!entries.length) {
+        host.innerHTML = `<li class="empty"><b>${escText(emptyLabel)}</b></li>`;
+        return;
+    }
+    host.innerHTML = entries.map((entry) => {
+        let payloadHtml = "";
+        if (entry.payload) {
+            try {
+                const pretty = JSON.stringify(entry.payload, null, 2);
+                payloadHtml = `<details class="diag-payload-wrap">`
+                    + `<summary class="diag-payload-toggle">payload &middot; ${pretty.length} chars</summary>`
+                    + `<pre class="diag-payload">${escText(pretty)}</pre>`
+                    + `</details>`;
+            } catch (_) {
+                payloadHtml = `<details class="diag-payload-wrap">`
+                    + `<summary class="diag-payload-toggle">payload</summary>`
+                    + `<pre class="diag-payload">${escText(String(entry.payload).slice(0, 1200))}</pre>`
+                    + `</details>`;
+            }
+        }
+        return `<li><b>${escText(`[${diagTime(entry.ts)}] ${entry.message}`)}</b>${payloadHtml}</li>`;
+    }).join("");
+}
+
+function backendReplayEntries(run) {
+    const log = Array.isArray(run && run.replay_log) ? run.replay_log : [];
+    return log.slice(-80).reverse().map((event) => ({
+        ts: Date.parse(event.timestamp || "") || Date.now(),
+        message: `${event.event_type || "EVENT"} · ${event.actor || "system"} · ${(event.message || "").slice(0, 160)}`,
+        payload: event.payload || null,
+    }));
+}
+
+function mafTraceEntries(run) {
+    const invocations = (run && run.world && Array.isArray(run.world.invocations)) ? run.world.invocations : [];
+    const out = [];
+    invocations.slice(-30).reverse().forEach((inv) => {
+        const toolNames = (inv.maf_tools_called || inv.tools_drawn || []).slice(0, 6);
+        const trace = Array.isArray(inv.tool_trace) ? inv.tool_trace.slice(-3) : [];
+        out.push({
+            ts: Date.now(),
+            message: `${inv.worker_title || inv.role || "worker"} · ${cleanDeployLabel(inv.deployment) || "simulation"} · ${inv.framework || "direct"}`,
+            payload: {
+                stage: inv.stage_id || "",
+                status: inv.status || "completed",
+                tools: toolNames,
+                trace: trace.map((t) => ({ call: t.call, ms: t.duration_ms, source: t.source })),
+            },
+        });
+    });
+    return out;
+}
+
+function openDiagPanel(name) {
+    document.querySelectorAll(".diag-tab").forEach((btn) => {
+        const active = btn.dataset.panel === name;
+        btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    ["frontend", "backend", "maf"].forEach((id) => {
+        const el = $(`diag-${id}`);
+        if (el) el.classList.toggle("active", id === name);
+    });
+}
+
+async function refreshDiagnostics(forcePull = false) {
+    const meta = $("diag-meta");
+    if (meta) meta.textContent = "Refreshing...";
+    let run = latestRunState();
+    if (forcePull) {
+        try {
+            const [stateRes, modeRes] = await Promise.allSettled([apiGet("/api/state"), apiGet("/api/mode")]);
+            if (stateRes.status === "fulfilled" && stateRes.value && stateRes.value.state) {
+                syncLatestState(stateRes.value.state);
+                run = latestRunState();
+            }
+            if (modeRes.status === "fulfilled" && modeRes.value) {
+                state.live = !!modeRes.value.live;
+            }
+        } catch (e) {
+            diagLogError("diagnostics", e, "Could not refresh backend snapshot");
+        }
+    }
+
+    const frontend = diagnostics.frontend.slice(0, 100);
+    const backend = backendReplayEntries(run).slice(0, 100);
+    const maf = mafTraceEntries(run).slice(0, 80);
+
+    diagRenderList($("diag-frontend"), frontend, "No frontend events yet");
+    diagRenderList($("diag-backend"), backend, "No backend replay entries yet");
+    diagRenderList($("diag-maf"), maf, "No MAF/tool traces yet");
+
+    const cntF = $("diag-cnt-frontend"); if (cntF) cntF.textContent = String(frontend.length);
+    const cntB = $("diag-cnt-backend"); if (cntB) cntB.textContent = String(backend.length);
+    const cntM = $("diag-cnt-maf"); if (cntM) cntM.textContent = String(maf.length);
+
+    if (meta) {
+        const runtime = state.live ? "live foundry" : "simulation";
+        meta.textContent = `runtime: ${runtime} \u00b7 updated ${new Date().toLocaleTimeString()}`;
+    }
+}
+
+let _diagPollTimer = null;
+
+function openDiagnostics() {
+    const overlay = $("diagnostics-overlay");
+    if (!overlay) return;
+    overlay.hidden = false;
+    overlay.setAttribute("aria-hidden", "false");
+    setStageLayer("diagnostics", true);
+    refreshDiagnostics(true);
+    if (_diagPollTimer) clearInterval(_diagPollTimer);
+    _diagPollTimer = setInterval(() => refreshDiagnostics(false), 4000);
+}
+
+function closeDiagnostics() {
+    const overlay = $("diagnostics-overlay");
+    if (!overlay) return;
+    overlay.hidden = true;
+    overlay.setAttribute("aria-hidden", "true");
+    setStageLayer("diagnostics", false);
+    if (_diagPollTimer) { clearInterval(_diagPollTimer); _diagPollTimer = null; }
+}
+
+function wireDiagnosticsCapture() {
+    if (window.__CampaignStoryDiagnosticsWired) return;
+    window.__CampaignStoryDiagnosticsWired = true;
+    window.addEventListener("error", (event) => {
+        diagLog("error", "window", event.message || "Unhandled error", {
+            file: event.filename || "",
+            line: event.lineno || 0,
+            column: event.colno || 0,
+        });
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason && event.reason.message ? event.reason.message : String(event.reason || "promise rejection");
+        diagLog("error", "promise", reason);
+    });
+    // Tab switching: delegated to the document so it works even after re-renders.
+    document.addEventListener("click", (event) => {
+        const tab = event.target.closest(".diag-tab[data-panel]");
+        const overlay = $("diagnostics-overlay");
+        if (tab && overlay && !overlay.hidden) openDiagPanel(tab.dataset.panel);
     });
 }
 
@@ -3342,7 +3621,7 @@ function setEconHud(org) {
         const latestRole = latestMove && (latestMove.rival_role_title || latestMove.rival_pressure_lane)
             ? ` Latest move owner: ${latestMove.rival_role_title || "rival operator"}${latestMove.rival_pressure_lane ? ` (${latestMove.rival_pressure_lane})` : ""}.`
             : "";
-        const rivalTip = `${rival} is your antagonist. ${orgName}: ${ant.organization_model || "a rival organization countering your workforce."} Motivation: ${ant.motivation || "capture the market before you can."} Tactic: ${ant.signature_tactic || arc.current_pressure || "pressure your weak metric."} Active operation: ${ant.active_operation || arc.current_pressure || "contest your market share."}${roleLine}${latestRole} At 100/100 it wins the market and the run is lost. Push it back with counterplay cards, verified stages, and trusted revenue.`;
+        const rivalTip = `${rival} is your antagonist. ${orgName}: ${sanitizeAntagonistDesc(ant.organization_model || "a rival organization countering your workforce.")} Motivation: ${sanitizeAntagonistDesc(ant.motivation || "capture the market before you can.")} Tactic: ${sanitizeAntagonistDesc(ant.signature_tactic || arc.current_pressure || "pressure your weak metric.")} Active operation: ${sanitizeAntagonistDesc(ant.active_operation || arc.current_pressure || "contest your market share.")}${roleLine}${latestRole} At 100/100 it wins the market and the run is lost. Push it back with counterplay cards, verified stages, and trusted revenue.`;
         html += `<span class="econ-pill ${tClass}" title="${esc(rivalTip)}">`
             + `<i>&#9876;</i> ${esc(rival)}: <b>${threat}</b>/100 &middot; ${esc(stage)}</span>`;
     }
@@ -3439,7 +3718,7 @@ function reactToRivalEscalation(game) {
     }
     _lastEscalationStage = stage;
     const rival = arc.antagonist_name || "The rival";
-    const pressure = arc.current_pressure || `${rival} escalates to ${stage}.`;
+    const pressure = sanitizeAntagonistDesc(arc.current_pressure || `${rival} escalates to ${stage}.`);
     ensureVillainPortrait();
     // Scene-head beat: the world announces the rival's move.
     const beat = $("scene-beat");
@@ -3805,6 +4084,36 @@ function hydrateFounderInputsFromSavedState(savedState, { overwrite = false } = 
     setInputValue("in-pitch", signal.pitch || "", { overwrite });
 }
 
+function savedRunStages(savedState) {
+    return (savedState && savedState.world && Array.isArray(savedState.world.stages))
+        ? savedState.world.stages
+        : [];
+}
+
+function hasDesignedRun(savedState) {
+    return savedRunStages(savedState).length > 0;
+}
+
+function restoreSavedCompanySetup(savedState) {
+    if (!savedState) return;
+    syncLatestState(savedState);
+    const signal = founderSignalFromSavedState(savedState);
+    state.company = cleanRunDisplayName(savedState.name) || state.company || "";
+    state.pitch = signal.pitch || savedState.pitch || state.pitch || "";
+    state.url = signal.url || state.url || "";
+    state.org = savedState.org || null;
+    state.stages = [];
+    state.decisions = [];
+    state.idx = 0;
+    state.phase = "title";
+    hydrateFounderInputsFromSavedState(savedState, { overwrite: true });
+    if ($("begin")) $("begin").disabled = !hasRealSignal();
+    if ($("reset")) $("reset").disabled = false;
+    const hint = $("hint");
+    if (hint) hint.textContent = "Saved company loaded. Begin the run to design its world.";
+    setActionHint("Saved company loaded. Begin the run to design its world.");
+}
+
 // The founder's archetype rides into every brief: their skill becomes the human
 // lane of the org. Shared by the lore beat and the analyze payload.
 function founderArchNote() {
@@ -4076,6 +4385,26 @@ function restoreCreatorForm() {
     }
 }
 
+// Leaving prestart is one transition, owned in one place. Both entry points -
+// starting a fresh run (beginStory) and resuming a saved one
+// (restoreRunFromState) - call this so the onboarding card is torn off the
+// stage ATOMICALLY with the prestart flag. Without this, a path that flipped
+// prestart off and then threw before swapping #diagram would leave character
+// creation bleeding behind the live HUD/footer. Clearing #diagram here means the
+// onboarding screen and the run view can never coexist, whatever runs after.
+function enterRunView() {
+    document.documentElement.classList.remove("prestart");
+    document.body.classList.remove("prestart");
+    const stageEl = document.getElementById("stage");
+    if (stageEl) stageEl.classList.remove("prestart", "rail-hidden");
+    // Tear the onboarding title card off the stage now. The caller fills
+    // #diagram with the run view immediately after; this just guarantees no
+    // stale character-creation card survives the transition.
+    const diagram = document.getElementById("diagram");
+    const titleCard = diagram && diagram.querySelector(".title-card.first-step");
+    if (titleCard) titleCard.remove();
+}
+
 async function beginStory() {
     if (A.unlock) A.unlock();
     // The ambient pad belongs to the title moment - end it as the run begins,
@@ -4090,14 +4419,15 @@ async function beginStory() {
     if (state.phase !== "title") return; // already descending
     state.phase = "founding";
 
-    document.documentElement.classList.remove("prestart");
-    document.body.classList.remove("prestart");
-    const stageEl = document.getElementById("stage");
-    if (stageEl) stageEl.classList.remove("prestart", "rail-hidden");
+    enterRunView();
     setParty("narrator", "walking with you");
 
-    $("begin").disabled = true;
-    $("reset").disabled = false;
+    // enterRunView() tears the onboarding title card (and the #begin button it
+    // contains) off the stage, so #begin may already be gone here - guard it.
+    const beginBtn = $("begin");
+    if (beginBtn) beginBtn.disabled = true;
+    const resetBtn = $("reset");
+    if (resetBtn) resetBtn.disabled = false;
     refreshLearned(); // surface anything the workers already remember
 
     // Clear the founding form off the stage immediately
@@ -4107,6 +4437,7 @@ async function beginStory() {
         + (state.archetype ? `<p class="founding-arch">${esc(state.archetype.name)} &middot; ${esc(state.archetype.skill)}</p>` : ``)
         + `${ventureModelHTML()}`
         + `</div>`;
+    bindMoveTooltips($("diagram"));
 
     // ---- Beat 0: the welcome ----
     // Two doors into the world, one thread of narration:
@@ -4156,7 +4487,7 @@ async function beginStory() {
         : (fromUrl
             ? "Point this at a LinkedIn or public profile URL. First a guarded scraper reads the public signal it can access. Then a Profile Analyst reasons about the founder's operating posture before the Org Designer proposes the digital workforce around it."
             : (state.fromFilm
-                ? "First room: the org. The Org Designer reasons out who you hire - every seat exists for a reason."
+                ? "First beat: the org. The Org Designer reasons out who you hire - every seat exists for a reason."
                 : "Before any work happens, an Org Designer agent decides what team this mission needs: one human operator, plus the digital workers that form its execution layer. Every role exists for a reason.")));
 
     let org;
@@ -4291,19 +4622,23 @@ async function beginStory() {
 
 async function revealWorldDrop() {
     const first = state.stages[0] || {};
-    const rival = (state.org && state.org.company_summary) ? state.org.company_summary : "your mission";
     setSceneHead(
         "World set",
         state.company,
-        `${state.stages.length} stages loaded · first room: ${first.title || "opening move"}`
+        `${state.stages.length} stages loaded · first stage: ${first.title || "opening move"}`
     );
-    $("diagram").innerHTML = `<div class="founding fade-scene">`
+    // The center belongs to the world canvas - show the actual 8-stage Story
+    // Circle the World Designer produced, not a second copy of the venture-model
+    // tiles (the footer's company-context strip already owns those). The
+    // .world-canvas class is also the occupancy signal that reveals the party.
+    $("diagram").innerHTML = `<div class="world-canvas founding fade-scene">`
         + `<div class="kicker">World initialized</div>`
         + `<h1>${esc(state.company)}</h1>`
-        + `<p>${esc(first.goal || "Your opening room is ready. Choose your first move.")}</p>`
-        + `${ventureModelHTML()}`
+        + `<p>${esc(first.goal || "Your opening stage is ready. Choose your first move.")}</p>`
+        + `${resumeStageGrid(state.stages)}`
         + `</div>`;
-    await narrate(`The world is live. ${first.title ? `${first.title} is your opening room.` : "Your opening room is ready."} Make your move.`);
+    bindMoveTooltips($("diagram"));
+    await narrate(`The world is live. ${first.title ? `${first.title} is your opening stage.` : "Your opening stage is ready."} Make your move.`);
 }
 
 async function revealSelfOrganization() {
@@ -4791,7 +5126,7 @@ async function runNextChapter() {
     setSceneHead(`Stage ${state.idx + 1}`, ch.title,
         `\u2692 artifact + diagram by ${ownerName} (agent JSON \u2192 Mermaid)`);
     // Paint the scenario onto the world canvas (center stage) so the player has
-    // the room's goal + success metric in view while the worker reasons. The
+    // the stage goal + success metric in view while the worker reasons. The
     // theater overlay sits above this; when it closes, the scenario remains
     // until the artifact replaces it.
     renderScenarioCanvas(ch, ownerName);
@@ -4913,7 +5248,8 @@ async function runNextChapter() {
         ? `A Foundry rubric evaluation scored it ${score} of 100 across four weighted dimensions, floored by the deterministic validator`
         : `The deterministic validator scored it ${score} of 100`;
     await narrate(`${ownerName} delivered ${artifactKind}. ${rubricLine} - ${score >= 80 ? "it passes the gate and the company graph grows." : "bronze, so it pauses for a human gate."}`);
-    await runRewardDraftGate(state.game);
+    const isFinalStage = state.idx >= state.stages.length - 1;
+    if (!isFinalStage) await runRewardDraftGate(state.game);
 
     completedStages.push({ title: ch.title, role: ch.owner_role });
     state.idx += 1;
@@ -5184,6 +5520,7 @@ async function finale(s) {
     setActionHint("Act I complete. The company can keep operating; the larger mission is still ahead.");
     await narrate(`${state.stages.length} stages, ${state.stages.length} verified gates. From one founder signal you now have an org, the systems it runs on, a launch plan, and the numbers behind it - level ${s.level ?? 1}, ${s.xp ?? 0} XP. That is the first operating loop, not the final win condition.`);
     await incomeBeat(s);
+    if (s && s.game) syncGameState(s.game);
 }
 
 // --- The income beat (game_design.md section 9.5) ---------------------------
@@ -5193,6 +5530,7 @@ async function finale(s) {
 // plan when one exists. This is the promise of the intro landing as gameplay:
 // your experience became a business that runs while you sleep.
 async function incomeBeat(s) {
+    hideSpeakerSpotlight();
     const org = state.org || {};
     const workers = (org.roles || []).filter((r) => r.kind !== "human");
     const fin = (() => {
@@ -5235,6 +5573,137 @@ async function incomeBeat(s) {
     setActionHint("Act I launched. Continue operating, counter the rival, or Reset to run another venture.");
 }
 
+function renderAgentGeneratedUI(schema) {
+    const form = $("player-command");
+    if (!form) return;
+    let dynamicContainer = $("player-command-dynamic");
+    if (dynamicContainer) {
+        dynamicContainer.remove();
+    }
+    const defaultInput = $("player-command-input");
+    const micBtn = $("player-command-mic");
+    if (!schema) {
+        if (defaultInput) defaultInput.style.display = "";
+        if (micBtn) micBtn.style.display = "";
+        return;
+    }
+    if (defaultInput) defaultInput.style.display = "none";
+    if (micBtn) micBtn.style.display = "none";
+    dynamicContainer = document.createElement("div");
+    dynamicContainer.id = "player-command-dynamic";
+    dynamicContainer.className = "dynamic-form-fields";
+    dynamicContainer.style.display = "flex";
+    dynamicContainer.style.flexDirection = "column";
+    dynamicContainer.style.gap = "8px";
+    dynamicContainer.style.flex = "1";
+    dynamicContainer.style.minWidth = "0";
+    const buildFields = (fields) => {
+        fields.forEach(field => {
+            const fieldWrapper = document.createElement("div");
+            fieldWrapper.className = "dynamic-field-wrapper";
+            fieldWrapper.style.display = "flex";
+            fieldWrapper.style.flexDirection = "column";
+            fieldWrapper.style.gap = "4px";
+            if (field.label) {
+                const label = document.createElement("label");
+                label.textContent = field.label;
+                label.style.fontFamily = "var(--font-mono)";
+                label.style.fontSize = "10px";
+                label.style.color = "var(--ink-dim)";
+                fieldWrapper.appendChild(label);
+            }
+            let inputNode;
+            if (field.type === "text") {
+                inputNode = document.createElement("input");
+                inputNode.type = "text";
+                inputNode.id = `dynamic-${field.id}`;
+                inputNode.name = field.id;
+                inputNode.placeholder = field.placeholder || "";
+                inputNode.value = field.value || "";
+                inputNode.className = "dynamic-input";
+            } else if (field.type === "range") {
+                const rangeContainer = document.createElement("div");
+                rangeContainer.style.display = "flex";
+                rangeContainer.style.alignItems = "center";
+                rangeContainer.style.gap = "8px";
+                inputNode = document.createElement("input");
+                inputNode.type = "range";
+                inputNode.id = `dynamic-${field.id}`;
+                inputNode.name = field.id;
+                inputNode.min = field.min !== undefined ? field.min : 0;
+                inputNode.max = field.max !== undefined ? field.max : 100;
+                inputNode.value = field.value !== undefined ? field.value : 50;
+                inputNode.style.flex = "1";
+                const valueLabel = document.createElement("span");
+                valueLabel.textContent = inputNode.value;
+                valueLabel.style.fontFamily = "var(--font-mono)";
+                valueLabel.style.fontSize = "11px";
+                inputNode.addEventListener("input", () => {
+                    valueLabel.textContent = inputNode.value;
+                });
+                rangeContainer.appendChild(inputNode);
+                rangeContainer.appendChild(valueLabel);
+                fieldWrapper.appendChild(rangeContainer);
+            } else if (field.type === "select") {
+                inputNode = document.createElement("select");
+                inputNode.id = `dynamic-${field.id}`;
+                inputNode.name = field.id;
+                inputNode.className = "dynamic-select";
+                (field.options || []).forEach(opt => {
+                    const optNode = document.createElement("option");
+                    const optVal = typeof opt === "string" ? opt : opt.value;
+                    const optText = typeof opt === "string" ? opt : opt.label;
+                    optNode.value = optVal;
+                    optNode.textContent = optText;
+                    if (optVal === field.value) optNode.selected = true;
+                    inputNode.appendChild(optNode);
+                });
+            }
+            if (inputNode) {
+                inputNode.style.background = "var(--input-bg, rgba(5,8,16,0.6))";
+                inputNode.style.border = "1px solid var(--line, rgba(255,255,255,0.08))";
+                inputNode.style.borderRadius = "6px";
+                inputNode.style.color = "var(--ink)";
+                inputNode.style.padding = "6px 10px";
+                inputNode.style.fontSize = "12px";
+                inputNode.style.fontFamily = "var(--font-body)";
+                if (field.type !== "range") {
+                    fieldWrapper.appendChild(inputNode);
+                }
+            }
+            dynamicContainer.appendChild(fieldWrapper);
+        });
+    };
+    if (schema.type === "group" && Array.isArray(schema.fields)) {
+        buildFields(schema.fields);
+    } else if (Array.isArray(schema)) {
+        buildFields(schema);
+    }
+    const sendBtn = $("player-command-send");
+    if (sendBtn) {
+        form.insertBefore(dynamicContainer, sendBtn);
+    } else {
+        form.appendChild(dynamicContainer);
+    }
+}
+
+function collectDynamicCommandData() {
+    const dynamicContainer = $("player-command-dynamic");
+    if (!dynamicContainer) return null;
+    const data = {};
+    dynamicContainer.querySelectorAll("input, select, textarea").forEach((inp) => {
+        if (!inp.name) return;
+        data[inp.name] = inp.type === "range" ? Number(inp.value) : inp.value;
+    });
+    return data;
+}
+
+function dynamicCommandSummary(data) {
+    const entries = Object.entries(data || {});
+    if (!entries.length) return "";
+    return entries.map(([k, v]) => `${k}: ${v}`).join(", ");
+}
+
 function updateCommandControls() {
     const form = $("player-command");
     const input = $("player-command-input");
@@ -5242,16 +5711,30 @@ function updateCommandControls() {
     if (!form || !input || !send) return;
     const hasWorld = Array.isArray(state.stages) && state.stages.length > 0;
     const hasPendingReward = !!(state.game && Array.isArray(state.game.pending_rewards) && state.game.pending_rewards.length);
+
+    // Check if the current stage has an agent-generated form schema
+    const stage = (state.stages && state.stages[state.idx]) || {};
+    if (stage.form_schema) {
+        renderAgentGeneratedUI(stage.form_schema);
+    } else {
+        renderAgentGeneratedUI(null);
+    }
+
     const ready = state.phase === "ready" && hasWorld && !hasPendingReward && state.idx < state.stages.length;
-    const visible = state.phase !== "title" && state.phase !== "done" && hasWorld && state.idx < state.stages.length;
-    form.hidden = !visible;
+    // The command line is the CEO's one verb: brief the next worker. Show it
+    // only when that is actually the move. In every other loop beat - a worker
+    // is reasoning, a reward draft is open, the run is loading or over - a
+    // disabled input is dead weight that crowds the footer right over the real
+    // choice (the reward cards, the theater). So it steps aside and the action
+    // hint below carries the "why". This is the footer tracking the game loop
+    // instead of always sitting in the way.
+    form.hidden = !ready;
     input.disabled = !ready;
     send.disabled = !ready;
     input.placeholder = ready
         ? `Tell the workforce your move for stage ${state.idx + 1}...`
         : (hasPendingReward ? "Choose a reward card first - then brief the next worker..." : (state.phase === "running" ? "Worker is executing your last move..." : "Waiting for the world to finish loading..."));
     if (ready) {
-        const stage = state.stages[state.idx] || {};
         const owner = stage.assigned_worker_title || ROLE_NAME[stage.owner_role] || stage.owner_role || "worker";
         setActionHint(`Ready: Send Move briefs ${owner} for stage ${state.idx + 1}.`);
     } else if (hasPendingReward) {
@@ -5263,17 +5746,31 @@ function updateCommandControls() {
 async function submitPlayerCommand(e) {
     if (e) e.preventDefault();
     const input = $("player-command-input");
-    if (!input || state.phase !== "ready" || state.idx >= state.stages.length) return;
-    const text = input.value.trim();
-    input.value = "";
+    if (state.phase !== "ready" || state.idx >= state.stages.length) return;
+
+    let text = "";
+    const formData = collectDynamicCommandData();
+    if (formData) {
+        text = dynamicCommandSummary(formData);
+    } else if (input) {
+        text = input.value.trim();
+        input.value = "";
+    }
+
     if (text) {
         const stage = state.stages[state.idx] || {};
         const owner = stage.assigned_worker_title || ROLE_NAME[stage.owner_role] || stage.owner_role || "worker";
-        state.playerCommands.push({ stage_id: stage.id || "", text: text, ts: Date.now() });
+        state.playerCommands.push({ stage_id: stage.id || "", text: text, form_data: formData || null, ts: Date.now() });
         setActionHint(`Move registered. Briefing ${owner}...`);
+
         showActionReceipt("CEO move captured", [`stage ${state.idx + 1}`, owner], `"${text}" is saved as worker memory and carried into the next stage brief.`, "good");
         try {
-            const saved = await api("/api/world/standup/respond", { text: text, stage_id: stage.id || "" });
+            const saved = await api("/api/world/standup/respond", {
+                text: text,
+                stage_id: stage.id || "",
+                form_data: formData || {},
+                source: formData ? "dynamic_form" : "player_command",
+            });
             if (saved.state) {
                 setHud(saved.state);
                 setResourcesFromEconomics(saved.state.economics, saved.state.org || state.org);
@@ -5632,7 +6129,7 @@ $("begin").addEventListener("mouseenter", () => {
         }
     });
     document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") { closeAgentInspector(); closeWorkerInspector(); clearPartyFlip(); }
+        if (e.key === "Escape") { closeDiagnostics(); closeAgentInspector(); closeWorkerInspector(); clearPartyFlip(); }
     });
 })();
 
@@ -5670,6 +6167,21 @@ if (commandForm) commandForm.addEventListener("submit", submitPlayerCommand);
 })();
 const resetBtn = $("reset");
 if (resetBtn) resetBtn.addEventListener("click", resetStory);
+
+const diagOpenBtn = $("diag-open");
+const diagCloseBtn = $("diag-close");
+const diagRefreshBtn = $("diag-refresh");
+const diagOverlay = $("diagnostics-overlay");
+if (diagOpenBtn) diagOpenBtn.addEventListener("click", openDiagnostics);
+if (diagCloseBtn) diagCloseBtn.addEventListener("click", closeDiagnostics);
+if (diagRefreshBtn) diagRefreshBtn.addEventListener("click", () => refreshDiagnostics(true));
+if (diagOverlay) {
+    diagOverlay.addEventListener("click", (event) => {
+        if (event.target === diagOverlay) closeDiagnostics();
+    });
+}
+wireDiagnosticsCapture();
+
 // The run-over overlay's single action: begin a fresh run (same as Reset).
 const runOverBtn = $("run-over-btn");
 if (runOverBtn) runOverBtn.addEventListener("click", () => {
@@ -5899,14 +6411,15 @@ function renderSlotsLibrary(slots, activeRunId) {
         const threat = Math.round(slot.threat_level || 0);
         const sub = total
             ? `${done}/${total} stages &middot; ${statusLabel(slot.run_status)} &middot; rival ${threat}/100`
-            : statusLabel(slot.run_status);
+            : "setup saved";
+        const actionLabel = total ? "Resume &rarr;" : "Continue setup";
         return `<div class="slot-row${isActive ? " active" : ""}" data-run="${esc(slot.run_id)}">
             <div class="slot-main">
-                <div class="slot-name">${esc(slot.name || "Untitled run")}${isActive ? ` <em class="slot-active">active</em>` : ""}</div>
+                <div class="slot-name">${esc(cleanRunDisplayName(slot.name) || "Untitled run")}${isActive ? ` <em class="slot-active">active</em>` : ""}</div>
                 <div class="slot-sub">${sub}</div>
             </div>
             <div class="slot-actions">
-                <button type="button" class="cta small slot-resume" data-run="${esc(slot.run_id)}">Resume &rarr;</button>
+                <button type="button" class="cta small slot-resume" data-run="${esc(slot.run_id)}">${actionLabel}</button>
                 <button type="button" class="cc-flip-btn small slot-delete" data-run="${esc(slot.run_id)}" title="Delete this saved run">&times;</button>
             </div>
         </div>`;
@@ -5921,14 +6434,22 @@ function renderSlotsLibrary(slots, activeRunId) {
     card.querySelectorAll(".slot-resume").forEach((btn) => {
         btn.addEventListener("click", async () => {
             const runId = btn.getAttribute("data-run");
+            const originalText = btn.textContent;
             btn.disabled = true; btn.textContent = "Loading...";
             try {
                 const res = await api("/api/slots/load", { run_id: runId });
+                const loadedState = res && res.state;
+                if (!loadedState) throw new Error("Slot load returned no state.");
+                if (hasDesignedRun(loadedState)) {
+                    restoreRunFromState(loadedState);
+                } else {
+                    restoreSavedCompanySetup(loadedState);
+                }
                 card.remove();
-                if (res && res.state) restoreRunFromState(res.state);
-            } catch (_) {
-                btn.disabled = false; btn.textContent = "Resume \u2192";
-                setActionHint("Could not load that run - try again.");
+            } catch (e) {
+                diagLogError("resume", e, `Could not restore saved run ${runId || ""}`);
+                btn.disabled = false; btn.textContent = originalText || "Resume \u2192";
+                setActionHint("Could not load that run - check diagnostics for details.");
             }
         });
     });
@@ -5962,10 +6483,13 @@ function renderSlotsLibrary(slots, activeRunId) {
 function restoreRunFromState(s) {
     if (!s) return;
     syncLatestState(s);
-    const stages = (s.world && s.world.stages) || [];
-    if (!stages.length) return;
+    const stages = savedRunStages(s);
+    if (!stages.length) {
+        restoreSavedCompanySetup(s);
+        return;
+    }
 
-    state.company = s.name || "";
+    state.company = cleanRunDisplayName(s.name) || "";
     state.pitch = s.pitch || "";
     state.url = founderSignalFromSavedState(s).url || "";
     state.org = s.org || null;
@@ -5981,10 +6505,7 @@ function restoreRunFromState(s) {
         .forEach((ch) => completedStages.push({ title: ch.title, role: ch.owner_role }));
 
     // Activate the game UI.
-    document.documentElement.classList.remove("prestart");
-    document.body.classList.remove("prestart");
-    const stageEl = document.getElementById("stage");
-    if (stageEl) stageEl.classList.remove("prestart", "rail-hidden");
+    enterRunView();
 
     // Pre-fill form so a later reset works correctly.
     hydrateFounderInputsFromSavedState(s, { overwrite: true });
@@ -6016,12 +6537,15 @@ function restoreRunFromState(s) {
     setSceneHead("Resumed", `${state.company} - Stage ${done + 1} of ${stages.length}`,
         "restored from saved state");
 
-    $("diagram").innerHTML = `<div class="founding fade-scene">`
+    $("diagram").innerHTML = `<div class="world-canvas fade-scene">`
+        + `<div class="founding">`
         + `<div class="kicker">Run resumed</div>`
         + `<h1>${esc(state.company)}</h1>`
         + `<p>${done} of ${stages.length} stages complete &mdash; send a move to continue.</p>`
-        + `${ventureModelHTML(s)}`
+        + resumeStageGrid(stages)
+        + `</div>`
         + `</div>`;
+    bindMoveTooltips($("diagram"));
 
     const hasNext = state.phase !== "done";
     const next = $("next"); if (next) next.disabled = !hasNext;

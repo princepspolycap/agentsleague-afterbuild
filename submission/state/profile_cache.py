@@ -13,6 +13,7 @@ law as the rest of the repo - no external service, works after a fresh clone.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -55,11 +56,48 @@ def _cache_key(url: str) -> str:
     return f"{host}{path}" if host else path
 
 
+def profile_key(url: str) -> str:
+    """Return a stable, non-PII link key for `url`.
+
+    The raw profile/LinkedIn URL is PII and stays local-only in this cache. The
+    durable run state, agent memories, and the Foundry IQ founder document key
+    off THIS hash instead, so every memory about the same founder links to the
+    same person across runs without ever persisting the raw URL in the durable
+    state. The same normalization as `_cache_key` means `linkedin.com/in/foo`
+    and `https://www.linkedin.com/in/foo/` resolve to one key.
+    """
+    key = _cache_key(url)
+    if not key:
+        return ""
+    return "pk_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def _load() -> Dict[str, Any]:
     try:
         return json.loads(CACHE_FILE.read_text())
     except Exception:
         return {}
+
+
+def get_by_key(pk: str) -> Optional[Dict[str, Any]]:
+    """Resolve a `profile_key` back to its locally cached profile (raw URL and
+    all). Lets a resumed run - which only persisted the non-PII key - re-link to
+    the full local profile without the durable state ever holding the URL."""
+    pk = (pk or "").strip()
+    if not pk:
+        return None
+    with _LOCK:
+        data = _load()
+    for entry in data.values():
+        if not isinstance(entry, dict) or entry.get("profile_key") != pk:
+            continue
+        profile = entry.get("profile")
+        if not isinstance(profile, dict):
+            return None
+        out = dict(profile)
+        out["cached"] = True
+        return out
+    return None
 
 
 def get(url: str) -> Optional[Dict[str, Any]]:
@@ -94,7 +132,7 @@ def put(url: str, profile: Dict[str, Any]) -> None:
     record.pop("cached", None)
     with _LOCK:
         data = _load()
-        data[key] = {"ts": time.time(), "profile": record}
+        data[key] = {"ts": time.time(), "profile": record, "profile_key": profile_key(url)}
         try:
             CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
             CACHE_FILE.write_text(json.dumps(data, indent=2))

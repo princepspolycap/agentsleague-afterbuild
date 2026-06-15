@@ -86,8 +86,34 @@ Rules:
 # (single source shared with mid-game hires in state/consequences.py).
 
 
+# Metadata header lines emitted by founder_analyst._compose_brief that describe
+# the *source* of the brief, not the venture itself. They must never leak into a
+# worker mandate ("Interviews the market for Source www linkedin com ...").
+_BRIEF_META_PREFIXES = ("source", "source kind", "homepage sections", "inferred founder archetype", "founder human-seat skill")
+
+
 def _short_label(brief: str, words: int = 6) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9 ]", " ", brief or "your venture").strip()
+    """Pull a human venture label from a composed brief.
+
+    The brief is a "Label: value" block whose first lines describe provenance
+    (Source / Source kind). Skip those, strip the "Label:" prefix off content
+    lines, and take the first meaningful words of what the venture actually is.
+    """
+    best = ""
+    for raw in (brief or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        label, sep, value = line.partition(":")
+        text = value.strip() if sep else line
+        if sep and label.strip().lower() in _BRIEF_META_PREFIXES:
+            continue
+        if text:
+            best = text
+            break
+    if not best:
+        best = brief or "your venture"
+    cleaned = re.sub(r"[^A-Za-z0-9 ]", " ", best).strip()
     parts = [w for w in cleaned.split() if w]
     return " ".join(parts[:words]) if parts else "your venture"
 

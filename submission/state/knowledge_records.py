@@ -11,6 +11,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from state.consequences import initialize_economics_from_org
+from state.profile_cache import profile_key as _profile_key_for_url
 from state.schema import (
     ChoiceRecord,
     CompanyState,
@@ -42,11 +43,21 @@ def profile_from_payload(
     """Normalize URL-analysis output or a pitch into a FounderProfile."""
     data = profile or {}
     summary = str(data.get("company_summary") or pitch or "").strip()
+    # Non-PII link key: hash the URL so memories + the Foundry IQ founder doc
+    # link to the same person across runs without persisting the raw URL.
+    link_key = str(data.get("profile_key") or "")
+    if not link_key and source == "url" and source_ref:
+        try:
+            link_key = _profile_key_for_url(source_ref)
+        except Exception:
+            link_key = ""
     return FounderProfile(
         source=source,
         source_ref=source_ref,
         source_kind=str(data.get("source_kind") or source),
         host=str(data.get("host") or ""),
+        profile_key=link_key,
+        person_name=str(data.get("person_name") or "")[:80],
         company_summary=summary[:400],
         what_they_sell=str(data.get("what_they_sell") or summary)[:300],
         target_customer=str(data.get("target_customer") or "mission collaborators")[:180],
@@ -74,15 +85,24 @@ def _profile_search_document(profile: FounderProfile) -> SearchDocument:
         profile.brief,
     ]).strip()
     source_ref = profile.source_ref or profile.host or "pitch"
+    # Key the IQ doc off the non-PII profile_key when present (URL-sourced runs),
+    # so every memory + knowledge doc about this founder links by the same stable
+    # key without the raw URL becoming the document id. Pitch runs (no key) fall
+    # back to the pitch-derived source_ref.
+    doc_key = profile.profile_key or source_ref
+    # The doc's stable identity and `source` use the non-PII key/host, never the
+    # raw URL (which stays local-only in profile_cache).
+    doc_source = profile.profile_key or profile.host or source_ref
     return SearchDocument(
-        id=_stable_doc_id("founder_profile", source_ref),
-        title=f"Founder profile: {profile.company_summary[:80] or source_ref}",
+        id=_stable_doc_id("founder_profile", doc_key),
+        title=f"Founder profile: {profile.company_summary[:80] or profile.host or 'founder'}",
         content=content[:8000],
-        source=source_ref,
+        source=doc_source,
         kind="founder_profile",
         tags=sorted({profile.source, profile.source_kind, profile.founder_archetype.lower(), "founder"}),
         metadata={
             "host": profile.host,
+            "profile_key": profile.profile_key,
             "scraped": profile.scraped,
             "osint_hits": profile.osint_hits,
             "mode": profile.mode,

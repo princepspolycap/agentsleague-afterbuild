@@ -332,12 +332,23 @@ def _domain_only_profile(url: str) -> Dict[str, Any]:
 
 def _humanize_handle(handle: str) -> str:
     """Turn a profile slug into a display name: 'princeps-polycap' -> 'Princeps
-    Polycap'. Drops trailing hex id segments LinkedIn sometimes appends."""
+    Polycap'. Drops trailing id segments LinkedIn appends (hex tails like
+    '1a2b3c' or '9f8e'); real name tokens never contain digits."""
     if not handle:
         return ""
     cleaned = re.sub(r"[-_]+", " ", handle).strip()
-    parts = [p for p in cleaned.split() if not re.fullmatch(r"[0-9a-f]{6,}", p)]
+    parts = [p for p in cleaned.split() if not re.search(r"\d", p)]
     return " ".join(w.capitalize() for w in (parts or cleaned.split()))[:60]
+
+
+def founder_name_from_url(url: str) -> str:
+    """The founder's display name read from a LinkedIn /in/ profile URL.
+
+    'https://linkedin.com/in/jane-doe-1a2b' -> 'Jane Doe'. Returns "" for any
+    URL that is not a personal LinkedIn profile (company pages, generic sites),
+    so the caller only ever adopts a real person name, never a brand slug.
+    """
+    return _humanize_handle(_linkedin_handle(url))
 
 
 def _osint_role_phrase(titles: List[str]) -> str:

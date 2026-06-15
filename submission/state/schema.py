@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import threading
 from typing import Dict, Any, List, Optional
@@ -51,6 +52,9 @@ class FounderProfile(BaseModel):
     source_ref: str = ""
     source_kind: str = ""
     host: str = ""
+    profile_key: str = ""              # non-PII link key (hash of the URL); the
+                                       # raw URL stays local-only in profile_cache
+    person_name: str = ""              # the founder's real name (e.g. from LinkedIn)
     company_summary: str = ""
     what_they_sell: str = ""
     target_customer: str = ""
@@ -184,7 +188,7 @@ class PlayerMove(BaseModel):
     turn_index: int
     day_index: int = 0
     stage_id: str = ""
-    move_type: str = "play_card"  # play_card | choose_option | draw | end_turn | reward_card
+    move_type: str = "play_card"  # play_card | choose_option | draw | end_turn | reward_card | ceo_command
     card_id: str = ""
     target_id: str = ""
     energy_spent: int = 0
@@ -261,10 +265,6 @@ class GameRunState(BaseModel):
     victory_reason: str = ""
     defeat_reason: str = ""
     unlocks: List[str] = Field(default_factory=list)
-    # Route layer: graph of rooms and the currently available choices.
-    route_rooms: List[Dict[str, Any]] = Field(default_factory=list)
-    current_room_id: str = ""
-    available_room_ids: List[str] = Field(default_factory=list)
 
 
 class CharacterRuntimeState(BaseModel):
@@ -429,6 +429,9 @@ class Stage(BaseModel):
     # Written by the dilemma endpoint; recalled in later stage briefs so
     # choices visibly chain (memory is what makes a choice feel real).
     dilemma_choice: Optional[Dict[str, Any]] = None
+    # Optional agent-authored command form for the persistent CEO input. Kept as
+    # JSON so the local-first UI can render it without React/build dependencies.
+    form_schema: Optional[Dict[str, Any]] = None
 
 
 class WorkerInvocation(BaseModel):
@@ -639,9 +642,104 @@ class StateStore:
                 with open(self.filepath, 'r') as f:
                     data = json.load(f)
                     self.state = CompanyState(**data)
+                    self._normalize_identity(persist=True)
                     return self.state
             except (FileNotFoundError, json.JSONDecodeError):
                 return None
+
+    @staticmethod
+    def _clean_person_name(name: str) -> str:
+        """Drop the id tail a profile slug carries (e.g. 'Jordan Rivera 9f8e' ->
+        'Jordan Rivera'): a real name token never contains a digit. Returns the
+        original when nothing clean remains, so we never blank out a name."""
+        raw = (name or "").strip()
+        if not raw:
+            return raw
+        kept = [t for t in raw.split() if not re.search(r"\d", t)]
+        return " ".join(kept).strip() or raw
+
+    @staticmethod
+    def _drop_id_token(raw: str, sep: str) -> str:
+        """Drop digit-bearing tokens from a `sep`-joined identity string,
+        preserving the separator style (space for names, hyphen for URL slugs)."""
+        kept = [t for t in raw.split(sep) if t and not re.search(r"\d", t)]
+        return sep.join(kept).strip()
+
+    def _identity_heal_pairs(self) -> List[tuple]:
+        """Every dirty->clean identity string to substitute, derived from the
+        ONE source of truth: the founder's name and profile handle. Covers the
+        forms a profile slug's id tail leaks into - the display name
+        ('Jordan Rivera 9f8e'), the lowercase brief text ('jordan rivera 9f8e'),
+        and the URL slug ('jordan-rivera-9f8e') - so every generated field heals
+        from the same seam. Only literal identity strings are listed, so numbers
+        like '$220' or '100/100' are never touched."""
+        state = self.state
+        if not state:
+            return []
+        candidates = set()
+        founder = getattr(state, "founder", None)
+        if founder and founder.name:
+            candidates.add(founder.name)
+        profile = getattr(state, "founder_profile", None)
+        if profile:
+            if profile.person_name:
+                candidates.add(profile.person_name)
+            ref = (profile.source_ref or "").rstrip("/")
+            handle = ref.split("/")[-1] if ref else ""
+            if handle and re.search(r"\d", handle):
+                # The URL handle ('jordan-rivera-9f8e') in both its slug and a
+                # spaced form (how it surfaces in fallback prose).
+                candidates.add(handle)
+                candidates.add(handle.replace("-", " "))
+        pairs: List[tuple] = []
+        for raw in candidates:
+            sep = "-" if ("-" in raw and " " not in raw) else " "
+            clean = self._drop_id_token(raw, sep)
+            if clean and clean != raw:
+                pairs.append((raw, clean))
+                # Generated prose is often lowercased; heal that variant too.
+                if raw.lower() != raw:
+                    pairs.append((raw.lower(), clean.lower()))
+        # Longest dirty first so a shorter name can't partially match inside a
+        # longer one before it is healed. De-duplicate.
+        return sorted(set(pairs), key=lambda p: len(p[0]), reverse=True)
+
+    def _normalize_identity(self, persist: bool = False) -> None:
+        """Self-heal the founder identity at one seam so every run is dynamic,
+        not legacy. The founder NAME is the single source of truth; once it is
+        clean, every place that baked the name in at generation time (the run
+        name, the villain's narrative, the venture model, world brief, knowledge
+        records, replay log) is healed by substituting the exact dirty identity
+        string for the clean one in a single whole-state pass. This never strips
+        digits from arbitrary text - '$220', '100/100', 'rival 47/100' are
+        untouched - because only literal identity strings are replaced. No
+        per-run regeneration, no placeholder text."""
+        state = self.state
+        if not state:
+            return
+        pairs = self._identity_heal_pairs()
+        if not pairs:
+            return
+        blob = json.dumps(state.model_dump())
+        for dirty, clean in pairs:
+            if dirty:
+                blob = blob.replace(dirty, clean)
+        try:
+            self.state = CompanyState(**json.loads(blob))
+        except Exception:
+            # Heal failed to round-trip: at least clean the name fields directly
+            # so the founder identity is never shown dirty.
+            founder = getattr(state, "founder", None)
+            profile = getattr(state, "founder_profile", None)
+            if founder:
+                founder.name = self._clean_person_name(founder.name)
+            if profile:
+                profile.person_name = self._clean_person_name(profile.person_name)
+            return
+        # A dirty name existed and was healed - persist once so the run is clean
+        # at the source from now on (a one-time, idempotent rewrite).
+        if persist and self.filepath:
+            self.save()
 
     def save(self) -> None:
         if self.filepath and self.state:
@@ -650,6 +748,7 @@ class StateStore:
                 os.makedirs(dirpath, exist_ok=True)
 
                 payload = self.state.model_dump()
+                self._scrub_pii(payload)
                 self._atomic_write(self.filepath, payload)
                 # Mirror the active run into its own save slot so multiple
                 # companies/products persist and can be resumed. One seam: every
@@ -658,6 +757,23 @@ class StateStore:
                 run_id = getattr(self.state, "run_id", "") or ""
                 if run_id:
                     self._atomic_write(self._slot_path(run_id), payload)
+
+    @staticmethod
+    def _scrub_pii(payload: Dict[str, Any]) -> None:
+        """Strip the raw profile/LinkedIn URL from durable state before it is
+        written to disk. The URL is PII; it stays local-only in profile_cache.
+        Durable state keeps the non-PII `profile_key` (which still links the
+        founder's memories + Foundry IQ doc) and the derived character sheet, so
+        a resumed run rehydrates fully without the URL ever touching the slot."""
+        profile = payload.get("founder_profile")
+        if not isinstance(profile, dict):
+            return
+        # Only scrub URL-sourced profiles; a pitch's source_ref is the pitch
+        # text itself (not PII) and is needed for run naming/resume.
+        if profile.get("source") != "url":
+            return
+        if profile.get("profile_key"):
+            profile["source_ref"] = ""
 
     @staticmethod
     def _atomic_write(filepath: str, payload: Dict[str, Any]) -> None:
@@ -699,9 +815,20 @@ class StateStore:
         econ = data.get("economics") or {}
         game = data.get("game") or {}
         arc = (game.get("antagonist_arc") or {}) if isinstance(game, dict) else {}
+        # Heal the run name from the same single source: clean the founder name
+        # and substitute the exact dirty token, so the picker reads clean without
+        # touching numbers in the name.
+        name = data.get("name", "Untitled run")
+        founder = data.get("founder") or {}
+        profile = data.get("founder_profile") or {}
+        for dirty in (founder.get("name") if isinstance(founder, dict) else "",
+                      profile.get("person_name") if isinstance(profile, dict) else ""):
+            clean = self._clean_person_name(dirty or "")
+            if dirty and clean and clean != dirty and dirty in name:
+                name = name.replace(dirty, clean)
         return {
             "run_id": data.get("run_id", ""),
-            "name": data.get("name", "Untitled run"),
+            "name": name,
             "pitch": (data.get("pitch", "") or "")[:160],
             "stages_total": len(stages),
             "stages_done": done,
@@ -751,6 +878,7 @@ class StateStore:
             self.state = CompanyState(**data)
             if not self.state.run_id:
                 self.state.run_id = run_id
+            self._normalize_identity()
             self.save()
             return self.state
 

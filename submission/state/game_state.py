@@ -68,13 +68,6 @@ def initialize_game_run(state: CompanyState, *, mode: str = "simulation") -> Non
         state.game.discard = []
         state.game.exhaust = []
         start_player_turn(state, stage_id="")
-    if not state.game.route_rooms and state.world and state.world.stages:
-        rooms, start_ids = _build_route_rooms(state)
-        state.game.route_rooms = rooms
-        state.game.available_room_ids = start_ids
-    if not state.game.current_room_id and state.game.available_room_ids:
-        # Default room for callers that do not choose explicitly yet.
-        state.game.current_room_id = state.game.available_room_ids[0]
     if state.antagonist:
         state.game.antagonist_arc.antagonist_name = state.antagonist.name
         if not state.game.antagonist_arc.current_pressure:
@@ -234,116 +227,6 @@ def end_player_turn(state: CompanyState, stage_id: str = "") -> PlayerMove:
     draw_move = start_player_turn(state, stage_id=stage_id)
     end_move.effects_applied["next_drawn"] = (draw_move.effects_applied or {}).get("drawn", [])
     return end_move
-
-
-def choose_next_room(state: CompanyState, room_id: str) -> PlayerMove:
-    """Choose the next available room in the run path and apply room effects."""
-    ensure_active_run(state)
-    game = state.game
-    room = next((r for r in game.route_rooms if r.get("id") == room_id), None)
-    if not room:
-        raise ValueError(f"Room not found: {room_id}")
-    if game.available_room_ids and room_id not in game.available_room_ids:
-        raise ValueError(f"Room is not currently selectable: {room_id}")
-    next_stage = _next_executable_stage(state)
-    room_stage_id = str(room.get("stage_id") or "")
-    if next_stage and room_stage_id and room_stage_id != next_stage.id:
-        raise ValueError(
-            f"Room {room_id} belongs to {room_stage_id}; complete {next_stage.id} before choosing it."
-        )
-    if room.get("visited"):
-        return PlayerMove(
-            id=f"move_room_noop_{room_id}_{game.turn_index}",
-            turn_index=game.turn_index,
-            day_index=game.day_index,
-            stage_id=room_stage_id,
-            move_type="choose_option",
-            target_id=room_id,
-            summary=f"Already entered room: {room.get('title', room_id)}.",
-            effects_applied={"noop": True, "room_id": room_id, "kind": str(room.get("kind") or "normal")},
-        )
-
-    room["visited"] = True
-    game.current_room_id = room_id
-    next_ids = list(room.get("next_ids") or [])
-    # The route advances only after this room's stage actually ships. Otherwise
-    # a player can click ahead on the map while /api/world/run-next still
-    # executes the first pending Story Circle stage.
-    game.available_room_ids = []
-    game.day_index = max(game.day_index, int(room.get("day_index") or 0))
-    game.loop_phase = "execute"
-
-    room_kind = str(room.get("kind") or "normal")
-    applied: Dict[str, Any] = {
-        "room_id": room_id,
-        "kind": room_kind,
-        "title": room.get("title", ""),
-        "next_ids": next_ids,
-    }
-    if room_kind == "shop":
-        applied["economics_delta"] = _apply_economics_delta(state, {"burn_pressure": -2, "trust": 1})
-    elif room_kind == "event":
-        # Deterministic coin flip from run RNG so replaying a run_id stays stable.
-        if (_next_rand(game) % 2) == 0:
-            applied["economics_delta"] = _apply_economics_delta(state, {"proof": 3, "velocity": 1})
-            applied["event_outcome"] = "signal_discovery"
-        else:
-            applied["economics_delta"] = _apply_economics_delta(state, {"trust": 2, "autonomy": 1})
-            applied["event_outcome"] = "community_tailwind"
-    elif room_kind == "secret":
-        applied["economics_delta"] = _apply_economics_delta(state, {"proof": 4, "autonomy": 2})
-    elif room_kind == "elite":
-        arc = game.antagonist_arc
-        before = arc.threat_level
-        arc.threat_level = max(0, min(100, arc.threat_level + 6))
-        arc.escalation_stage = _escalation_stage(arc.threat_level)
-        applied["antagonist_threat"] = {"before": before, "after": arc.threat_level}
-
-    move = PlayerMove(
-        id=f"move_room_{room_id}_{game.turn_index}",
-        turn_index=game.turn_index,
-        day_index=game.day_index,
-        stage_id=str(room.get("stage_id") or ""),
-        move_type="choose_option",
-        target_id=room_id,
-        summary=f"Entered {room_kind} room: {room.get('title', room_id)}.",
-        effects_applied=applied,
-    )
-    game.move_log.append(move)
-    _refresh_run_status(state)
-    return move
-
-
-def advance_route_after_stage(state: CompanyState, stage_id: str) -> Dict[str, Any]:
-    """Unlock the next route rooms after the chosen room's stage completes.
-
-    Room selection applies room effects and records which room the CEO entered;
-    stage execution remains owned by /api/world/run-next. This helper is the
-    single seam between them: when a stage ships, the room tied to that stage
-    opens its `next_ids`. If no explicit room was chosen, use the current/default
-    room for that stage and mark it visited so cold-start callers still progress.
-    """
-    game = state.game
-    if not game or not stage_id:
-        return {"advanced": False}
-    room = next((r for r in game.route_rooms if r.get("id") == game.current_room_id), None)
-    if not room or str(room.get("stage_id") or "") != stage_id:
-        room = next((r for r in game.route_rooms if r.get("stage_id") == stage_id and r.get("visited")), None)
-    if not room:
-        room = next((r for r in game.route_rooms if r.get("stage_id") == stage_id), None)
-    if not room:
-        return {"advanced": False, "stage_id": stage_id}
-
-    room["visited"] = True
-    game.current_room_id = str(room.get("id") or game.current_room_id or "")
-    game.available_room_ids = list(room.get("next_ids") or [])
-    game.loop_phase = "aftermath" if game.available_room_ids else "complete"
-    return {
-        "advanced": True,
-        "stage_id": stage_id,
-        "room_id": room.get("id", ""),
-        "next_ids": list(game.available_room_ids),
-    }
 
 
 def play_card(state: CompanyState, card_id: str, *, target_id: str = "", stage_id: str = "") -> PlayerMove:
@@ -784,13 +667,6 @@ def _apply_card_effects(state: CompanyState, card: GameCard, *, target_id: str =
 
 def _completed_stage_count(state: CompanyState) -> int:
     return sum(1 for s in (state.world.stages if state.world else []) if s.status == "completed")
-
-
-def _next_executable_stage(state: CompanyState) -> Optional[Stage]:
-    return next(
-        (s for s in (state.world.stages if state.world else []) if s.status not in ("completed", "needs-review")),
-        None,
-    )
 
 
 def _apply_card_synergy(state: CompanyState, card: GameCard) -> List[Dict[str, Any]]:
@@ -1319,46 +1195,6 @@ def _shuffle_cards(cards: List[GameCard], game: GameRunState) -> None:
         cards[i], cards[j] = cards[j], cards[i]
 
 
-def _build_route_rooms(state: CompanyState) -> tuple[List[Dict[str, Any]], List[str]]:
-    stages = (state.world.stages if state.world else [])
-    if not stages:
-        return [], []
-    rooms_by_day: List[List[Dict[str, Any]]] = []
-    for idx, stage in enumerate(stages, start=1):
-        is_boss = idx == len(stages)
-        primary_kind = "boss" if is_boss else ("elite" if idx in {4, 6} else "normal")
-        primary = {
-            "id": f"room_{idx}_a",
-            "day_index": idx,
-            "stage_id": stage.id,
-            "kind": primary_kind,
-            "title": f"{stage.title} ({primary_kind})",
-            "visited": False,
-            "next_ids": [],
-        }
-        day_rooms = [primary]
-        if not is_boss:
-            alt_kind = "event" if idx % 3 == 1 else ("shop" if idx % 3 == 2 else "secret")
-            day_rooms.append({
-                "id": f"room_{idx}_b",
-                "day_index": idx,
-                "stage_id": stage.id,
-                "kind": alt_kind,
-                "title": f"{stage.title} ({alt_kind})",
-                "visited": False,
-                "next_ids": [],
-            })
-        rooms_by_day.append(day_rooms)
-
-    for i, day_rooms in enumerate(rooms_by_day):
-        next_ids = [r["id"] for r in rooms_by_day[i + 1]] if i + 1 < len(rooms_by_day) else []
-        for room in day_rooms:
-            room["next_ids"] = list(next_ids)
-    flat = [room for day in rooms_by_day for room in day]
-    start_ids = [r["id"] for r in rooms_by_day[0]]
-    return flat, start_ids
-
-
 def _refresh_run_status(state: CompanyState) -> None:
     game = state.game
     stages = list(state.world.stages) if state.world else []
@@ -1382,12 +1218,9 @@ def _refresh_run_status(state: CompanyState) -> None:
         game.run_status = "defeat"
         game.defeat_reason = "Antagonist reached endgame dominance."
     elif state.world and state.world.status == "completed" and state.stage == "launched" and all_stages_completed:
-        # Completing the 8-beat Story Circle launches the first operating loop;
-        # it is not narrative victory. The larger win condition is contributing
-        # materially to automated basic needs, so keep the run alive and unlock
-        # continuation play instead of ending the game here.
-        game.run_status = "active"
-        game.victory_reason = ""
+        game.pending_rewards = []
+        game.run_status = "victory"
+        game.victory_reason = "All 8 venture stages shipped while the company stayed solvent."
         if "venture_loop_launched" not in game.unlocks:
             game.unlocks.append("venture_loop_launched")
         if "starter_plus_draw" not in game.unlocks:

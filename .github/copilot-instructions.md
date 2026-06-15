@@ -10,6 +10,12 @@ A submission for **Microsoft Agents League · Battle #2 — Reasoning Agents wit
 
 Authoritative narrative: [PROJECT_NARRATIVE.md](../PROJECT_NARRATIVE.md). Official spec to map against: [starter-kits/2-reasoning-agents/live_battle_challenge.md](../starter-kits/2-reasoning-agents/live_battle_challenge.md).
 
+For any playable-game work under `submission/agents`, `submission/state`, `submission/tools`, or
+`submission/ui`, also load [.github/instructions/game-implementation.instructions.md](instructions/game-implementation.instructions.md).
+It contains the current end-stage loop doctrine, UI mode contract, card-building roguelike framing,
+and the required design-doc map for gameplay, deck/DAG, connected experience, realtime scenes,
+model routing, and antagonist pressure.
+
 ## Hard rules (non-negotiable)
 
 1. **All reasoning agents run on Microsoft Foundry models.** Master Narrator + character agents = Foundry-native. Other model vendors can ONLY be invoked as tools (and only if needed at all).

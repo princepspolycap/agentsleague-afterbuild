@@ -15,9 +15,49 @@ Read this alongside the always-on [.github/copilot-instructions.md](../copilot-i
 That file owns the hard rules (Foundry-only reasoning, MIT, `submission/` only, secrets).
 This file owns _how the game is built, connected, and run_.
 
+## Endgame focus: connect the loop, do not add surfaces
+
+We are in the wrap-up stage. The biggest remaining risk is not missing UI; it is
+that existing game systems do not always know which loop state owns the screen,
+which agent class is speaking, or how a player action changes the run. Before
+adding a new visual, endpoint, or model call, answer: **what existing loop state
+does this complete, and what can now be removed or unified?**
+
+- The project is a **card-building RPG / roguelike deckbuilder**, not a generic
+  dashboard. The player builds a digital-worker party/deck, plays cards, sends
+  CEO moves, approves gates, wins customers, manages burn, and counters the rival.
+- UI polish only counts when it clarifies a game verb: choose a move, play a
+  card, inspect a receipt, approve/reject, answer a dilemma, respond to a
+  standup, or counter antagonist pressure.
+- Bugs should be fixed end-to-end. If a footer layer overlaps, a card has stale
+  state, a Game Master announcement hides the wrong controls, or a typed command
+  feels mysterious, trace it through state, replay log, returned API packet, and
+  UI re-sync before patching CSS locally.
+
+## Required design/context docs
+
+Load the relevant docs before touching a subsystem. These are not background
+reading; they define the contracts this game is trying to satisfy.
+
+- [PROJECT_NARRATIVE.md](../../PROJECT_NARRATIVE.md): public thesis and rubric story.
+- [starter-kits/2-reasoning-agents/live_battle_challenge.md](../../starter-kits/2-reasoning-agents/live_battle_challenge.md): canonical Game Master challenge pattern.
+- [submission/docs/game_design.md](../../submission/docs/game_design.md): what the player does, gates, RPG verbs, and missing-mechanic standard.
+- [submission/docs/game_loop.md](../../submission/docs/game_loop.md): release loop from pitch/profile through org, world, worker, artifact, gate, XP, memory.
+- [submission/docs/card_dag_game_design.md](../../submission/docs/card_dag_game_design.md): roguelike deckbuilder/DAG model and current implementation map.
+- [submission/docs/connected_experience_map.md](../../submission/docs/connected_experience_map.md): intro -> founder creation -> org -> world -> worker -> dilemma -> standup flow.
+- [submission/docs/how_it_all_connects.md](../../submission/docs/how_it_all_connects.md): presentation narrative for how Foundry, IQ, memory, tools, gates, and replay fit.
+- [submission/docs/world_designer_and_worker_factory.md](../../submission/docs/world_designer_and_worker_factory.md): world-authoring and worker-scheduler responsibilities.
+- [submission/docs/realtime_avatar_dilemma_system.md](../../submission/docs/realtime_avatar_dilemma_system.md): realtime/avatar layer as an I/O surface over the same state machine.
+- [submission/docs/ui_revamp_and_floating_characters.md](../../submission/docs/ui_revamp_and_floating_characters.md): visual language, cast, colors, and character presence.
+- [submission/docs/ui_layers.md](../../submission/docs/ui_layers.md): authoritative UI layer map - z-index stack, lower-band single-source CSS variables, the `setStageLayer()` coordinator + `footer-quiet`, world-canvas occupancy, artifact-SVG bound, and the announcement overlay. Read before any layout change; it is the contract for agents that drive the UI.
+- [submission/docs/model_cost_policy.md](../../submission/docs/model_cost_policy.md): what LLM/deployment each agent role should use and when to spend cloud tokens.
+
+When these docs disagree with stale implementation details, prefer the current
+state contracts in `submission/state/` and update the stale doc as part of the fix.
+
 ## Prime directive: refine and connect, don't bolt on
 
-We are in **refinement mode, not greenfield**. The systems below already exist. The job is
+We are in **end-stage refinement mode, not greenfield**. The systems below already exist. The job is
 to connect them into one coherent, end-to-end playthrough, not to add parallel features.
 
 - **Defer new features. Connect existing ones.** Before writing a new system, find the one
@@ -33,6 +73,9 @@ to connect them into one coherent, end-to-end playthrough, not to add parallel f
   one-off inline colors, or ad-hoc animations.
 - **Refactor in place before extending.** If a function does two jobs, split it on the clean
   seam first, then build on the seam.
+- **Wrap-up bias:** prefer closing a broken loop over adding a new mechanic. A fix should make the
+  player understand what just happened, what changed in state, what the workers will do next, and
+  what pressure the rival is applying.
 
 ## Every task must thread the full loop
 
@@ -50,6 +93,25 @@ game-affecting task, verify the whole thread:
 
 If a feature can't survive a server restart + page reload, it isn't wired correctly yet.
 
+## Player input and loop-state contract
+
+The persistent footer input is not a chat box. It is the CEO's **Send Move** verb
+for the next Story-Circle stage. A move must be legible in four places:
+
+1. **Before send:** the input placeholder/action hint names the stage and worker
+   that will receive the move.
+2. **On send:** the move is recorded as procedural memory via
+   `/api/world/standup/respond` (or the single successor endpoint if renamed),
+   the World Designer adapts pending stages, and the replay log records it.
+3. **During execution:** `/api/world/run-next` briefs the worker with the move,
+   prior decisions, memory, IQ, current economics, and antagonist pressure.
+4. **After execution:** the artifact, gate, reward cards, economics HUD, party
+   card backs, and next-stage brief all reflect the move.
+
+If typing into the footer appears to do nothing except start the next animation,
+the loop is broken. Add an action receipt, state event, memory entry, or stage
+brief receipt at the existing seam; do not create a second text-command path.
+
 ## System map (the seams to connect into)
 
 ### Backend — [submission/tools/server.py](../../submission/tools/server.py)
@@ -63,7 +125,7 @@ FastAPI routes, grouped by subsystem. Wire into these; do not invent parallel en
 - **Gameplay loop**: `POST /api/world/run-next` (execute next stage), `POST /api/world/autoplay`,
   `POST /api/dilemma` (CEO choice gate), `POST /api/decision` (apply consequences),
   `POST /api/world/standup` + `/respond` (live multi-agent reaction).
-- **Card game**: `POST /api/game/turn/start|card/play|reward/claim|turn/end|room/choose`.
+- **Card game**: `POST /api/game/turn/start|card/play|reward/claim|turn/end`.
 - **State / memory / mode**: `GET /api/state`, `GET /api/game`, `GET /api/memory`, `GET /api/mode`,
   `POST /api/reset`.
 - **Narration / tools**: `POST /api/tts`, `GET /api/voices`, `POST /api/lore`,
@@ -79,7 +141,7 @@ FastAPI routes, grouped by subsystem. Wire into these; do not invent parallel en
   `apply_decision_consequence` + the deterministic `RULES` map. **All economics mutation lives
   here** — do not mutate economics inline in `server.py`.
 - [game_state.py](../../submission/state/game_state.py): roguelike layer (`initialize_game_run`,
-  `play_card`, `claim_reward_card`, turn/room flow, antagonist pressure, run status).
+  `play_card`, `claim_reward_card`, turn flow, antagonist pressure, run status).
 - [events.py](../../submission/state/events.py): replay `EventType` contract.
 - [api_contract.py](../../submission/state/api_contract.py): canonical response shapes — use
   its helpers so every route returns the same envelope.
@@ -99,6 +161,15 @@ Two distinct kinds. Keep them separate.
   `DEMO_MODE` + `AGENT_ROUTING`. Never hardcode a model name in agent code — read deployments
   from env via `model_for(role)`.
 
+If someone asks "what LLM are we using?", answer from
+[submission/agents/model_config.py](../../submission/agents/model_config.py) and
+[submission/docs/model_cost_policy.md](../../submission/docs/model_cost_policy.md):
+`NARRATOR_MODEL`, `ORG_DESIGNER_MODEL`, `ANTAGONIST_MODEL`, `STRATEGIST_MODEL`,
+`DESIGNER_MODEL`, `MARKETER_MODEL`, `OPS_MODEL`, `NPC_FAST_MODEL`, and optional
+`LOCAL_*` overrides. The current runtime label comes from `/api/mode`. Do not
+infer quality problems from code alone; inspect the runtime mode and the
+deployment labels on `WorkerInvocation` receipts.
+
 ### Frontend seams — [submission/ui/](../../submission/ui/)
 
 Shell is [story.html](../../submission/ui/story.html); logic is the modules under
@@ -113,7 +184,40 @@ payload yourself:
 - `intro.js`, `preflight.js`, `audio.js`, `motion.js`, `tokens.js` own intro film, onboarding
   gate, Web Audio, transitions, and design tokens respectively.
 
+## Stage ownership and UI mode contract
+
+There is one stage layer coordinator in [submission/ui/game/story.js](../../submission/ui/game/story.js):
+`setStageLayer(name, on)`. Every immersive UI mode must use it. Do not toggle
+body classes directly from feature code.
+
+- **Default play:** footer visible; party hand and card hand are readable; center
+  canvas shows the current world/stage/artifact.
+- **Game Master announcement:** World Designer / Org Designer / Narrator speaks
+  through `#cast-stage.speaking.gm-announce` (or the successor announcement
+  surface). It owns the screen, quiets or hides footer controls, and explains the
+  new state of the run. This is for world-state transitions, not casual chatter.
+- **Worker reasoning:** the reasoning theater owns the center while a digital
+  worker executes. Footer commands are disabled until the worker returns state.
+- **Dilemma / verification:** modal decision state; footer controls step back;
+  the choice must show effect previews and commit through state consequences.
+- **Standup:** worker party reaction after a CEO decision. It has its own reply
+  input, so the persistent footer command layer is quieted.
+- **Inspector:** focused receipt reading. Use the existing card-back/inspector
+  surfaces; do not duplicate dossiers in a new component.
+
+If a new mode needs to cover the screen, add one named stage layer and define
+how it interacts with `FOOTER_QUIETING_LAYERS`, `#party`, `#card-hand`,
+`#cast-stage`, `#worker-stage`, and `#diagram` in the same pass.
+
 ## UI component layering: two agent classes, three card surfaces
+
+> **Read first:** [submission/docs/ui_layers.md](../../submission/docs/ui_layers.md) is the
+> authoritative UI layer map - the z-index stack, the lower-band single-source-of-truth CSS
+> variables (`--hand-bottom`, `--dialogue-h` on `:root`), the `setStageLayer()` coordinator and
+> `footer-quiet`, world-canvas occupancy (party rail), the artifact-SVG bound, and the Game
+> Master announcement overlay. It is the contract a human - or, soon, an **agent driving the
+> UI** - must respect. Never poke raw DOM styles or toggle layer body classes directly; go
+> through `setStageLayer()` and the CSS-variable seams documented there.
 
 The screen is a stack of layers, and every piece of it is one of two kinds of agent rendered
 on one of three card surfaces. Before adding any panel, decide which class and which surface it
@@ -138,6 +242,26 @@ The two classes share the `#party` tray grammar but must read as different layer
 `.pa-layer.gm` vs `.pa-layer.dw` badge and accent - never collapse them into one undifferentiated
 row, and never render a world-engine agent as a playable party card or vice versa.
 
+### The rival is not a teammate
+
+The antagonist / villain is a third class: **rival pressure**, not a worker and
+not a Game Master. It is authored by the Antagonist Director, then stored as
+`AntagonistState` + `AntagonistArc`. Treat it as a counter-org / hazard track:
+
+- It should never appear as an ordinary member of the player's standup or party
+  hand. If it interrupts, render it as a rival announcement, pressure beat,
+  antagonist move, or red `.rival` surface, then return control to the team.
+- Its moves must mutate or explain `game.antagonist_arc` and produce replay
+  events (`ANTAGONIST_FORGED`, `ANTAGONIST_MOVE`, `ANTAGONIST_ESCALATED`).
+- Its name must come from the market/category/tactic, not the player's name or
+  company slug. Pass founder names as excluded tokens to antagonist generation,
+  and validate live LLM patches against the same rule.
+- Counterplay is card-driven: counter cards, strong verified stages, trusted
+  revenue, and explicit CEO decisions lower or contextualize threat.
+
+Do not fix villain presentation by adding it to more team surfaces. Fix it by
+making antagonist pressure more legible as its own game system.
+
 ### The three card surfaces
 
 1. **Party worker cards** (`#party .party-agent`, rendered by `syncGameState`/party render in
@@ -146,10 +270,9 @@ row, and never render a world-engine agent as a playable party card or vice vers
    click/tap) = the dossier receipts (tools the model called, IQ recalls, reasoning quote, full
    metric grid). The flip CSS already exists in [story.html](../../submission/ui/story.html)
    (`.pa-inner` `preserve-3d`, `.pa-face` `backface-visibility:hidden`, the 540ms transform).
-   **Today a click opens a separate `#cast-stage.inspect` overlay that duplicates the dossier -
-   that is the no-duplicate-component violation to retire.** Wire the click to add a `flipped`
-   class on `.pa-inner` and render the existing `cast-dossier` markup onto a `.pa-back` face, so
-   there is exactly one card component with two faces and no second modal.
+   Click/tap should flip the card in place to the dossier. A deeper inspector may exist for the
+   active footer chip or an intentional focused read, but the party card remains the canonical
+   worker card and must not be duplicated as a separate primary component.
 2. **World / stage cards** (the `#diagram` centre - the 8-node Story-Circle graph). These are
    world-engine _output_, not playable hand cards. Each node is one Story Circle beat
    (YOU/NEED/GO/SEARCH/FIND/TAKE/RETURN/CHANGE, see
@@ -218,6 +341,20 @@ money rarely ends a run, the antagonist does. The loop, all in
 - **UI:** the econ HUD pill reads `threat/100 . <stage>` with a one-line explanation, and
   counterplay cards in the hand pulse (`.counter-hot`) once threat is non-trivial so the player
   learns the counter. Keep this loop legible: every threat change must be visible and attributable.
+
+### Antagonist naming and lore quality
+
+The rival must feel like a worthy market/system antagonist, not a lazy remix of the founder's name.
+`antagonist_generator.generate_antagonist` should receive the founder name, exclude those tokens from
+the rival name, and name the rival from the customer category, business model, pressure lane, or market
+behavior instead. For example, if the founder is named Princess/Princeps, the rival should not become
+"The Princess/Princeps Shareholder Syndicate." It can still target the founder personally in strategy,
+active operation, and dialogue; it just cannot borrow the player's identity as its brand.
+
+Lore and gameplay must reinforce each other: the rival's name, organization roles, active operation,
+threat meter, dilemma pressure, counterplay cards, and stage adaptations should all describe the same
+market force. If the lore says "enterprise exclusivity" but the card only says "-5 threat" with no
+source, the loop has ludonarrative drift.
 
 ### Open threads to tidy (wire through the source, do not patch the UI)
 

@@ -8,6 +8,7 @@ import random
 import hashlib
 import threading
 import urllib.request
+import re
 import urllib.error
 from html import escape as html_escape
 from typing import Dict, Any, List, Optional, Tuple, Iterator
@@ -32,6 +33,7 @@ from state.schema import (
     AntagonistState,
     CharacterRuntimeState,
     ChoiceRecord,
+    PlayerMove,
     WorldCouncilDeliberation,
 )
 from state.consequences import (
@@ -50,8 +52,6 @@ from state.consequences import (
 )
 from state.api_contract import refresh_venture_model, state_response, step_response, stage_response, reset_response
 from state.game_state import (
-    advance_route_after_stage,
-    choose_next_room,
     claim_reward_card,
     end_player_turn,
     ensure_active_run,
@@ -73,8 +73,8 @@ from agents.worker_factory import run_world, execute_stage, bind_world_to_org
 from agents.org_designer import design_org
 from agents.retrieval import retrieve, brief_from_url
 from agents.memory import remember, recall_memories, memory_snapshot
-from agents.founder_analyst import analyze_founder_profile
-from agents.antagonist_generator import generate_antagonist, analyze_archetype_gap
+from agents.founder_analyst import analyze_founder_profile, founder_name_from_url
+from agents.antagonist_generator import generate_antagonist, analyze_archetype_gap, clean_person_name
 from tools.code_interpreter_wrappers import validate_positioning, validate_landing_page, validate_marketing_email
 from tools.toolbox import tools_list, tools_call, tools_for_role
 from tools.export_org_blueprint import org_to_workforce_bundle
@@ -119,6 +119,12 @@ class PitchRequest(BaseModel):
     founder_voice: Optional[str] = None
     founder_avatar: Optional[str] = None
 
+# Placeholder founder names we treat as "no real name yet" - so a name read
+# from the player's LinkedIn can adopt the founder seat without overwriting a
+# name the player actually typed.
+DEFAULT_FOUNDER_NAMES = {"", "acolyte", "acolyte's venture", "founder"}
+
+
 def parse_founder(payload: Any) -> Optional[FounderState]:
     if not getattr(payload, "founder_name", None):
         return None
@@ -159,6 +165,13 @@ def remember_for_run(state: CompanyState, kind: str, text: str, payload: Optiona
     run_id = ensure_run_id(state)
     if run_id and "run_id" not in scoped_payload:
         scoped_payload["run_id"] = run_id
+    # Link memories to the founder via the non-PII profile_key (a hash of the
+    # profile URL). The raw URL stays local-only; this key lets a founder's
+    # memories + Foundry IQ doc link to the same person across runs.
+    profile = getattr(state, "founder_profile", None)
+    link_key = getattr(profile, "profile_key", "") if profile else ""
+    if link_key and "profile_key" not in scoped_payload:
+        scoped_payload["profile_key"] = link_key
     return remember(kind, text, scoped_payload)
 
 
@@ -170,33 +183,64 @@ def forge_antagonist(state: CompanyState, *, mission_brief: str = "", target_cus
     opponent with concrete market tension. Logged for replay visibility.
     """
     founder = state.founder or FounderState()
+    # The player's real name (e.g. from their LinkedIn) makes the rival's threat
+    # personal AND is barred from the rival's own name so the villain is never
+    # accidentally named after the player. Cleaned of handle/id artifacts so the
+    # villain never targets "Jordan Rivera 9f8e".
+    founder_name = clean_person_name(founder.name or "")
+    if founder_name.lower() in DEFAULT_FOUNDER_NAMES:
+        founder_name = ""
     antagonist = generate_antagonist(
         founder_archetype=founder.archetype,
         founder_skill=founder.skill,
         mission_brief=mission_brief or state.pitch or "",
         target_customer=target_customer,
+        founder_name=founder_name,
     )
     client = get_foundry_client()
     deployment = model_for("antagonist")
     if client and deployment and is_live():
+        # The founder's blind spot / fear - the rival is built to attack exactly
+        # this, because it is the founder's own shadow ("you if you took the money").
+        gap = analyze_archetype_gap(founder.archetype)
         try:
             resp = create_chat_completion(
                 deployment,
                 [
                     {"role": "system", "content": (
                         "You are the Antagonist Director for a business-building strategy game. "
-                        "Create a memorable rival that pressure-tests the founder's mission. "
-                        "The rival should feel like a company/system with a concrete business model, "
-                        "not a generic villain. Return ONLY JSON with keys: name, threat_type, "
+                        "INVENT the founder's antagonist as their SHADOW - 'you if you'd taken the "
+                        "money'. The rival is the OPPOSITE archetype weaponized by capital: it is "
+                        "strong exactly where the founder is weak, and it attacks the founder's "
+                        "blind spot. Make it feel like a real company/system with a concrete "
+                        "business model, not a cartoon villain. "
+                        "NAMING (this is the showcase - generate, don't template): invent a fresh, "
+                        "evocative rival NAME of 2-4 words that embodies this opposite force and "
+                        "fits the founder's actual market. It must be a coherent organization name, "
+                        "never a random word glued to a noun. NEVER name the rival after the founder "
+                        "or their company, and never reuse the founder's name or brand tokens - the "
+                        "antithesis cannot wear the hero's name. "
+                        "Address the founder by name in `active_operation` and `organization_model` "
+                        "so the threat feels personal. Use ONLY the founder's clean human name as given "
+                        "(never append handle/id fragments, trailing digits, or URL slugs). "
+                        "Keep every field plain in-world business language: NEVER reference internal "
+                        "filenames, playbooks, .md/.json/.yaml files, tool names, or system internals, "
+                        "and avoid political/extremist labels (no 'fascist' etc.) - describe tactics "
+                        "in concrete market terms instead. "
+                        "Return ONLY JSON with keys: name, threat_type, "
                         "threat_description, signature_tactic, strengths (array), strategy, motivation, "
                         "organization_name, organization_model, organization_roles (array), active_operation."
                     )},
                     {"role": "user", "content": (
-                        f"Founder archetype: {founder.archetype}\n"
-                        f"Founder skill: {founder.skill}\n"
+                        f"Founder name: {founder_name or 'unknown'}\n"
+                        f"Founder archetype: {founder.archetype} (superpower: {founder.skill})\n"
+                        f"Founder blind spot: {gap.get('weakness', 'unknown')}\n"
+                        f"Founder's fear / what attacks them: {gap.get('danger', 'unknown')}\n"
+                        f"Rival is the opposite archetype: {antagonist.archetype}\n"
                         f"Mission brief: {(mission_brief or state.pitch or '')[:1200]}\n"
                         f"Target customer: {target_customer or 'unknown'}\n"
-                        f"Deterministic fallback rival: {antagonist.model_dump()}"
+                        f"Deterministic fallback rival (replace its name with a fresh invented one): "
+                        f"{antagonist.model_dump()}"
                     )},
                 ],
                 max_completion_tokens=1800,
@@ -209,7 +253,15 @@ def forge_antagonist(state: CompanyState, *, mission_brief: str = "", target_cus
                 "strengths", "strategy", "motivation", "organization_name",
                 "organization_model", "organization_roles", "active_operation"
             }}
-            if patch.get("name") and patch.get("signature_tactic"):
+            # Guard the antithesis property: if the model named the rival after
+            # the player (their name/brand tokens), drop just the generated name
+            # and keep the clean deterministic one. Everything else still applies.
+            bad_tokens = {t for t in re.split(r"[^a-z0-9]+", (founder_name or "").lower()) if len(t) >= 3}
+            gen_name = str(patch.get("name") or "")
+            if bad_tokens and any(t in gen_name.lower() for t in bad_tokens):
+                patch.pop("name", None)
+                patch.pop("organization_name", None)
+            if patch.get("signature_tactic") and (patch.get("name") or antagonist.name):
                 base = antagonist.model_dump()
                 base.update(patch)
                 antagonist = AntagonistState(**base)
@@ -443,27 +495,6 @@ def end_game_turn(payload: StartTurnRequest):
     _reconcile_loaded_game(state)
     try:
         move = end_player_turn(state, stage_id=payload.stage_id or "")
-        refresh_session_knowledge(state)
-        store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
-        store.save()
-        return {"move": move.model_dump(), "state": _state_dump(state)}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-class ChooseRoomRequest(BaseModel):
-    room_id: str
-
-
-@app.post("/api/game/room/choose")
-def choose_game_room(payload: ChooseRoomRequest):
-    """Choose one of the currently available route rooms."""
-    state = store.load()
-    if not state:
-        raise HTTPException(status_code=400, detail="No active game session.")
-    _reconcile_loaded_game(state)
-    try:
-        move = choose_next_room(state, payload.room_id)
         refresh_session_knowledge(state)
         store.log_event("PLAYER_MOVE", "founder", move.summary, move.model_dump())
         store.save()
@@ -1401,6 +1432,22 @@ def analyze_founder(payload: AnalyzeRequest):
         brief, source, source_ref = pitch, "pitch", pitch
         state.founder_profile = profile_from_payload(
             None, source=source, source_ref=source_ref, pitch=brief, mode=runtime_mode())
+
+    # Adopt the player's real name from their LinkedIn profile so the run
+    # addresses them directly (and the rival can target them by name). The URL
+    # is the identity signal in this game, so the profile name wins UNLESS the
+    # player explicitly typed a founder_name in the payload. Never derived from
+    # a company/mission URL (founder_name_from_url only reads personal profiles).
+    person_name = founder_name_from_url(url) if url else ""
+    if person_name:
+        if state.founder is None:
+            state.founder = FounderState()
+        explicit_name = bool(getattr(payload, "founder_name", None))
+        current = (state.founder.name or "").strip().lower()
+        if not explicit_name or current in DEFAULT_FOUNDER_NAMES:
+            state.founder.name = person_name
+        if state.founder_profile:
+            state.founder_profile.person_name = person_name
 
     blueprint = design_org(brief, source=source, source_ref=source_ref, summary_hint=summary_hint)
     state.org = OrgBlueprint(**blueprint)
@@ -3104,6 +3151,8 @@ def world_council(payload: WorldCouncilRequest):
 class StandupResponseRequest(BaseModel):
     text: str
     stage_id: Optional[str] = None
+    form_data: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None
 
 
 @app.post("/api/world/standup/respond")
@@ -3118,6 +3167,7 @@ def respond_to_standup(payload: StandupResponseRequest):
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Response cannot be empty.")
+    form_data = payload.form_data or {}
     stage = None
     if state.world:
         if payload.stage_id:
@@ -3127,8 +3177,9 @@ def respond_to_standup(payload: StandupResponseRequest):
             stage = next((s for s in state.world.stages if s.id == last_stage_id), None)
 
     mem_entry = remember_for_run(state, "procedural", f"CEO responded to standup: '{text}'", {
-        "source": "standup_response",
+        "source": payload.source or "standup_response",
         "stage_id": getattr(stage, "id", "") or "",
+        "form_data": form_data,
     })
     adapted_ids: List[str] = []
     adapted_preview: Optional[Dict[str, Any]] = None
@@ -3138,6 +3189,8 @@ def respond_to_standup(payload: StandupResponseRequest):
             "option": text,
             "tradeoff": "live standup response",
             "consequence_summary": "CEO standup direction captured for the World Designer.",
+            "custom": bool(form_data),
+            "payload": form_data,
         }]
         worker_report = _worker_field_report(state, stage)
         adapted_ids = adapt_remaining_stages(
@@ -3160,14 +3213,30 @@ def respond_to_standup(payload: StandupResponseRequest):
                 }
     store.log_event("CEO_STANDUP_RESPONSE", "founder", f"CEO responded to standup: {text}", {
         "text": text,
+        "form_data": form_data,
         "memory_injected": mem_entry,
         "stage_id": getattr(stage, "id", "") or "",
         "adapted_stage_ids": adapted_ids,
     })
+    if state.game:
+        state.game.move_log.append(PlayerMove(
+            id=f"move_ceo_{int(time.time() * 1000)}_{len(state.game.move_log) + 1}",
+            turn_index=state.game.turn_index,
+            day_index=state.game.day_index,
+            stage_id=getattr(stage, "id", "") or "",
+            move_type="ceo_command",
+            summary=f"CEO briefed the workforce: {text[:140]}",
+            effects_applied={
+                "text": text,
+                "form_data": form_data,
+                "adapted_stage_ids": adapted_ids,
+                "source": payload.source or "standup_response",
+            },
+        ))
     if adapted_ids:
         store.log_event("WORLD_ADAPTED", "world_designer",
             f"World Designer bent {len(adapted_ids)} pending stage(s) to the live CEO standup response.",
-            {"stage_ids": adapted_ids, "after": getattr(stage, "id", "") or "", "standup_response": text[:160]})
+            {"stage_ids": adapted_ids, "after": getattr(stage, "id", "") or "", "standup_response": text[:160], "form_data": form_data})
     store.save()
     return {
         "status": "success",
@@ -3235,7 +3304,6 @@ def run_next_stage():
     stage.status = "completed" if score >= 80 else "needs-review"
     world.stages[idx] = stage
     state.world = world
-    route_progress = advance_route_after_stage(state, stage.id) if stage.status == "completed" else {"advanced": False}
     levelups = record_stage_encounter(state, stage)
     for ev in levelups:
         store.log_event(
@@ -3283,7 +3351,6 @@ def run_next_stage():
          "memory_injected": invocation.maf_memory,
          "tools_called": invocation.maf_tools_called,
          "tool_trace": invocation.tool_trace,
-         "route_progress": route_progress,
          "inference_usage": {"client": invocation.maf_client or "openai-direct",
                              "fallback_reason": invocation.maf_fallback_reason,
                              "tokens_in": invocation.tokens_in,
@@ -3295,6 +3362,7 @@ def run_next_stage():
     if all(s.status == "completed" for s in world.stages):
         world.status = "completed"
         state.stage = "launched"
+        reconcile_run_status(state)
         store.log_event("WORLD_COMPLETED", "system", "All stages completed! Venture stage: launched.")
 
     refresh_session_knowledge(state)

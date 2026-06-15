@@ -6,7 +6,7 @@ regress while tightening the playable loop:
 1. Analyze -> world design stays one run_id / save-slot scope.
 2. TTS cache helpers are deterministic and reusable.
 3. Long idle economy catch-up is capped and does not trigger surprise layoffs.
-4. Route-room choices have deterministic effects and stay tied to a stage.
+4. Stage execution remains the single stage-advance path and can resolve victory.
 5. Hire/fire receipts keep economics and org state in sync.
 """
 from __future__ import annotations
@@ -46,9 +46,6 @@ def main() -> int:
             raise RuntimeError(f"{path} -> {response.status_code}: {response.text[:500]}")
         return response.json()
 
-    def post_status(path: str, body: dict | None = None) -> int:
-        return client.post(path, json=body or {}).status_code
-
     def get(path: str) -> dict:
         response = client.get(path)
         if response.status_code != 200:
@@ -77,26 +74,18 @@ def main() -> int:
     require(state_payload["org"]["digital_worker_count"] >= 2, "world design did not retain/build an org")
     slots = get("/api/slots")["slots"]
     require(analyze_run_id in {slot["run_id"] for slot in slots}, "active run was not mirrored to slots")
+    for _ in range(2):
+        loaded = post("/api/slots/load", {"run_id": analyze_run_id})
+        require(loaded["state"]["run_id"] == analyze_run_id, "slot load did not restore the requested run")
+        require(len(loaded["state"]["world"]["stages"]) == 8, "slot load dropped designed world stages")
 
     memory = json.loads(Path(os.environ["CAMPAIGN_MEMORY_FILE"]).read_text())
     run_ids = {m.get("payload", {}).get("run_id") for m in memory if m.get("payload", {}).get("run_id")}
     require(run_ids == {analyze_run_id}, f"memory leaked across run scopes: {run_ids}")
 
-    room_ids = state_payload["game"]["available_room_ids"]
-    require(room_ids, "no route rooms available after world design")
-    room = post("/api/game/room/choose", {"room_id": room_ids[-1]})["move"]
-    require(room["effects_applied"].get("room_id") == room_ids[-1], "room choice receipt lost room_id")
-    require(room["stage_id"], "room choice is not tied to a stage")
-    next_room_ids = list(room["effects_applied"].get("next_ids") or [])
-    require(next_room_ids, "chosen room did not expose next route ids")
-    require(
-        post_status("/api/game/room/choose", {"room_id": next_room_ids[0]}) == 400,
-        "route map allowed choosing a future room before the current stage shipped",
-    )
     run_next = post("/api/world/run-next")
-    require(run_next["stage"]["id"] == room["stage_id"], "run-next did not execute the chosen room's stage")
-    unlocked = run_next["state"]["game"]["available_room_ids"]
-    require(unlocked == next_room_ids, f"stage completion did not unlock next route rooms: {unlocked} != {next_room_ids}")
+    require(run_next["stage"]["id"] == state_payload["world"]["stages"][0]["id"], "run-next did not execute the first pending stage")
+    require("route_rooms" not in run_next["state"]["game"], "route rooms leaked into the game payload")
 
     options = get("/api/org/options")["options"]
     require(options and all(o["monthly_cost_usd"] >= 0 for o in options), "hire options missing costs")
@@ -123,7 +112,7 @@ def main() -> int:
     print("OK: system gap smoke passed")
     print(f"  run_id: {analyze_run_id}")
     print(f"  idle skipped: {tick['idle_days_skipped']} in-game days")
-    print(f"  route room: {room['effects_applied'].get('kind')} / {room['stage_id']}")
+    print(f"  first stage shipped: {run_next['stage']['id']}")
     return 0
 
 
