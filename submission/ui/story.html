@@ -314,6 +314,14 @@
             overflow: hidden;
             transition: width 220ms ease, margin-left 220ms ease;
         }
+        /* Short, self-contained panels (the resume splash and the scenario brief
+           card) are NOT tall artifacts - bottom-anchoring them leaves a large
+           void above. Center those vertically so they sit in the middle of the
+           stage. Tall artifacts (MRR chart, org graph) keep flex-end + fill. */
+        #diagram .world-canvas:has(.resume-splash),
+        #diagram .world-canvas.scenario-canvas {
+            align-items: center;
+        }
         /* Keep the world artifact readable when the non-modal speaker card is
            present: the canvas moves into the remaining lane instead of hiding
            underneath the character card. */
@@ -2576,12 +2584,12 @@
         }
         .standup-profile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .standup-tool {
-            display: inline-flex; align-items: center; gap: 7px;
-            border: 1px solid rgba(91,140,255,0.22); border-radius: var(--radius-pill);
-            background: rgba(91,140,255,0.07); padding: 4px 8px; margin: 0 0 10px;
+            display: inline-flex; align-items: center; gap: 8px;
+            border: 1px solid rgba(91,140,255,0.22); border-radius: var(--radius-sm);
+            background: rgba(91,140,255,0.07); padding: 4px 9px; margin: 0 0 10px;
         }
-        .standup-tool code { font-family: var(--font-mono); font-size: 10px; color: var(--blue-soft); }
-        .standup-tool span { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.12em;
+        .standup-tool .st-tool { font-family: var(--font-mono); font-size: 10px; color: var(--blue-soft); letter-spacing: 0.02em; }
+        .standup-tool .st-status { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.12em;
             text-transform: uppercase; color: var(--ink-faint); }
         .standup-handoff { margin-top: 10px; font-family: var(--font-mono); font-size: 9px;
             letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold-soft); }
@@ -4385,7 +4393,7 @@
     </div>
 
     <script src="/game/game/audio.js?v=11"></script>
-    <script type="module" src="/game/game/story.js?v=1269"></script>
+    <script type="module" src="/game/game/story.js?v=1275"></script>
     <script src="/game/game/intro.js?v=30"></script>
 </body>
 </html>

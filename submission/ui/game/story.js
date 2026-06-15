@@ -2572,9 +2572,16 @@ function setWorker(role, deployLabel, stateText, thinking, displayName) {
     // A worker stepping onto the stage clears the core-agent spotlight; the
     // reasoning theater takes over for worker chapters.
     if (!SPOTLIGHT_ROLES.has(role)) hideSpeakerSpotlight();
-    const inspectorRole = gameMasterRoleFromOwner(inspectorOwner);
-    if (inspectorOpen && inspectorRole && inspectorRole === role) openAgentInspector(inspectorOwner);
-    if (workerInspectorOpen && workerInspectorMatchesUpdate(workerInspectorOwner, role, displayName)) openWorkerInspector(workerInspectorOwner);
+    // Auto-refresh the open dossier to track the live speaker - but NOT during a
+    // stand-up. A stand-up fires setActiveWorker every turn (~1s); refreshing the
+    // inspector each time churns/flickers it and fights the player who just
+    // clicked a transcript row to read receipts. The row click owns the inspector
+    // during a stand-up; this passive refresh only runs outside one.
+    if (!stageLayerActive("standup-active")) {
+        const inspectorRole = gameMasterRoleFromOwner(inspectorOwner);
+        if (inspectorOpen && inspectorRole && inspectorRole === role) openAgentInspector(inspectorOwner);
+        if (workerInspectorOpen && workerInspectorMatchesUpdate(workerInspectorOwner, role, displayName)) openWorkerInspector(workerInspectorOwner);
+    }
 }
 
 // --- Active-agent inspector: the gorgeous floating card, on demand ----------
@@ -2666,6 +2673,10 @@ function castPortraitSrc(key) {
 function openAgentInspector(owner) {
     const stage = $("cast-stage");
     if (!stage) return;
+    // Re-open of the SAME agent that is already on screen is a no-op: the
+    // standup's per-turn refresh (setActiveWorker) calls this every turn, and
+    // without this guard it churns/flickers the dossier so it never settles.
+    if (inspectorOpen && inspectorOwner === owner && stage.innerHTML) return;
     setStageLayer("spotlight-active", false);
     // Owner given = the player tapped a specific party card; otherwise inspect
     // whoever is live on stage (the footer mini's front door).
@@ -2761,6 +2772,10 @@ function ensureWorkerInspectorStage() {
 
 function openWorkerInspector(owner) {
     const stage = ensureWorkerInspectorStage();
+    // Re-open of the SAME worker already on screen is a no-op (kills the churn
+    // from the standup's per-turn inspector refresh, which otherwise re-renders
+    // and redirects every turn so the dossier never stabilizes).
+    if (workerInspectorOpen && workerInspectorOwner === owner && stage.innerHTML) return;
     const ownerEvidence = cardEvidence[owner] || workerEvidenceFromState(owner) || liveCardEvidence(owner);
     const member = partyMembers().find((x) => x.name === owner || x.key === owner)
         || { role: (ownerEvidence && ownerEvidence.role) || "strategist", name: owner, key: owner };
@@ -4941,7 +4956,15 @@ function standupToolMarkup(turn) {
     const call = turn && turn.tool_call ? turn.tool_call : {};
     const tool = call.tool || "agent_turn";
     const status = call.status || "completed";
-    return `<div class="standup-tool"><code>${esc(tool)}</code><span>${esc(status)}</span></div>`;
+    // Show a human-readable action name (no raw snake_case) on the chip; the
+    // exact tool id still appears verbatim in the inspector's tools/call trace.
+    return `<div class="standup-tool"><span class="st-tool">${esc(humanizeTool(tool))}</span><span class="st-status">${esc(status)}</span></div>`;
+}
+
+// snake_case tool id -> readable label, e.g. render_org_graph -> "Render org graph".
+function humanizeTool(tool) {
+    const s = String(tool || "").replace(/_/g, " ").trim();
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Agent turn";
 }
 
 // Plain-language verb for the "researching/thinking" live indicator, derived
@@ -5030,7 +5053,7 @@ function standupSourceLabel(turn) {
         return "Foundry MAF";
     }
     if (source === "simulation" || framework.includes("deterministic")) {
-        return "simulation fallback";
+        return "deterministic engine";
     }
     return source || "";
 }
@@ -5090,7 +5113,7 @@ async function renderAgentStandup(standup, opts = {}) {
         setSceneHead("Game Master council", "The world engine ratifies your move",
             `forward motion - ${esc(standup.forward_motion || trigger.summary || "world updated")}`);
     } else {
-        const sourceLabel = standup.source === "foundry" ? "Foundry MAF" : "simulation fallback";
+        const sourceLabel = standup.source === "foundry" ? "Foundry MAF" : "deterministic engine";
         setSceneHead("Agent stand-up", "The party reacts to your call",
             `${sourceLabel} - ${esc(trigger.rule_id || "decision")}`);
     }
@@ -5235,7 +5258,7 @@ async function renderAgentStandup(standup, opts = {}) {
     setStandupStatus(interactive ? "your turn \u2014 respond below" : "round complete");
     const line = standup.next_brief_delta || trigger.summary || "The next worker brief now carries the choice.";
     const selection = (standup.orchestration && standup.orchestration.selection) || STANDUP_SELECTION;
-    const modeLabel = standup.source === "foundry" ? "Foundry MAF" : "simulation fallback";
+    const modeLabel = standup.source === "foundry" ? "Foundry MAF" : "deterministic engine";
     lens("reasoning", `Agent group chat: ${turns.length} workforce turns, ${selection} selection, ${modeLabel}, reacted to ${trigger.rule_id || "the CEO decision"}`);
     if (!isGameMasterStandup && allTurns.length !== turns.length) {
         lens("reliability", "Game Master and rival updates tracked outside the workforce stand-up; the team room only shows worker voices");
@@ -5329,6 +5352,7 @@ async function renderAgentStandup(standup, opts = {}) {
                 skipBtn.disabled = true;
                 inputEl.disabled = true;
                 if (statusEl) statusEl.textContent = "Sending response to worker memory...";
+                setStandupStatus("processing your response\u2026");
                 if (A.uiPress) { try { A.uiPress(); } catch (_) {} }
 
                 try {
@@ -5339,16 +5363,22 @@ async function renderAgentStandup(standup, opts = {}) {
                         setResourcesFromEconomics(responseState.state.economics, responseState.state.org || state.org);
                         if (responseState.state.org) setOrgPanel(responseState.state.org);
                     }
-                    if ((responseState.adapted_stage_ids || []).length) {
-                        lens("reasoning", `World Designer adapted ${responseState.adapted_stage_ids.length} pending stage(s) from your live stand-up response`);
+                    const adaptedCount = (responseState.adapted_stage_ids || []).length;
+                    if (adaptedCount) {
+                        lens("reasoning", `World Designer adapted ${adaptedCount} pending stage(s) from your live stand-up response`);
                     }
 
-                    // 2. Transform the input card into static message
+                    // 2. Transform the input card into static message - name what
+                    // the response actually did (saved to memory, stages adapted)
+                    // so the player sees their input changed the run, not a void.
+                    const appliedLine = adaptedCount
+                        ? `saved to memory \u00b7 World Designer re-planned ${adaptedCount} upcoming stage${adaptedCount > 1 ? "s" : ""}`
+                        : `saved to memory \u00b7 the workforce is folding it into the next brief`;
                     fsCard.innerHTML = `<div class="council-top">`
                         + `<img class="council-face" src="${state.founderAvatar || "/game/assets/generated/narrator.png"}" alt="" onerror="this.style.display='none'" />`
                         + `<div><div class="council-name">${esc(state.founderName || "CEO")} (You)</div><div class="council-role">Human Operator</div></div></div>`
                         + `<div class="council-says" style="margin-top: 10px; font-style: italic; color: var(--ink-dim);">&ldquo;${esc(val)}&rdquo;</div>`
-                        + `<div class="standup-handoff" style="color: var(--good-soft); margin-top: 8px;">response registered in memory ledger</div>`;
+                        + `<div class="standup-handoff" style="color: var(--good-soft); margin-top: 8px;">\u2713 ${esc(appliedLine)}</div>`;
 
                     // Add user turn to history
                     const userTurn = {
