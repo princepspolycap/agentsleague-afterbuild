@@ -117,33 +117,43 @@
             im.src = IMG_BASE + name;
             // Probe for motion clips alongside the still. `<scene>.voiced.mp4`
             // (Gemini Omni / Veo 3.1 with native narration) wins over the
-            // silent `<scene>.mp4`; either is fetched whole so playback never
-            // buffers mid-scene. A 404 just means this scene stays a still.
-            // While the probe is in flight the scene HOLDS (no baked dwell
-            // timer) so a slow fetch can never cut a clip short.
+            // silent `<scene>.mp4`. The clip is STREAMED via the <video>
+            // element's native src (HTTP range requests / 206 Partial Content),
+            // so the first frames paint within ~1s instead of waiting for the
+            // whole file (the assembled film is ~52MB - a blocking blob download
+            // took ~60s on a normal uplink, so the video never appeared before
+            // the scene advanced and only the baked audio was heard). Here we
+            // only do a tiny existence probe (1-byte range); a 404 just means
+            // this scene stays a still. While the probe is in flight the scene
+            // HOLDS (no baked dwell timer) so a slow probe can never cut it short.
             const base = name.replace(/\.png$/, "");
+            const voicedUrl = VID_BASE + base + ".voiced.mp4";
+            const silentUrl = VID_BASE + base + ".mp4";
+            const exists = (url) => fetch(url, { method: "GET", headers: { Range: "bytes=0-1" } })
+                .then((r) => (r.ok || r.status === 206)
+                    && /video/.test(r.headers.get("content-type") || "video/mp4"))
+                .catch(() => false);
             probing[name] = true;
-            fetch(VID_BASE + base + ".voiced.mp4")
-                .then((r) => (r.ok ? r.blob() : null))
-                .then((blob) => {
-                    if (blob && /video/.test(blob.type || "video/mp4")) {
-                        loadedVids[name] = URL.createObjectURL(blob);
+            exists(voicedUrl)
+                .then((ok) => {
+                    if (ok) {
+                        loadedVids[name] = voicedUrl; // stream, don't buffer-whole
                         voicedVids[name] = true;
-                        // If this scene is already on screen (it raced ahead
-                        // of the fetch and started its baked take), re-present
-                        // it: render() swaps in the clip, enters film-mode and
-                        // hands pacing to the clip's own voice (stopSpeaking
-                        // kills the baked take so the voices never overlap).
+                        // If this scene is already on screen (it raced ahead of
+                        // the probe and started its baked take), re-present it:
+                        // render() swaps in the clip, enters film-mode and hands
+                        // pacing to the clip's own voice (stopSpeaking kills the
+                        // baked take so the voices never overlap).
                         if (!done && started && index >= 0 && cards[index] && cards[index].img === name) {
                             render(index);
                         }
-                        return null;
+                        return false;
                     }
-                    return fetch(VID_BASE + base + ".mp4").then((r) => (r.ok ? r.blob() : null));
+                    return exists(silentUrl);
                 })
-                .then((blob) => {
-                    if (!blob || !/video/.test(blob.type || "video/mp4") || loadedVids[name]) return;
-                    loadedVids[name] = URL.createObjectURL(blob);
+                .then((ok) => {
+                    if (!ok || loadedVids[name]) return;
+                    loadedVids[name] = silentUrl; // stream the silent clip too
                     // Upgrade the scene live if it is currently showing.
                     if (!done && index >= 0 && cards[index] && cards[index].img === name) {
                         setBackdrop(name, bgFront ? bgFront.classList.contains("dimmed") : false);
@@ -171,6 +181,7 @@
         if (!v) {
             v = document.createElement("video");
             v.muted = true; v.loop = true; v.playsInline = true;
+            v.preload = "auto"; // stream + buffer ahead (src is a range-served URL)
             v.setAttribute("muted", ""); v.setAttribute("playsinline", "");
             layer.appendChild(v);
         }
@@ -209,9 +220,14 @@
             if (voiced) vid.removeAttribute("muted"); else vid.setAttribute("muted", "");
             incoming.style.backgroundImage = loadedImgs[name]
                 ? "url('" + IMG_BASE + name + "')" : ""; // poster behind the clip
-            if (vid.src !== clip) {
+            // clip is now a streaming path URL; vid.src resolves to absolute,
+            // so compare against the resolved form. Only (re)assign when it
+            // actually changes - re-renders of the SAME scene must not reload
+            // and restart a clip that is already streaming.
+            const resolved = (() => { try { return new URL(clip, location.href).href; } catch (e) { return clip; } })();
+            if (vid.src !== resolved) {
                 vid.src = clip; // fresh load starts at 0 - do not touch currentTime
-            } else {
+            } else if (vid.paused && (vid.ended || vid.currentTime === 0)) {
                 try { vid.currentTime = 0; } catch (e) { /* ok */ }
             }
             vid.style.display = "";
