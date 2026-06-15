@@ -102,13 +102,31 @@ if ! az acr show -n "${ACR_NAME}" -g "${RESOURCE_GROUP}" --only-show-errors 1>/d
     --admin-enabled true --only-show-errors 1>/dev/null
 fi
 
-echo "==> Building image remotely in ACR (no local Docker needed)"
-az acr build \
-  --registry "${ACR_NAME}" \
-  --image "${IMAGE_REPO}:${IMAGE_TAG}" \
-  --file "${SUBMISSION_DIR}/Dockerfile" \
-  "${SUBMISSION_DIR}" \
-  --only-show-errors 1>/dev/null
+# Build the image in ACR. By default this uploads the local build context, which
+# can time out on slow uplinks. Set SKIP_ACR_BUILD=1 to reuse an image that was
+# already built/pushed to the registry (e.g. via a git-context `az acr build`).
+# Optionally point ACR_GIT_CONTEXT at a public git URL (e.g.
+# "https://github.com/owner/repo.git#main:submission") to have ACR clone and
+# build server-side with no local upload at all.
+if [[ "${SKIP_ACR_BUILD:-0}" == "1" ]]; then
+  echo "==> SKIP_ACR_BUILD=1: reusing pre-built image ${IMAGE_REPO}:${IMAGE_TAG}"
+elif [[ -n "${ACR_GIT_CONTEXT:-}" ]]; then
+  echo "==> Building image in ACR from git context (no local upload)"
+  az acr build \
+    --registry "${ACR_NAME}" \
+    --image "${IMAGE_REPO}:${IMAGE_TAG}" \
+    --file Dockerfile \
+    "${ACR_GIT_CONTEXT}" \
+    --only-show-errors 1>/dev/null
+else
+  echo "==> Building image remotely in ACR (uploads local context)"
+  az acr build \
+    --registry "${ACR_NAME}" \
+    --image "${IMAGE_REPO}:${IMAGE_TAG}" \
+    --file "${SUBMISSION_DIR}/Dockerfile" \
+    "${SUBMISSION_DIR}" \
+    --only-show-errors 1>/dev/null
+fi
 IMAGE="${ACR_NAME}.azurecr.io/${IMAGE_REPO}:${IMAGE_TAG}"
 
 echo "==> Container Apps environment"

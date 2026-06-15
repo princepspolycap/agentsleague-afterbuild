@@ -49,13 +49,17 @@ Dockerfile
 # --- Locally generated art that is gitignored / not redistributable ---
 ui/assets/local/
 
-# --- Local-only narration/lore VIDEO (~240M, all gitignored). A fresh clone
+# --- Local-only narration/lore VIDEO (~240M, mostly gitignored). A fresh clone
 #     never has these; the intro UI fetch-probes each clip and falls back to the
-#     tracked PNG still on 404, so excluding them keeps the image lean and makes
-#     the deployed app match the open-source clone experience. Tracked .mp3
-#     narration and .png stills are intentionally kept. ---
+#     tracked PNG still on 404, so excluding them keeps the image lean. The ONE
+#     exception is the tracked intro film (film.voiced.mp4, ~52M, committed to
+#     git) which the opening scene plays full-bleed - it must ship in the image
+#     so the deployed app opens with the film, not the poster fallback. Tracked
+#     .mp3 narration and .png stills are intentionally kept too. ---
 ui/assets/generated/**/*.mp4
-ui/assets/generated/lore/video/
+ui/assets/generated/lore/video/*
+# Keep the one committed intro film so the deployed app plays it.
+!ui/assets/generated/lore/video/film.voiced.mp4
 
 # --- Unused alternate art (the server serves only the top-level
 #     generated/*.png set via _ROLE_PORTRAIT; these dirs are superseded /
