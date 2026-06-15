@@ -18,6 +18,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function classifyProfileUrl(url) {
     const u = String(url || "").trim();
     if (!u) return { kind: "mission", host: "", label: "Mission described" };
+    // Prose (has a space) or a bare word with no dotted host is a described
+    // mission, not a profile URL - label it as such so the founder sees we will
+    // build from their words, not try to scrape a non-page.
+    const urlish = /^https?:\/\//i.test(u)
+        || (!/\s/.test(u) && /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(u));
+    if (!urlish) return { kind: "mission", host: "", label: "Mission described" };
     let host = "";
     try { host = new URL(u.includes("://") ? u : "https://" + u).hostname.replace(/^www\./, ""); }
     catch (_) { host = u.replace(/^https?:\/\//, "").split("/")[0]; }
@@ -37,6 +43,7 @@ const STAGE_DEFS = [
     { tag: "Minting", key: "mint" },
     { tag: "Assembling", key: "assemble" },
     { tag: "Forging", key: "antagonist" },
+    { tag: "Mapping", key: "world" },
 ];
 
 // Build the console DOM inside `mount`, returning the stage row elements.
@@ -199,6 +206,20 @@ function runPreflightConsole({ url, pitch, mount, cached }) {
             }
             rejectDone(new Error(message || "preflight failed"));
             return done.catch(() => {});
+        },
+        async worldStart(message) {
+            const row = byKey("world");
+            if (!row || failed) return;
+            await playStage(row, message || "World Designer mapping your venture", { hold: true, mono: true, ms: stageMs });
+        },
+        async worldComplete(worldRes, cachedWorld) {
+            const row = byKey("world");
+            if (!row || failed) return;
+            const stages = (((worldRes || {}).state || {}).world || {}).stages || [];
+            const first = stages[0] || {};
+            const prefix = cachedWorld ? "World map reused" : "World Designer mapped";
+            await scramble(rowText(row), `${prefix}: ${stages.length || 8} stages${first.title ? " - " + first.title : ""}`, { duration: stageMs });
+            lockStage(row, true);
         },
     };
 }

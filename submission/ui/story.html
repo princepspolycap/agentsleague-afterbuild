@@ -64,7 +64,12 @@
             --footer-top: 64px;    /* actual measured footer top edge; set by story.js */
             --party-overlap: 70px; /* px of each worker card tucked behind footer */
             --hand-bottom: 70px;
-            --hand-card-h: 236px;
+            /* Worker-card height = the single source for the hand's footprint AND
+               the lower-band reserve below. Keep it just tall enough to hug the
+               front-face content (badge -> photo -> name -> metric -> econ ->
+               beat line); the back-face dossier scrolls, so it never needs the
+               extra height. The responsive tiers shrink this further. */
+            --hand-card-h: 208px;
             --dialogue-bottom: calc(var(--hand-bottom) + var(--hand-card-h) + 22px);
             /* Measured narration-caption height (story.js); the reserve grows
                to clear a tall multi-line caption. Default covers ~2 lines. */
@@ -175,8 +180,11 @@
            carry no .world-canvas and hide the party rail, so the centered+clipped
            flow cut them off at top and bottom. Give those the full stage as a
            top-aligned scroll column, so the whole card is reachable - never
-           clipped under the footer. The org-chart canvas keeps its centered flow. */
-        #scene:not(:has(#diagram .world-canvas)) #diagram {
+           clipped under the footer. The org-chart canvas keeps its centered flow.
+           The prestart onboarding card (.first-step) is short and must stay
+           vertically centered, so it is excluded here and uses the base centered
+           #diagram layout instead. */
+        #scene:not(:has(#diagram .world-canvas)):not(:has(#diagram .first-step)) #diagram {
             flex-direction: column;
             align-items: center;
             justify-content: flex-start;
@@ -184,7 +192,7 @@
             overflow-x: hidden;
             padding-block: 6px 18px;
         }
-        #scene:not(:has(#diagram .world-canvas)) #diagram::-webkit-scrollbar { display: none; }
+        #scene:not(:has(#diagram .world-canvas)):not(:has(#diagram .first-step)) #diagram::-webkit-scrollbar { display: none; }
         .world-canvas {
             width: min(1040px, 100%);
             /* Definite height (not just max-height) so the artifact SVG inside
@@ -195,8 +203,15 @@
             min-height: 0;
             max-height: 100%;
             display: flex;
-            align-items: center;
+            /* Anchor canvas content to the LOWER edge of its box so short panels
+               (resume splash, a small org chart) sit just above the party hand
+               instead of floating centered with an awkward void between them and
+               the worker stack. Tall artifacts still fill the box and stay
+               height-bounded by the #diagram .world-canvas svg rule, so this only
+               removes wasted space - it never pushes a tall chart off-screen. */
+            align-items: flex-end;
             justify-content: center;
+            padding-bottom: 6px;
             position: relative;
             isolation: isolate;
             overflow: hidden;
@@ -734,6 +749,9 @@
         }
         .cc-ready-arch, .cc-ready-stat { font-size: 12.5px; color: var(--ink-dim); }
         .cc-ready-arch b, .cc-ready-stat b { color: var(--gold-soft, #f5c87a); }
+        .cc-ready-world { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--ink-dim); }
+        .cc-ready-world b { color: var(--blue-soft, #bcd2ff); }
+        .cc-ready-world span { overflow-wrap: anywhere; }
         .cc-ready-rival { font-size: 12.5px; color: var(--ink-dim); }
         .cc-ready-rival b { color: var(--bad, #f87171); }
         .cc-reused {
@@ -1373,7 +1391,12 @@
         }
         .party-agent:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; border-radius: 14px; }
         .party-badge {
-            margin-top: auto; padding-top: 8px;
+            /* Follow the content (small fixed gap) instead of being pushed to the
+               card's bottom by margin-top:auto - that auto-gap was the mid-card
+               dead space that made short cards look half-empty. The card height
+               (--hand-card-h) is now sized to hug this stack, so the badge sits
+               right under the beat line. */
+            margin-top: 7px; padding-top: 8px;
             font-family: var(--font-mono); font-size: 8px;
             letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold-soft);
             opacity: 0.85;
@@ -2220,6 +2243,18 @@
         body:has(.standup-log) #player-command,
         body:has(.standup-log) #player-command-status { display: none !important; }
 
+        /* Announcement takeover: while a world-master (Game Master) makes an
+           announcement, the entire footer glides off the bottom of the screen
+           so the announcement and world canvas own the full lower band. It
+           glides back the instant the announcement ends (hideSpeakerSpotlight
+           clears the class). The footer's base transition handles the return. */
+        body.announce-cover footer {
+            transform: translateY(118%);
+            opacity: 0;
+            pointer-events: none;
+            transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1), opacity 360ms ease;
+        }
+
         /* Inline message media: an image or a Mermaid diagram inside a turn.
            Both are height-bounded so a tall image or diagram can never blow up
            the transcript layout - oversized media is cropped / scrolls. */
@@ -2614,7 +2649,7 @@
         .diag-payload-wrap { margin-top: 5px; }
         .diag-payload-toggle {
             font-size: 10px; color: var(--ink-faint); cursor: pointer;
-            font-family: var(--font-mono); user-select: none; list-style: none; padding: 0;
+            font-family: var(--font-mono); -webkit-user-select: none; user-select: none; list-style: none; padding: 0;
         }
         .diag-payload-toggle:hover { color: var(--blue-soft); }
         .diag-payload-toggle::marker { display: none; }
@@ -3849,7 +3884,7 @@
     </div>
 
     <script src="/game/game/audio.js?v=11"></script>
-    <script type="module" src="/game/game/story.js?v=239"></script>
+    <script type="module" src="/game/game/story.js?v=241"></script>
     <script src="/game/game/intro.js?v=30"></script>
 </body>
 </html>

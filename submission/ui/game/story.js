@@ -9,7 +9,7 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.mi
 import { T, ROLE_COLOR, mermaidThemeVariables } from "./tokens.js";
 import { toggleCollapsible } from "./motion.js";
 import { scramble, idleGlitch, loopScramble, prefersReduced } from "./anim.js";
-import { runPreflightConsole, classifyProfileUrl } from "./preflight.js?v=2";
+import { runPreflightConsole, classifyProfileUrl } from "./preflight.js?v=4";
 
 mermaid.initialize({
     startOnLoad: false,
@@ -2979,6 +2979,10 @@ function showSpeakerSpotlight(role, displayName, opts = {}) {
     // reads as a deliberate announcement to the player, not a worker aside.
     // Workers / the rival (rare on this spotlight) keep the role-colored frame.
     const agentClass = agentClassForRole(role);
+    // A world-master (Game Master) announcement owns the screen: slide the whole
+    // footer off the bottom so the announcement + world canvas get the full
+    // lower band. Worker reports and rival beats keep the footer in place.
+    document.body.classList.toggle("announce-cover", agentClass === "gm");
     let announce = "";
     let stageClass = "speaking show";
     let cardClass = "cast-card worker";
@@ -3042,6 +3046,7 @@ function hideSpeakerSpotlight() {
     stage.className = "";
     stage.innerHTML = "";
     setStageLayer("spotlight-active", false);
+    document.body.classList.remove("announce-cover"); // glide the footer back
     spotlightRole = null;
     spotlightName = null;
 }
@@ -4024,8 +4029,20 @@ function setHud(s) {
 // DOM -> state mapping so both the preflight gate and direct callers agree.
 function readFounderInputsFromForm() {
     state.company = ($("in-company") && $("in-company").value.trim()) || DEFAULT_COMPANY;
-    state.pitch = ($("in-pitch") && $("in-pitch").value.trim()) || "";
-    state.url = ($("in-url") && $("in-url").value || "").trim();
+    // The onboarding has a single signal field. Route it by content: only a
+    // real URL becomes state.url (which the server then scrapes/OSINTs). Free
+    // prose ("Solar microgrids for rural clinics") is a mission pitch, not a
+    // URL - sending it as a URL makes the server try to scrape a non-page and
+    // degrade. So prose goes to state.pitch and skips parsing entirely.
+    const rawSignal = ($("in-url") && $("in-url").value || "").trim();
+    const typedPitch = ($("in-pitch") && $("in-pitch").value.trim()) || "";
+    if (rawSignal && looksLikeUrlish(rawSignal)) {
+        state.url = rawSignal;
+        state.pitch = typedPitch;
+    } else {
+        state.url = "";
+        state.pitch = rawSignal || typedPitch;
+    }
     // No silent default-mission fallback. Gathering the founder's own signal -
     // a public profile to scrape/OSINT, or a mission they actually wrote - is a
     // core game dynamic, enforced at the gate by hasRealSignal().
@@ -4051,6 +4068,17 @@ function readFounderInputsFromForm() {
 
 function looksLikeProfileUrl(value) {
     return /^https?:\/\//i.test((value || "").trim());
+}
+
+// Is this signal a URL we should scrape, or prose we should treat as a mission?
+// A URL has no spaces and is either explicitly schemed (https://...) or a bare
+// host with a dotted TLD (linkedin.com/in/jane, jane.dev). Anything with a
+// space - a sentence describing a mission - is a pitch, never a URL.
+function looksLikeUrlish(value) {
+    const v = String(value || "").trim();
+    if (!v || /\s/.test(v)) return false;
+    if (/^https?:\/\//i.test(v)) return true;
+    return /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(v);
 }
 
 function founderSignalFromSavedState(savedState) {
@@ -4205,6 +4233,63 @@ function worldReusePut(sig, res) {
     _worldReuse = { sig: sig, res: res, ts: Date.now() };
 }
 
+function worldDesignPayload() {
+    return {
+        pitch: state.pitch,
+        company_name: state.company,
+        founder_name: state.founderName,
+        founder_archetype: state.archetype ? state.archetype.name : "Builder",
+        founder_skill: state.archetype ? state.archetype.skill : ARCHETYPE_SKILL.Builder,
+        founder_locale: state.founderLocale,
+        founder_voice_stack: state.founderVoiceStack,
+        founder_voice: state.founderVoice,
+        founder_avatar: state.founderAvatar
+    };
+}
+
+function adoptAnalyzeResult(ares, { renderHud = true } = {}) {
+    const org = (ares && ares.org) || (ares && ares.state && ares.state.org) || null;
+    const profile = (ares && ares.profile) || (ares && ares.state && ares.state.founder_profile) || null;
+    if (!state.manualArchetype && profile && profile.founder_archetype) {
+        setInferredArchetype(profile.founder_archetype, profile.founder_skill);
+        const inferredName = founderNameFromProfileUrl(state.url);
+        if (inferredName && inferredName !== "Founder") state.founderName = inferredName;
+    } else if (!state.archetype) {
+        setInferredArchetype("Builder", ARCHETYPE_SKILL.Builder);
+    }
+    if (org) state.org = org;
+    if (ares && ares.state) {
+        syncLatestState(ares.state);
+        if (renderHud) {
+            setResourcesFromEconomics(ares.state.economics, org || state.org);
+            setHud(ares.state);
+        }
+    } else if (renderHud && org) {
+        setResourcesFromOrg(org);
+    }
+    if (!state.pitch && org) state.pitch = org.company_summary || ares.brief || "";
+    if (!state.company || state.company === DEFAULT_COMPANY) {
+        state.company = ventureNameFromProfile(profile, state.founderName);
+    }
+    return { org, profile };
+}
+
+function preparedWorldFromResult(res) {
+    const world = res && res.state && res.state.world ? res.state.world : null;
+    const stages = world && Array.isArray(world.stages) ? world.stages : [];
+    return { world, stages, first: stages[0] || null };
+}
+
+function preparedWorldLine(worldRes) {
+    const prepared = preparedWorldFromResult(worldRes);
+    if (!prepared.stages.length) return "";
+    const first = prepared.first || {};
+    const owner = first.assigned_worker_title || ROLE_NAME[first.owner_role] || first.owner_role || "your first worker";
+    const title = first.title || "opening move";
+    return `<div class="cc-ready-world"><b>${prepared.stages.length}-stage world prepared</b>`
+        + `<span>Opening room: ${esc(title)}${owner ? ` &middot; ${esc(owner)}` : ""}</span></div>`;
+}
+
 // Preflight gate: the first "Begin" press. We do not start the run until we have
 // actually gone and fetched the information the form asked for - scrape the
 // public profile, reason about it, and show the founder what we gathered. Only
@@ -4251,7 +4336,22 @@ async function gatherAndReady() {
     try {
         ares = await fetchP;
         if (!reused) analyzeReusePut(sig, ares);
-        await consoleCtl.complete(ares);
+        adoptAnalyzeResult(ares, { renderHud: false });
+        const consoleDone = consoleCtl.complete(ares);
+        const worldSig = worldDesignSignature();
+        const cachedWorld = worldReuseGet(worldSig);
+        const worldP = cachedWorld
+            ? Promise.resolve(cachedWorld)
+            : api("/api/world/design", worldDesignPayload()).then((res) => {
+                worldReusePut(worldSig, res);
+                return res;
+            });
+        await consoleDone;
+        await consoleCtl.worldStart(cachedWorld ? "World map ready" : "World Designer mapping your venture");
+        const worldRes = await worldP;
+        if (worldRes && worldRes.state) syncLatestState(worldRes.state);
+        await consoleCtl.worldComplete(worldRes, !!cachedWorld);
+        state.preflight = { ares: ares, profile: ares.profile || null, worldRes: worldRes };
     } catch (e) {
         try { await consoleCtl.fail("Could not gather the profile"); } catch (_) {}
         await sleep(900);
@@ -4268,15 +4368,11 @@ async function gatherAndReady() {
     }
     if (A.chime) { try { A.chime(); } catch (_) {} }
 
-    // Stash the fetched result so beginStory consumes it instead of re-scraping.
+    // Stash the fetched result so beginStory consumes it instead of re-scraping
+    // or re-designing the world graph. The first Begin now establishes the run;
+    // the second Begin presents what is already prepared.
     mount.remove();
-    state.preflight = { ares: ares, profile: ares.profile || null };
-    // Ground the world title in the scraped founder now, so the ready card and
-    // the run both speak the real venture instead of the generic placeholder.
-    if (!state.company || state.company === DEFAULT_COMPANY) {
-        state.company = ventureNameFromProfile(ares.profile, state.founderName);
-    }
-    renderReadyCard(ares, { reused: !!reused });
+    renderReadyCard(ares, { reused: !!reused, worldRes: state.preflight && state.preflight.worldRes });
 }
 
 // The "ready" confirmation: shows what the preflight gathered and offers the
@@ -4292,9 +4388,10 @@ function renderReadyCard(ares, opts) {
     if (adv) adv.setAttribute("hidden", "");
     if (toggle) toggle.classList.add("is-hidden");
 
-    const org = ares.org || {};
+    const preparedState = opts && opts.worldRes && opts.worldRes.state ? opts.worldRes.state : (ares.state || {});
+    const org = preparedState.org || ares.org || {};
     const profile = ares.profile || null;
-    const ant = ares.antagonist || null;
+    const ant = preparedState.antagonist || ares.antagonist || null;
     const host = profile && profile.host ? profile.host : "";
     const signals = (profile && profile.signals) || [];
     const arch = (profile && profile.founder_archetype) || (state.archetype && state.archetype.name) || "Builder";
@@ -4316,8 +4413,9 @@ function renderReadyCard(ares, opts) {
     const leverLine = dw !== ""
         ? `<div class="cc-ready-stat"><b>${esc(dw)}</b> digital workers behind one human${lev !== "" ? ` &middot; <b>${esc(lev)}x</b> leverage` : ""}</div>`
         : "";
+    const worldLine = preparedWorldLine(opts && opts.worldRes);
     const rivalLine = ant && ant.name
-        ? `<div class="cc-ready-rival">Rival forged: <b>${esc(ant.name)}</b>${ant.threat_type ? ` &middot; ${esc(ant.threat_type)} threat` : ""}</div>`
+        ? `<div class="cc-ready-rival">Rival pressure: <b>${esc(ant.name)}</b>${ant.threat_type ? ` &middot; ${esc(ant.threat_type)}` : ""}</div>`
         : "";
 
     let ready = card.querySelector(".cc-ready");
@@ -4331,6 +4429,7 @@ function renderReadyCard(ares, opts) {
         + (chips ? `<div class="cc-chips">${chips}</div>` : "")
         + idLine
         + leverLine
+        + worldLine
         + rivalLine
         + `<button id="confirm-begin" class="cta">Begin the run &rarr;</button>`
         + `<button id="edit-details" type="button" class="cc-back">&larr; Edit details</button>`;
@@ -4476,14 +4575,14 @@ async function beginStory() {
     setWorker(
         fromUrl ? "narrator" : "orgdesigner",
         fromUrl ? "profile analyst + STRATEGIST_MODEL (Foundry)" : "STRATEGIST_MODEL (Foundry)",
-        preflightDone ? "Profile locked" : (fromUrl ? "Reading the public profile" : "Designing the org"),
+        preflightDone ? "World prepared" : (fromUrl ? "Reading the public profile" : "Designing the org"),
         true,
         fromUrl ? "Profile Analyst" : undefined
     );
     if (A.thinkingStart) A.thinkingStart();
     setSceneHead("Beat 1", fromUrl ? "Reading the founder signal, then the org" : "The org this mission needs");
     await narrate(preflightDone
-        ? "Your founder signal is already locked. The world is being assembled now."
+        ? "Your founder signal, worker party, rival pressure, and world map are already prepared. First, see the charter your agents built from it."
         : (fromUrl
             ? "Point this at a LinkedIn or public profile URL. First a guarded scraper reads the public signal it can access. Then a Profile Analyst reasons about the founder's operating posture before the Org Designer proposes the digital workforce around it."
             : (state.fromFilm
@@ -4498,19 +4597,10 @@ async function beginStory() {
         const ares = state.preflight
             ? state.preflight.ares
             : await api("/api/founder/analyze", analyzePayload());
-        org = ares.org;
-        profile = ares.profile || null;
-        if (!state.manualArchetype && profile && profile.founder_archetype) {
-            setInferredArchetype(profile.founder_archetype, profile.founder_skill);
-            const inferredName = founderNameFromProfileUrl(state.url);
-            if (inferredName && inferredName !== "Founder") state.founderName = inferredName;
-        } else if (!state.archetype) {
-            setInferredArchetype("Builder", ARCHETYPE_SKILL.Builder);
-        }
-        state.org = org;
-        setResourcesFromEconomics(ares.state && ares.state.economics, org);
-        setHud(ares.state);
-        if (!state.pitch) state.pitch = org.company_summary || ares.brief || "";
+        const adopted = adoptAnalyzeResult(ares);
+        org = adopted.org;
+        profile = adopted.profile;
+        if (!org) throw new Error("Org Designer returned no org blueprint.");
         // Cold-start (intro film) path skips the preflight gate, so the world
         // title may still be the placeholder here - ground it in the scraped
         // founder and re-title the scene so the run speaks the real venture.
@@ -4565,21 +4655,16 @@ async function beginStory() {
     let res;
     const worldSig = worldDesignSignature();
     try {
-        // World design mutates authoritative server state (world stages, game
-        // run, replay log). Do not satisfy it from the client cache, or reloads
-        // lose the run even though the browser painted a world.
-        res = await api("/api/world/design", {
-                pitch: state.pitch,
-                company_name: state.company,
-                founder_name: state.founderName,
-                founder_archetype: state.archetype ? state.archetype.name : "Builder",
-                founder_skill: state.archetype ? state.archetype.skill : ARCHETYPE_SKILL.Builder,
-                founder_locale: state.founderLocale,
-                founder_voice_stack: state.founderVoiceStack,
-                founder_voice: state.founderVoice,
-                founder_avatar: state.founderAvatar
-            });
-        worldReusePut(worldSig, res);
+        // The normal onboarding path already designed and persisted the world
+        // during preflight so the ready card can preview the real first room.
+        // Cold-start/scripted paths still design here.
+        res = state.preflight && state.preflight.worldRes
+            ? state.preflight.worldRes
+            : worldReuseGet(worldSig);
+        if (!res) {
+            res = await api("/api/world/design", worldDesignPayload());
+            worldReusePut(worldSig, res);
+        }
     } catch (e) {
         if (A.thinkingStop) A.thinkingStop();
         $("hint").textContent = "Design failed";
@@ -5721,6 +5806,15 @@ function updateCommandControls() {
     }
 
     const ready = state.phase === "ready" && hasWorld && !hasPendingReward && state.idx < state.stages.length;
+    // The footer must be reachable the instant it is the player's turn. The
+    // Game Master announcement slides the whole footer off-screen (announce-
+    // cover); a lingering announcement after the founding cinematic would
+    // strand the command line. So the moment any playable footer state is live
+    // - the command line, a pending reward draft, or the card hand - dismiss the
+    // announcement so the footer glides back. The footer tracks the game loop.
+    if (document.body.classList.contains("announce-cover") && (ready || hasPendingReward)) {
+        hideSpeakerSpotlight();
+    }
     // The command line is the CEO's one verb: brief the next worker. Show it
     // only when that is actually the move. In every other loop beat - a worker
     // is reasoning, a reward draft is open, the run is loading or over - a
