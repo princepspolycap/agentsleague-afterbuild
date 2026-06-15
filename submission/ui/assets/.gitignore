@@ -16,6 +16,9 @@ local/
 !generated/CREDITS.md
 !generated/lore/
 !generated/lore/*.png
+# Lore background stills (MAI-generated, ours under MIT) ship too, so the
+# onboarding first-step screen has its art on a fresh clone.
+!generated/lore/*.jpg
 # Baked narration takes (tools/generate_narration.py) ship committed - the
 # directed cinematic voice is the baseline every fork hears, no keys needed.
 !generated/lore/narration/
