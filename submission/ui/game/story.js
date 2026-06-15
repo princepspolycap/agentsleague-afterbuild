@@ -3804,8 +3804,20 @@ function ensureEconClock() {
         if (snap.org) state.org = snap.org;
         if (snap.game) state.game = snap.game;
         setEconHud(state.org);
-        reactToWorkforceContraction(snap.org);
-        reactToRivalEscalation(snap.game);
+        // The world-reaction beats (layoff, rival escalation) hijack the scene
+        // head + narrator. If a takeover layer owns the stage - a stand-up
+        // transcript mid-playback, an open inspector, a dilemma gate - firing
+        // them now contradicts what's on screen (e.g. "Discovery Analyst laid
+        // off" while that same worker is still typing its stand-up line). Keep
+        // the workforce rail/HUD in lockstep silently and DEFER the beats: the
+        // unchanged _last* trackers mean the next poll after the takeover ends
+        // still detects the drop and plays the beat then.
+        if (takeoverLayerActive()) {
+            if (snap.org) setOrgPanel(snap.org);
+        } else {
+            reactToWorkforceContraction(snap.org);
+            reactToRivalEscalation(snap.game);
+        }
         const status = String((snap.game || {}).run_status || "active").toLowerCase();
         if (status !== "active") {
             // The clock just decided the run (bankruptcy or the rival reaching
@@ -3825,6 +3837,13 @@ function ensureEconClock() {
 // and flash the burn pill so "you're losing people because you're not making
 // money" lands as an event, not a silent number change.
 let _lastWorkerCount = null;
+// A takeover layer (stand-up transcript, agent/worker inspector, dilemma gate,
+// reasoning theater, or an announcement bridge) owns the stage. While one is up,
+// the timed world-reaction beats defer so they never contradict what's on screen.
+function takeoverLayerActive() {
+    return ["standup-active", "inspecting-agent", "inspecting-worker", "dilemma", "theater", "announce-bridge"]
+        .some((l) => stageLayerActive(l));
+}
 function reactToWorkforceContraction(org) {
     if (!org) return;
     const count = Number(org.digital_worker_count || 0);
@@ -4925,6 +4944,19 @@ function standupToolMarkup(turn) {
     return `<div class="standup-tool"><code>${esc(tool)}</code><span>${esc(status)}</span></div>`;
 }
 
+// Plain-language verb for the "researching/thinking" live indicator, derived
+// from the tool the turn is running so the status reads as real work, not a
+// frozen screen.
+function standupVerb(turn) {
+    const tool = String((turn && turn.tool_call && turn.tool_call.tool) || "").toLowerCase();
+    if (/search|web|news/.test(tool)) return "researching the field";
+    if (/recall|memory/.test(tool)) return "recalling memory";
+    if (/validate|score|eval/.test(tool)) return "validating the work";
+    if (/org|render|graph/.test(tool)) return "mapping the org";
+    if (/burn|watch|runway/.test(tool)) return "checking the runway";
+    return "thinking";
+}
+
 function speakerProfileForTurn(turn) {
     const role = turn.role || "narrator";
     const profile = turn.speaker_profile || {};
@@ -4939,6 +4971,55 @@ function speakerProfileForTurn(turn) {
         portraitUrl: portrait,
         textStyle: profile.text_style || "standup posture",
         voiceId: profile.voice_id || VOICE_BY_ROLE[role] || NARRATOR_VOICE,
+    };
+}
+
+function standupMemberForTurn(turn, profile) {
+    const role = turn.role || "narrator";
+    const workerId = profile.workerId || turn.worker_id || "";
+    const name = profile.displayName || turn.speaker || "";
+    const members = partyMembers();
+    return members.find((m) =>
+        (workerId && m.workerId === workerId)
+        || m.name === name
+        || m.key === name
+        || (role && members.filter((candidate) => candidate.role === role).length === 1 && m.role === role));
+}
+
+function standupEvidenceFromTurn(turn, profile, member) {
+    const call = turn && turn.tool_call ? turn.tool_call : {};
+    const tool = call.tool || "agent_turn";
+    const status = call.status || "completed";
+    return {
+        role: (member && member.role) || turn.role || "strategist",
+        name: (member && member.name) || profile.displayName || turn.speaker || "Digital Worker",
+        roleLabel: profile.roleLabel || ROLE_NAME[turn.role] || turn.role || "Digital Worker",
+        score: "--",
+        deployment: standupSourceLabel(turn) || "stand-up turn",
+        tools: tool ? [tool] : [],
+        trace: tool ? [{
+            tool,
+            args: call.args || call.params || {},
+            result: call.result || status,
+            ms: call.ms || 0,
+            source: call.source || standupSourceLabel(turn) || "standup",
+        }] : [],
+        mafTools: tool ? [tool] : [],
+        mafMemory: [
+            ...(turn.handoff_to ? [{ kind: "agent_memory", text: `Handoff to ${turn.handoff_to}` }] : []),
+            ...(turn.message ? [{ kind: "agent_memory", text: turn.message }] : []),
+        ].slice(0, 4),
+        currentEvents: turn.current_events || [],
+        status,
+        tokens_in: 0,
+        tokens_out: 0,
+        reasoningTokens: 0,
+        reasoningPreview: turn.message || profile.textStyle || status,
+        latency: 0,
+        workerStages: member ? workerStagesForMember(member) : [],
+        workerPartyState: member ? partyStateForMember(member) : null,
+        suggestions: member ? workerSuggestionLines(member) : [],
+        liveOnly: true,
     };
 }
 
@@ -5028,6 +5109,46 @@ async function renderAgentStandup(standup, opts = {}) {
     $("diagram").innerHTML = `<div class="council standup-log fade-scene"></div>`;
     const council = $("diagram").querySelector(".council");
 
+    // Group-chat header: a pulsing "live" label, the participant roster, and a
+    // status line that names WHICH agent is working right now - so a researching
+    // pause reads as live multi-agent work, not a stuck screen.
+    const rosterSeen = new Set();
+    const rosterFaces = [];
+    allTurns.forEach((t) => {
+        const p = speakerProfileForTurn(t);
+        if (rosterSeen.has(p.workerId)) return;
+        rosterSeen.add(p.workerId);
+        rosterFaces.push(`<img class="standup-roster-face" src="${esc(p.portraitUrl)}" alt="" title="${esc(p.displayName)}" onerror="this.style.display='none'" />`);
+    });
+    const headLabel = isGameMasterStandup ? "Game Master council \u00B7 live" : "Live group chat";
+    council.insertAdjacentHTML("beforeend",
+        `<div class="standup-head">`
+        + `<div class="standup-head-row"><span class="standup-live"><i></i>${esc(headLabel)}</span>`
+        + `<span class="standup-head-status" id="standup-head-status">connecting the workforce\u2026</span></div>`
+        + `<div class="standup-roster">${rosterFaces.join("")}</div>`
+        + `</div>`);
+    const setStandupStatus = (txt) => { const el = $("standup-head-status"); if (el) el.textContent = txt; };
+    // Each transcript row is a doorway to that agent's receipts (tools, memory,
+    // tokens): one delegated handler opens the existing inspector overlay.
+    const openRowInspector = (card) => {
+        if (!card || !card.dataset) return;
+        const owner = card.dataset.owner;
+        if (!owner) return;
+        if (card.dataset.inspectorKind === "worker") openWorkerInspector(owner);
+        else openAgentInspector(owner);
+    };
+    council.addEventListener("click", (e) => {
+        if (e.target.closest("a, input, button, .standup-ceo-turn")) return;
+        openRowInspector(e.target.closest(".standup-member"));
+    });
+    council.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const card = e.target.closest(".standup-member");
+        if (!card) return;
+        e.preventDefault();
+        openRowInspector(card);
+    });
+
     const accumulatedHistory = [];
 
     async function displayTurns(newTurns) {
@@ -5042,15 +5163,24 @@ async function renderAgentStandup(standup, opts = {}) {
             // masters announce (gold), the rival presses (red), the workers react
             // (role/teal) - so a glance separates authorship from reaction.
             const agentClass = agentClassForRole(role);
+            const member = standupMemberForTurn(turn, profile);
+            const inspectorOwner = member ? member.name : profile.displayName;
+            const inspectorKind = agentClass === "dw" ? "worker" : "agent";
+            if (inspectorKind === "worker" && inspectorOwner && !cardEvidence[inspectorOwner] && !workerEvidenceFromState(inspectorOwner)) {
+                cardEvidence[inspectorOwner] = standupEvidenceFromTurn(turn, profile, member);
+            }
             const announce = agentClass === "gm"
                 ? `<div class="standup-announce">&#9818; ${esc(profile.displayName)} announces</div>`
                 : "";
 
-            const cardHtml = `<div class="council-member standup-member agent-${agentClass}" style="transition: opacity 300ms ease;">`
+            const verb = standupVerb(turn);
+            const cardHtml = `<div class="council-member standup-member agent-${agentClass}" role="button" tabindex="0" data-owner="${esc(inspectorOwner)}" data-inspector-kind="${esc(inspectorKind)}" title="${esc(profile.displayName)} - open tool receipts" style="transition: opacity 300ms ease;">`
                 + `<div class="council-top"><img class="council-face" src="${esc(profile.portraitUrl)}" alt="" onerror="this.style.display='none'" />`
-                + `<div><div class="council-name">${esc(profile.displayName)}</div><div class="council-role">${esc(profile.roleLabel)}</div></div></div>`
+                + `<div><div class="council-name">${esc(profile.displayName)}</div><div class="council-role">${esc(profile.roleLabel)}</div></div>`
+                + `<span class="standup-inspect">inspect tools \u2197</span></div>`
                 + announce
                 + `<div class="standup-profile"><span>${esc(profile.textStyle)}</span>${source}</div>`
+                + `<div class="standup-working"><i class="sw-dot"></i><span class="sw-verb">${esc(verb)}\u2026</span></div>`
                 + standupToolMarkup(turn)
                 + `<div class="council-says quote" aria-live="polite"></div>`
                 + `<div class="council-media" hidden></div>`
@@ -5061,6 +5191,17 @@ async function renderAgentStandup(standup, opts = {}) {
             const lastCard = council.lastElementChild;
             const saysEl = lastCard.querySelector(".council-says");
             const mediaEl = lastCard.querySelector(".council-media");
+            // Direct per-card binding so the receipts open even if the delegated
+            // listener is shadowed by an overlay or the card is re-laid-out: the
+            // transcript row is the player's front door to this agent's tools.
+            lastCard.addEventListener("click", (e) => {
+                if (e.target.closest("a, input, button, .standup-ceo-turn")) return;
+                openRowInspector(lastCard);
+            });
+            // Mark this row live: shows its "researching/thinking" pill and names
+            // the work in the header until the line finishes typing.
+            lastCard.classList.add("live");
+            setStandupStatus(`${profile.displayName} is ${verb}\u2026`);
             scrollLogToBottom(council);
 
             setParty(profile.workerId, "reacting in stand-up", profile.displayName);
@@ -5073,6 +5214,7 @@ async function renderAgentStandup(standup, opts = {}) {
             await narrate(turn.message || `${profile.displayName} is processing the handoff.`, 15,
                 { into: saysEl, onType: () => scrollLogToBottom(council) });
             currentVoice = previousVoice;
+            lastCard.classList.remove("live");
             // Rich media for this message: image and/or Mermaid diagram.
             await attachTurnMedia(mediaEl, turn);
             scrollLogToBottom(council);
@@ -5090,7 +5232,7 @@ async function renderAgentStandup(standup, opts = {}) {
 
     // First round of turns
     await displayTurns(turns);
-
+    setStandupStatus(interactive ? "your turn \u2014 respond below" : "round complete");
     const line = standup.next_brief_delta || trigger.summary || "The next worker brief now carries the choice.";
     const selection = (standup.orchestration && standup.orchestration.selection) || STANDUP_SELECTION;
     const modeLabel = standup.source === "foundry" ? "Foundry MAF" : "simulation fallback";
@@ -5131,6 +5273,7 @@ async function renderAgentStandup(standup, opts = {}) {
             // The floor is back with the CEO: clear the speaking spotlight so the
             // response card owns the stage.
             hideSpeakerSpotlight();
+            setStandupStatus("your turn \u2014 respond below");
             // Present the CEO response input card
             const seq = ++replySeq;
             const responseId = `standup-response-wrap-${seq}`;
@@ -6164,8 +6307,28 @@ function returnHomeToIntro() {
     window.location.assign(path);
 }
 
-// --- Voice input (browser speech-to-text) ----------------------------------
-// Reusable speech recognition binder
+// --- Voice input (Azure gpt-4o-transcribe via /api/stt, browser SR fallback) -
+// On page load we probe /api/stt/status. When Azure STT is available the mic
+// records audio with MediaRecorder, POSTs the blob to our server, and the
+// server proxies to gpt-4o-transcribe — no Google dependency, works offline
+// from Google's perspective. When the server endpoint is unconfigured the code
+// degrades to the browser's native SpeechRecognition (which phones home to
+// Google), and when THAT is also unavailable the mic button disables and the
+// player types.
+
+let _sttAvailable = null; // null = not probed yet
+async function _probeSttStatus() {
+    if (_sttAvailable !== null) return _sttAvailable;
+    try {
+        const r = await fetch("/api/stt/status");
+        if (r.ok) { const d = await r.json(); _sttAvailable = !!d.available; }
+        else _sttAvailable = false;
+    } catch (_) { _sttAvailable = false; }
+    return _sttAvailable;
+}
+// Fire probe early so the first mic click doesn't wait.
+_probeSttStatus();
+
 function bindSpeechRecognition(micBtn, inputEl, statusEl, onResultCallback) {
     if (!micBtn || !inputEl) return () => {};
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -6177,103 +6340,199 @@ function bindSpeechRecognition(micBtn, inputEl, statusEl, onResultCallback) {
         statusEl.classList.toggle("live", !!live);
     };
 
-    if (!SR) {
-        micBtn.disabled = true;
-        micBtn.title = "Voice dictation is not available in this browser or webview; type instead.";
-        micBtn.setAttribute("aria-label", "Voice dictation unavailable; type instead");
-        setMicStatus("Voice dictation is not available in this browser/webview. Type instead.");
-        return () => {};
-    }
+    // Neither Azure STT nor browser SR — mic is dead, typing is the path.
+    // (We still allow the button to exist; the click handler checks at runtime.)
 
-    let rec = null;
+    let recorder = null;     // MediaRecorder instance (Azure path)
+    let recStream = null;    // getUserMedia stream
+    let rec = null;          // SpeechRecognition instance (fallback path)
     let listening = false;
     let baseText = "";
 
     function stop() {
         listening = false;
         micBtn.classList.remove("listening");
-        try { rec && rec.stop(); } catch (e) { /* ignore */ }
+        try { recorder && recorder.state !== "inactive" && recorder.stop(); } catch (_) {}
+        try { rec && rec.stop(); } catch (_) {}
+        try { recStream && recStream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+        recorder = null;
+        recStream = null;
     }
 
-    micBtn.addEventListener("click", async () => {
-        if (A.unlock) { try { A.unlock(); } catch (e) { /* audio optional */ } }
-        if (listening) { stop(); if (statusEl) statusEl.textContent = ""; return; }
-
-        // Proactively ask for mic permission so the browser shows its prompt and
-        // we can give a clear message when access is blocked (common in embedded
-        // webviews). Typing always remains the fallback.
+    // ---- Azure STT path: record → POST blob → transcript -------------------
+    async function startAzureStt() {
         setMicStatus("Requesting microphone permission...", true);
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            try {
-                const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
-                probe.getTracks().forEach((t) => t.stop());
-            } catch (err) {
-                setMicStatus("Microphone blocked. Allow mic access for 127.0.0.1, or type instead.");
-                return;
-            }
-        } else if (!window.isSecureContext) {
-            setMicStatus("Microphone needs a secure browser context. Use http://127.0.0.1 or type instead.");
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            setMicStatus("Microphone blocked. Allow mic access for 127.0.0.1, or type instead.");
             return;
         }
+        recStream = stream;
 
-        rec = new SR();
-        rec.lang = "en-US";
-        rec.interimResults = true;
-        rec.continuous = false;
-        rec.maxAlternatives = 1;
-        baseText = (inputEl.value || "").trim();
+        // Prefer webm/opus; Safari may only support mp4/aac — both work with
+        // gpt-4o-transcribe.
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+            ? "audio/webm;codecs=opus"
+            : (MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "");
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
-        rec.onstart = () => {
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstart = () => {
             listening = true;
             micBtn.classList.add("listening");
             if (statusEl) {
-                statusEl.innerHTML = `<span class="cc-mic-rec"></span>Listening`
+                statusEl.innerHTML = `<span class="cc-mic-rec"></span>Listening (Azure STT)`
                     + `<span class="cc-mic-eq"><span></span><span></span><span></span><span></span></span>`;
                 statusEl.classList.add("live");
             }
         };
-        rec.onerror = (e) => {
-            const err = e && e.error ? e.error : "unknown";
-            const msg = (err === "not-allowed" || err === "service-not-allowed")
-                ? "Microphone blocked. Allow mic access for this site, or type instead."
-                : (err === "no-speech"
-                    ? "No speech heard. Try again, speak closer to the mic, or type instead."
-                    : `Mic error: ${err}. Type instead if it keeps happening.`);
-            setMicStatus(msg);
-            stop();
-        };
-        rec.onend = () => {
+        recorder.onstop = async () => {
             micBtn.classList.remove("listening");
-            if (listening && statusEl) {
-                statusEl.textContent = "Heard you.";
-                statusEl.classList.remove("live");
+            stream.getTracks().forEach((t) => t.stop());
+            recStream = null;
+
+            if (!chunks.length) {
+                setMicStatus("No audio captured. Try again or type instead.");
+                listening = false;
+                return;
+            }
+
+            const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            if (blob.size < 256) {
+                setMicStatus("Recording too short. Hold the mic button longer, or type instead.");
+                listening = false;
+                return;
+            }
+
+            setMicStatus("Transcribing...", true);
+            try {
+                const resp = await fetch("/api/stt", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/octet-stream" },
+                    body: blob,
+                });
+                if (!resp.ok) throw new Error(`STT ${resp.status}`);
+                const data = await resp.json();
+                const text = (data.text || "").trim();
+                if (text) {
+                    const joined = [baseText, text].filter(Boolean).join(" ").trim();
+                    baseText = joined;
+                    inputEl.value = joined;
+                    if (onResultCallback) onResultCallback(inputEl.value);
+                    setMicStatus("Heard you.");
+                    statusEl && statusEl.classList.remove("live");
+                } else {
+                    setMicStatus("No speech detected. Try again or type instead.");
+                }
+            } catch (err) {
+                setMicStatus(`Transcription failed: ${err.message || err}. Type instead.`);
             }
             listening = false;
         };
-        rec.onresult = (event) => {
-            let interim = "";
-            let finalTxt = "";
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const t = event.results[i][0].transcript;
-                if (event.results[i].isFinal) finalTxt += t;
-                else interim += t;
-            }
-            const joined = [baseText, finalTxt].filter(Boolean).join(" ").trim();
-            if (finalTxt) baseText = joined;
-            inputEl.value = (joined + (interim ? " " + interim : "")).trim();
-            if (onResultCallback) onResultCallback(inputEl.value);
-        };
 
-        try { rec.start(); } catch (e) { setMicStatus("Could not start mic. Type instead."); stop(); }
+        baseText = (inputEl.value || "").trim();
+        try { recorder.start(); } catch (e) { setMicStatus("Could not start mic. Type instead."); stop(); }
+    }
+
+    // ---- Browser SpeechRecognition fallback ---------------------------------
+    function startBrowserSR() {
+        if (!SR) {
+            setMicStatus("Voice dictation not available in this browser. Type instead.");
+            return;
+        }
+
+        setMicStatus("Requesting microphone permission...", true);
+
+        // Proactive mic permission probe
+        (async () => {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                try {
+                    const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    probe.getTracks().forEach((t) => t.stop());
+                } catch (err) {
+                    setMicStatus("Microphone blocked. Allow mic access for 127.0.0.1, or type instead.");
+                    return;
+                }
+            } else if (!window.isSecureContext) {
+                setMicStatus("Microphone needs a secure browser context. Use http://127.0.0.1 or type instead.");
+                return;
+            }
+
+            rec = new SR();
+            rec.lang = "en-US";
+            rec.interimResults = true;
+            rec.continuous = false;
+            rec.maxAlternatives = 1;
+            baseText = (inputEl.value || "").trim();
+
+            rec.onstart = () => {
+                listening = true;
+                micBtn.classList.add("listening");
+                if (statusEl) {
+                    statusEl.innerHTML = `<span class="cc-mic-rec"></span>Listening`
+                        + `<span class="cc-mic-eq"><span></span><span></span><span></span><span></span></span>`;
+                    statusEl.classList.add("live");
+                }
+            };
+            rec.onerror = (e) => {
+                const err = e && e.error ? e.error : "unknown";
+                const msg = (err === "not-allowed" || err === "service-not-allowed")
+                    ? "Microphone blocked. Allow mic access for this site, or type instead."
+                    : (err === "no-speech"
+                        ? "No speech heard. Try again, speak closer to the mic, or type instead."
+                        : `Mic error: ${err}. Type instead if it keeps happening.`);
+                setMicStatus(msg);
+                stop();
+            };
+            rec.onend = () => {
+                micBtn.classList.remove("listening");
+                if (listening && statusEl) {
+                    statusEl.textContent = "Heard you.";
+                    statusEl.classList.remove("live");
+                }
+                listening = false;
+            };
+            rec.onresult = (event) => {
+                let interim = "";
+                let finalTxt = "";
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const t = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) finalTxt += t;
+                    else interim += t;
+                }
+                const joined = [baseText, finalTxt].filter(Boolean).join(" ").trim();
+                if (finalTxt) baseText = joined;
+                inputEl.value = (joined + (interim ? " " + interim : "")).trim();
+                if (onResultCallback) onResultCallback(inputEl.value);
+            };
+
+            try { rec.start(); } catch (e) { setMicStatus("Could not start mic. Type instead."); stop(); }
+        })();
+    }
+
+    // ---- Click handler: Azure first, browser SR fallback --------------------
+    micBtn.addEventListener("click", async () => {
+        if (A.unlock) { try { A.unlock(); } catch (e) { /* audio optional */ } }
+        if (listening) { stop(); if (statusEl) statusEl.textContent = ""; return; }
+
+        const useAzure = await _probeSttStatus();
+        if (useAzure) {
+            await startAzureStt();
+        } else {
+            startBrowserSR();
+        }
     });
 
     return stop;
 }
 
-// Lets the founder speak their company idea instead of typing it. Uses the
-// browser SpeechRecognition API (Chrome/Edge/Safari) - no API key, no network
-// of our own. Degrades gracefully: if unsupported, the mic button is hidden and
-// typing still works.
+// Lets the founder speak their company idea instead of typing it. Uses Azure
+// gpt-4o-transcribe via /api/stt when configured, browser SpeechRecognition
+// as fallback. Degrades gracefully: if both are unavailable, the mic button
+// stays visible but tells the player to type.
 function setupVoiceInput() {
     const micBtn = $("mic");
     const statusEl = $("mic-status");
@@ -6546,7 +6805,7 @@ if (commandForm) commandForm.addEventListener("submit", submitPlayerCommand);
 wireFooterCardCollapse();
 
 // Voice path for the player's move card: speak instead of type. Reuses the same
-// browser speech recognition the onboarding uses; typing stays the fallback.
+// Azure STT (or browser SR fallback) the onboarding uses; typing stays the fallback.
 (function wireCommandVoice() {
     const micBtn = $("player-command-mic");
     const inputEl = $("player-command-input");
@@ -6926,7 +7185,7 @@ function restoreRunFromState(s) {
         "restored from saved state");
 
     $("diagram").innerHTML = `<div class="world-canvas fade-scene">`
-        + `<div class="founding">`
+        + `<div class="founding resume-splash">`
         + `<div class="kicker">Run resumed</div>`
         + `<h1>${esc(state.company)}</h1>`
         + `<p>${done} of ${stages.length} stages complete &mdash; send a move to continue.</p>`

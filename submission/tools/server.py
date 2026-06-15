@@ -739,6 +739,110 @@ def tts(payload: TTSRequest):
 
     raise HTTPException(status_code=503, detail=f"TTS upstream error: {last_error}")
 
+
+# ---------------------------------------------------------------------------
+# Speech-to-text: real Microsoft Azure gpt-4o-transcribe.
+# The browser records mic audio with MediaRecorder, POSTs the blob to /api/stt,
+# and the server proxies it to Azure. When unconfigured the browser degrades to
+# its native SpeechRecognition (Google servers) automatically.
+# ---------------------------------------------------------------------------
+
+STT_ENDPOINT = os.getenv("STT_ENDPOINT", "").strip().rstrip("/")
+STT_DEPLOYMENT = os.getenv("STT_DEPLOYMENT", "gpt-4o-transcribe").strip()
+STT_API_KEY = os.getenv("STT_API_KEY", "").strip()
+STT_API_VERSION = os.getenv("STT_API_VERSION", "2025-01-01-preview").strip()
+
+
+def stt_available() -> bool:
+    return bool(STT_ENDPOINT and STT_API_KEY and STT_DEPLOYMENT)
+
+
+@app.get("/api/stt/status")
+def stt_status():
+    """Tell the UI whether server-side Azure transcription is available."""
+    return {
+        "available": stt_available(),
+        "deployment": STT_DEPLOYMENT if stt_available() else None,
+    }
+
+
+@app.post("/api/stt")
+async def stt(file: bytes = Body(..., media_type="application/octet-stream")):
+    """Transcribe an audio blob with Azure gpt-4o-transcribe.
+
+    The browser sends the raw audio bytes (webm/opus from MediaRecorder) with
+    Content-Type: application/octet-stream. Returns {"text": "..."} on
+    success, 503 when STT is unconfigured so the browser falls back to its
+    native SpeechRecognition.
+    """
+    if not file or len(file) < 256:
+        raise HTTPException(status_code=400, detail="Audio too short or empty.")
+    if not stt_available():
+        raise HTTPException(status_code=503, detail="Server STT not configured.")
+
+    # Cap at 25 MB (Azure limit for gpt-4o-transcribe).
+    if len(file) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio file exceeds 25 MB limit.")
+
+    url = (f"{STT_ENDPOINT}/openai/deployments/{STT_DEPLOYMENT}"
+           f"/audio/transcriptions?api-version={STT_API_VERSION}")
+
+    # Build multipart/form-data manually (stdlib only, no extra deps).
+    boundary = f"----sttboundary{uuid.uuid4().hex[:16]}"
+    parts = []
+    # file part
+    parts.append(
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="audio.webm"\r\n'
+        f"Content-Type: audio/webm\r\n\r\n"
+    )
+    parts.append(file)  # raw bytes
+    parts.append(b"\r\n")
+    # model part
+    parts.append(
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="model"\r\n\r\n'
+        f"{STT_DEPLOYMENT}\r\n"
+    )
+    # language hint
+    parts.append(
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="language"\r\n\r\n'
+        f"en\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n")
+
+    # Assemble body (mix of str and bytes)
+    body = b""
+    for p in parts:
+        body += p.encode("utf-8") if isinstance(p, str) else p
+
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={
+            "api-key": STT_API_KEY,
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        text = result.get("text", "").strip()
+        return {"text": text, "deployment": STT_DEPLOYMENT}
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=503,
+            detail=f"STT upstream error ({exc.code}): {detail}",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"STT error: {exc}")
+
+
 @app.post("/api/init")
 def initialize_game(payload: PitchRequest):
     """Initializes the game session with a custom pitch and decomposes it."""
