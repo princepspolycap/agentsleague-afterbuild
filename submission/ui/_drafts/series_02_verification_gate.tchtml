@@ -1,0 +1,117 @@
+<h1>The Gate Is the Product: Human-Verified Artifacts in a Foundry Multi-Agent Game</h1>
+<p><em>A practical guide for AI engineers who want a multi-agent system to be trustworthy by construction - where a deterministic floor bounds what a model can claim, and a human holds the only switch that awards progress.</em></p>
+<p>Part 2 of 5. Tags: <code>microsoft foundry</code> <code>ai agents</code> <code>responsible ai</code> <code>agent framework</code> <code>evaluation</code></p>
+<hr />
+<p>In <a href="#">Part 1</a> the loop ended at a verification gate. This post is about why that gate is not a confirmation dialog - it is the core mechanic, the reliability story, and the thing that lets a reasoning-agent system be demoed live without praying.</p>
+<p>Most multi-agent demos gate on "did the model produce something." That is a vibe check. A reasoning-agent system that touches anything real needs a harder question: <em>who is allowed to say this artifact is good enough - and can a human stop it?</em></p>
+<blockquote>
+<p>A model can create. A model must not be the thing that certifies its own creation.</p>
+</blockquote>
+<h2>Three layers, one rule: no agent grades itself</h2>
+<p>When a worker finishes a chapter, the artifact passes through three layers before it can become progress. Each layer has a different scorer, and only the last one - a human - can award XP.</p>
+<p style="padding:12px;border:2px dashed #8a93b2;background:#f4f6fb"><strong>[DIAGRAM - render this mermaid to PNG and upload here]</strong></p>
+<!-- mermaid source:
+flowchart TB
+    ART[&quot;Worker artifact&lt;br/&gt;(positioning brief, landing page, org chart...)&quot;]
+    subgraph L1[&quot;Layer 1 - deterministic validators&quot;]
+        V[&quot;Structural checks in code&lt;br/&gt;headline? CTA? hero? parseable? URLs resolve?&quot;]
+    end
+    subgraph L2[&quot;Layer 2 - rubric_evaluate&quot;]
+        R[&quot;Foundry model scores weighted dimensions&lt;br/&gt;FLOORED by Layer 1 - can raise, never lower&quot;]
+    end
+    subgraph L3[&quot;Layer 3 - the CEO gate&quot;]
+        H[&quot;The human approves / rejects / redirects&quot;]
+    end
+    ART --&gt; V --&gt; R --&gt; H
+    H --&gt;|approve| XP[&quot;XP awarded - the ONLY path&quot;]
+    H --&gt;|reject| MEM[&quot;rework + rejection written to memory&quot;]
+    V -. &quot;advisory mid-run&quot; .-&gt; ART
+-->
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Who scores</th>
+<th>Can it award XP?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mid-run tool calls</td>
+<td>Deterministic validators</td>
+<td>No - advisory to the model</td>
+</tr>
+<tr>
+<td><code>rubric_evaluate</code></td>
+<td>Foundry model judging weighted dimensions, floored by validators</td>
+<td>No</td>
+</tr>
+<tr>
+<td>CEO gate</td>
+<td>The human</td>
+<td><strong>Yes - the only path to XP</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The order is the whole point. Deterministic validators set a <strong>floor</strong> the score can never fall below. The Foundry model's rubric judgement can move the score <em>above</em> that floor - reward genuine quality - but it can never talk the score <em>below</em> the facts the validators established. Then the work stops and waits for a person.</p>
+<h2>Why a deterministic floor, not just a model judge</h2>
+<p>This is the single most important reliability decision, and it is the same principle Lee Stott states in his <a href="https://techcommunity.microsoft.com/blog/educatordeveloperblog/hybrid-ai-agents-in-python-routing-between-foundry-local-and-microsoft-foundry/4522979">Hybrid AI Agents in Python</a> post: <em>code the rules, and let the LLM judge only what is left.</em> As he puts it about privacy controls - if your check depends on an LLM correctly classifying every input, you do not have a control, you have a probability distribution. We apply the identical principle to artifact quality.</p>
+<p>The validators are boring on purpose. Does the landing page have a headline, a CTA, a hero section? Is the marketing email parseable? Do the URLs resolve? Does the org chart have a single root and no orphan nodes? These are structural facts, checked in code, that no amount of confident prose can override.</p>
+<p>In the game you can watch this happen. A worker delivers, and the report names the score and the verdict in plain language: <em>the deterministic validator scored it 100 of 100 - it passes the gate and the company graph grows.</em></p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_08_worker_report_gate.png]</strong><br><em>A worker delivers a positioning brief, an org chart, and Q1 OKRs; the deterministic validator scores it 100/100 and it passes the gate</em></p>
+<h2>The receipts panel: scoring you can audit, not trust</h2>
+<p>Every worker exposes a <strong>receipts</strong> panel - the artifact's scoring proof, broken out so a skeptic can audit it instead of taking the number on faith. Status, the model that ran, token usage, estimated call cost, latency, and how many tool calls the worker made out of its capped budget.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_07_receipts_evidence.png]</strong><br><em>The receipts panel: status, model, tokens, est. call cost, latency, and tool-call count for a worker run</em></p>
+<p>This is the runtime equivalent of carrying a correlation ID through every path. Four proof points are emitted on <strong>every</strong> invocation, in live mode and simulation mode alike:</p>
+<ul>
+<li><code>iq_hits</code> - how many Foundry IQ sources grounded the work</li>
+<li><code>memory_injected</code> - whether the CEO's prior decisions entered the brief</li>
+<li><code>tools_called</code> - which deterministic tools the worker actually ran</li>
+<li><code>inference_usage</code> - tokens and reasoning effort</li>
+</ul>
+<p>When a judge asks "did the agent actually do anything, or is this theater?", the answer is a panel you open, not a sentence you say.</p>
+<h2>Tools the model can call - but capped</h2>
+<p>On the Agent Framework path the validators are not just a post-hoc gate; they are <code>@tool</code> FunctionTools the worker can call mid-run to test its own draft. That is good - a model that can check itself produces better artifacts. But an unbounded self-check is a failure mode: a model in a tight spot will call the same validator in a loop and burn your budget.</p>
+<p>So every tool is capped, and every call leaves a receipt:</p>
+<pre><code class="language-python">@tool(name=tool_name,
+      description=f&quot;Run the deterministic '{tool_name}' check on a draft artifact...&quot;,
+      max_invocations=2)
+def _t(artifact_json: str) -&gt; str:
+    meta[&quot;maf_tools_called&quot;].append(tool_name)
+    receipt = {&quot;tool&quot;: tool_name, &quot;source&quot;: &quot;maf-midrun&quot;, &quot;args&quot;: {}, &quot;result&quot;: &quot;&quot;, &quot;ms&quot;: 0.0}
+    ...
+</code></pre>
+<p>The model may check its draft twice. It may not certify it. The certification is the human's, at the gate.</p>
+<h2>The gate has a third option: redirect</h2>
+<p>Approve and reject are obvious. The interesting one is <strong>redirect</strong> - the gate can present a genuine strategic fork, two defensible options, and the CEO's pick becomes binding direction for the next worker. That turns the verification gate from a quality checkpoint into a steering wheel.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_10_decision_dilemma.png]</strong><br><em>A decision gate: two strategist proposals - Depth versus Breadth - each with tradeoffs, grounded in IQ sources and memory items</em></p>
+<p>Notice the metadata on that fork: the proposals are grounded in <em>2 IQ sources</em> and <em>7 memory items in brief</em>, and the worker reached them by calling <code>recall</code>, <code>web_search</code>, and <code>calculate_consequence</code> - a tool that previews the org and economic consequence before the CEO commits. The human is not rubber-stamping; they are choosing between options the workforce reasoned out and priced. How that choice then binds the next chapter is the subject of Part 3.</p>
+<h2>Operational lessons learned</h2>
+<ul>
+<li><strong>Floor first, judge second.</strong> A model rubric on top of a deterministic floor gives you nuance without giving up safety. A model rubric alone gives you a confident scoreboard with no foundation.</li>
+<li><strong>Cap every tool.</strong> <code>max_invocations=2</code> is not a performance tweak; it is a containment boundary.</li>
+<li><strong>Log the proof on every path.</strong> If your simulation mode does not emit the same proof points as live, you are testing a different program than you ship.</li>
+<li><strong>Make the gate diegetic.</strong> Players (and judges) trust a control they can <em>see</em>. A score with a visible floor and an audit panel reads as engineering; a score from nowhere reads as marketing.</li>
+<li><strong>Reasoning models and strict JSON do not mix.</strong> Anything that must emit JSON gets a tolerant extractor that survives think-blocks and markdown fences.</li>
+</ul>
+<h2>Responsible AI</h2>
+<p>The gate is the responsible-AI architecture, stated as a game rule: nothing becomes progress without explicit human approval. Every approval is logged with the full reasoning chain. Every rejection is written to memory as binding direction, so the same mistake is not made twice. Deterministic validators bound what the model can claim about its own output, and the replay log preserves the whole chain for audit. The human's authority is not a courtesy - it is the only path to XP, enforced in code.</p>
+<h2>Try it</h2>
+<p>Play a chapter and reject the first artifact on purpose - watch the rejection reshape the next brief:</p>
+<p><strong><a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">Play the live app</a></strong> or run it locally:</p>
+<pre><code class="language-bash">git clone https://github.com/princepspolycap/agentsleague-afterbuild
+cd agentsleague-afterbuild &amp;&amp; python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r submission/requirements.txt
+python3 submission/tools/run_quest_simulation.py --pitch &quot;Your idea here&quot;
+</code></pre>
+<h2>Key takeaways</h2>
+<ul>
+<li>Three scoring layers, one rule: no agent grades itself; only a human awards progress.</li>
+<li>Deterministic validators set a floor the model's rubric can raise but never lower.</li>
+<li>Expose receipts - model, tokens, cost, latency, tool calls - so scores are audited, not trusted.</li>
+<li>Cap every tool the model can call; an uncapped self-check is a budget leak.</li>
+<li>The gate's third option, redirect, turns verification into steering.</li>
+</ul>
+<p>A gate that only ever says "yes" is a dialog box. A gate that can say no, can redirect, floors a model with facts, and logs every decision is a reliability architecture. That is the difference between a demo and a system you would let touch something real.</p>
+<hr />
+<p><em>Part 2 of 5. Next: agents that remember the boss - how a gate decision becomes binding memory and visibly changes the next artifact on Microsoft Foundry.</em></p>

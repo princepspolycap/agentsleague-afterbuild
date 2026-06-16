@@ -1,0 +1,167 @@
+<h1>Gamifying World Improvement: Shipping a Reasoning-Agent RPG on Microsoft Foundry</h1>
+<p><em>A practical guide for AI engineers who want a multi-agent system with real stakes - a game where the quest line is improving the world, the workers are Microsoft Foundry agents, and nothing counts until a human approves. Built live for Agents League Battle #2, then deployed as a public web app anyone can play.</em></p>
+<p>Part 1 of 5. Tags: <code>microsoft foundry</code> <code>foundry iq</code> <code>ai agents</code> <code>agent framework</code> <code>multi-agent</code> <code>responsible ai</code></p>
+<hr />
+<p>Building a multi-agent demo is the straightforward part. Building one where you can <em>prove</em> - live, with judges watching - that the agents reasoned, retrieved grounded context, called tools, and deferred to a human before awarding anything: that is where most teams run into friction.</p>
+<p>We found out on stage. This project was demoed live at the <a href="https://www.youtube.com/watch?v=Xj5LqH6k0U4">Agents League Reasoning Agents battle</a> on Microsoft Reactor - real-time narration, real Foundry calls, real latency. Since then it has changed a great deal: it is now a <strong>public web app you can play in your browser</strong>, with a developer console that exposes every model call, every retrieval, and every logged event. This series is the build, told properly, one subsystem at a time.</p>
+<p>This first post is the map: what the game is, the four-agent pipeline behind it, and the one law that makes it safe to demo - <em>nothing counts until a human approves it.</em></p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_01_landing_intro.png]</strong><br><em>The landing screen: a world-improvement campaign you enter as a founder</em></p>
+<h2>The premise: your company is the dungeon</h2>
+<p>For Microsoft Agents League Battle #2 (Reasoning Agents) the brief was the classic <strong>Game Master pattern</strong> - an orchestrator decomposes a goal, specialist agents execute, shared state tracks the world. We reskinned it with the biggest stakes we could defend.</p>
+<p>The game opens in a world that terraforms the Sahara and automates basic needs - food, water, energy, shelter. A vision that size is never <em>commanded</em> into existence; it has to be <em>aligned</em>. You enter the story by founding a company on one front of that mission and taking the CEO's chair.</p>
+<p>From there the loop is concrete:</p>
+<ol>
+<li>You describe your edge - a real skill, or a public profile URL.</li>
+<li>A pipeline of Foundry agents reasons about who you are and what venture fits.</li>
+<li>An <strong>Org Designer</strong> designs the digital workforce that venture needs.</li>
+<li>A <strong>World Designer</strong> decomposes the venture into a chapter quest line.</li>
+<li>Each chapter is a real Agent Framework worker run that produces an artifact.</li>
+<li><strong>Nothing earns XP until you, the human CEO, approve it at a verification gate.</strong></li>
+</ol>
+<p>That last line is the whole reliability story, and the title mechanic: your company is the dungeon, and you clear it room by room.</p>
+<blockquote>
+<p>A mission too big to command needs a workforce you can verify: <strong>reason on Foundry, ground with Foundry IQ, validate with deterministic tools, ask the human before anything counts.</strong></p>
+</blockquote>
+<h2>The architecture in one diagram</h2>
+<p style="padding:12px;border:2px dashed #8a93b2;background:#f4f6fb"><strong>[DIAGRAM - render this mermaid to PNG and upload here]</strong></p>
+<!-- mermaid source:
+flowchart TB
+    subgraph GAME[&quot;Browser - zero build step&quot;]
+        STORY[&quot;story.js - reasoning theater,&lt;br/&gt;evidence rail, verification gates&quot;]
+    end
+    subgraph PIPELINE[&quot;One server - SSE + JSON&quot;]
+        ANALYST[&quot;Mission / Profile Analyst&lt;br/&gt;read the founder + the venture&quot;]
+        ORG[&quot;Org Designer&lt;br/&gt;design the digital workforce&quot;]
+        WORLD[&quot;World Designer&lt;br/&gt;decompose into a chapter graph&quot;]
+        FACTORY[&quot;Worker Factory&lt;br/&gt;bind chapters to MAF agents&quot;]
+        ANTAG[&quot;Antagonist Forge&lt;br/&gt;generate the rival counter-org&quot;]
+    end
+    subgraph TRUTH[&quot;The truth layer - no agent grades itself&quot;]
+        TOOLS[&quot;Deterministic validators&quot;]
+        RUBRIC[&quot;rubric_evaluate&lt;br/&gt;validator floor + weighted score&quot;]
+        GATE[&quot;CEO gate - human approval&lt;br/&gt;before XP exists&quot;]
+    end
+    subgraph FOUNDRY[&quot;Microsoft Foundry&quot;]
+        PROJ[&quot;FoundryChatClient&lt;br/&gt;AAD auth, gpt-5 family&quot;]
+        IQ[&quot;Foundry IQ - cited retrieval&quot;]
+        MEM[&quot;Agent Service memory store&quot;]
+    end
+    STORY &lt;--&gt;|SSE| PIPELINE
+    ANALYST --&gt; ORG --&gt; WORLD --&gt; FACTORY
+    ANTAG --&gt; WORLD
+    FACTORY ==&gt; PROJ
+    FACTORY ==&gt; IQ
+    FACTORY ==&gt; MEM
+    FACTORY --&gt; TOOLS --&gt; RUBRIC --&gt; GATE
+    GATE --&gt;|approve = XP| STORY
+    GATE --&gt;|decision written to memory| MEM
+-->
+<p>Two properties to read off the diagram. First, the loop is closed: the CEO's gate decision is written to agent memory and recalled into the next chapter's brief. Second, every cloud arrow has a keyless fallback - clone the repo with no credentials and the whole game still plays in simulation mode. We will spend a whole post (Part 4) on that fallback architecture, because forkability is reliability.</p>
+<h2>The pipeline: agents before any work happens</h2>
+<p>Most multi-agent demos hardcode their cast. We do not. The business defines the workforce; the workforce defines the quests. You can watch it happen - the preflight runs as a visible pipeline of reasoning steps, not a spinner.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_04_preflight_pipeline.png]</strong><br><em>The preflight pipeline: Mission Analyst, Profile Analyst, Org Designer, and Antagonist Forge reasoning in sequence</em></p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Agent</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Mission / Profile Analyst</td>
+<td>Reads the pitch or profile, frames the world it improves, casts your founder seat</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Org Designer</td>
+<td>Designs a digital-workforce blueprint <em>for this specific venture</em></td>
+</tr>
+<tr>
+<td>3</td>
+<td>World Designer</td>
+<td>Decomposes the venture into a chapter quest line</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Worker Factory</td>
+<td>Binds each chapter to a worker, built as an Agent Framework agent with tools</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Antagonist Forge</td>
+<td>Generates a rival counter-org that pressures the run</td>
+</tr>
+</tbody>
+</table>
+<p>Pitch a solar-cell venture and you get a different org chart - and different quests, and a different rival - than a dev-tools startup. That is the difference between a scripted demo and a system. The result is a "ready" card that shows the whole shape before you commit: your founder seat, your workforce size, your leverage ratio, and the rival who will contest you.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_05_ready_card.png]</strong><br><em>The ready card: founder seat, 5 digital workers behind one human, 5x leverage, and a named rival</em></p>
+<h2>Workers are real Agent Framework agents on Foundry</h2>
+<p>Each designed worker is built at runtime with the <strong>Microsoft Agent Framework</strong>, with inference through the Foundry project under AAD auth - keyless, no secrets in <code>.env</code>:</p>
+<pre><code class="language-python"># agents/maf_runtime.py
+from agent_framework.foundry import FoundryChatClient
+
+client = FoundryChatClient(
+    project_endpoint=foundry_project_endpoint(),
+    model=deployment,                 # gpt-5 family deployment
+    credential=_aad_credential(),     # DefaultAzureCredential - no API key
+)
+</code></pre>
+<p>Our deterministic validators are exposed to the model as real <code>@tool</code> FunctionTools, capped so a stuck model cannot loop, and every mid-run call writes a receipt (args, result, latency) into the replay log:</p>
+<pre><code class="language-python">@tool(name=tool_name,
+      description=f&quot;Run the deterministic '{tool_name}' check on a draft artifact...&quot;,
+      max_invocations=2)
+def _t(artifact_json: str) -&gt; str:
+    meta[&quot;maf_tools_called&quot;].append(tool_name)
+    ...
+</code></pre>
+<p>So the model can check its own draft mid-run - but the <em>gate</em> score never comes from the model alone. That is the subject of Part 2.</p>
+<h2>The play loop: a card-stacking roguelike with a CEO chair</h2>
+<p>Once you descend, the game becomes a roguelike. Each chapter is a "room" on a hero's-journey quest graph - YOU, NEED, GO, SEARCH, FIND, TAKE, RETURN, CHANGE. You issue a move, a worker executes it, and the artifact it produces is scored at a gate. Clear the room and you draw a reward card for your run deck; the rival's threat meter climbs the whole time.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_06_world_board.png]</strong><br><em>The world board: the hero&#x27;s-journey quest graph, the digital workforce, the Game Masters, and the live economy</em></p>
+<p>This is where the reasoning becomes legible. When a worker delivers, you see the artifact - here a positioning brief, a rendered org chart, and Q1 OKRs - alongside the line that matters: <em>the deterministic validator scored it 100 of 100; it passes the gate and the company graph grows.</em></p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_08_worker_report_gate.png]</strong><br><em>A worker delivers a real artifact and a rendered org chart; the deterministic validator scores it and it passes the gate</em></p>
+<p>Every run carries a live economy - treasury, daily burn, runway, market share, paying customers - and a rival counter-org that reacts to your decisions. The stakes are not cosmetic: spend your runway and the run ends. We will cover the antagonist system and the economy in a later part.</p>
+<h2>Best practice: make the reasoning legible, not just present</h2>
+<p>A normal chatbot demo gates on "did it answer." A reasoning-agent demo has to gate on something harder: <em>can you show the work, and can you stop the work?</em> Borrowing Lee Stott's framing from <a href="https://techcommunity.microsoft.com/blog/educatordeveloperblog/cicd-for-ai-agents-on-microsoft-foundry/4522218">CI/CD for AI Agents on Microsoft Foundry</a>, release gates should be driven by <em>evaluation outcomes, not just test results.</em> We applied that idea one level down - to each artifact, at runtime, with a human at the final gate.</p>
+<p>Four proof points are logged on every single invocation, including in simulation mode: <code>iq_hits</code>, <code>memory_injected</code>, <code>tools_called</code>, <code>inference_usage</code>. Every claim the game makes is a number in a log you can open - which is exactly what the developer console (Part 4) exists to show.</p>
+<h2>Responsible AI</h2>
+<p>The verification gate <em>is</em> the responsible-AI story - and it is also the lore's law: in the game's fiction, a human holds the seal, because a vision too big to command must keep a human at the root of every result. No artifact becomes progress without explicit human approval; every approval is logged with the full reasoning chain; rejected work goes back for rework with the rejection written into agent memory as binding direction. Deterministic validators bound what the model can claim about its own output. Auth is keyless via <code>DefaultAzureCredential</code> - nothing to leak, rotate, or commit by accident.</p>
+<h2>Try it</h2>
+<p>The game is live - play it in your browser, no install:</p>
+<p><strong><a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io</a></strong></p>
+<p>Or run it locally - five minutes, no Azure account needed for the full loop:</p>
+<pre><code class="language-bash">git clone https://github.com/princepspolycap/agentsleague-afterbuild
+cd agentsleague-afterbuild
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r submission/requirements.txt
+
+python3 submission/tools/run_quest_simulation.py --pitch &quot;Your idea here&quot;
+</code></pre>
+<p>For live Foundry runs, copy <code>submission/.env.example</code> to <code>submission/.env</code>, point it at your Foundry project endpoint and a gpt-5 family deployment, then <code>az login</code>.</p>
+<h2>What the rest of the series covers</h2>
+<ul>
+<li><strong>Part 2 - The gate is the product.</strong> Deterministic validators, the rubric floor, and why no agent grades itself.</li>
+<li><strong>Part 3 - Agents that remember the boss.</strong> How a CEO decision becomes binding memory and visibly changes the next artifact.</li>
+<li><strong>Part 4 - Local-first, and the replay log.</strong> The settings console, routing between Ollama / Foundry Local / cloud Foundry / simulation, and how every action is traced.</li>
+<li><strong>Part 5 - The Org Designer bridge.</strong> Exporting the game's designed workforce as a portable bundle a real digital-worker platform can provision.</li>
+</ul>
+<h2>Key takeaways</h2>
+<ul>
+<li>Map your domain onto a proven orchestration pattern (Game Master) instead of inventing one.</li>
+<li>Design the workforce per-input - the business defines the org, the org defines the quests.</li>
+<li>Make the reasoning legible: a visible preflight pipeline beats a spinner; a logged proof point beats a claim.</li>
+<li>LLMs create, tools validate, humans approve, replay logs preserve.</li>
+<li>Ship a simulation fallback for every cloud dependency, then deploy the real thing so people can actually play it.</li>
+</ul>
+<p>The dungeon is not a metaphor for difficulty. It is a metaphor for structure: a mission too big to command gets aligned one company at a time - rooms you cannot skip, gates a human must pass, and a logged map of every step you took.</p>
+<hr />
+<p><em>Part 1 of 5. Next: the verification gate - how to let an LLM create while a deterministic floor and a human decide what counts.</em></p>
+<ul>
+<li>Play it: <a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">worldforge-game...azurecontainerapps.io</a></li>
+<li>Code: <a href="https://github.com/princepspolycap/agentsleague-afterbuild">github.com/princepspolycap/agentsleague-afterbuild</a></li>
+<li>Live battle replay: <a href="https://www.youtube.com/watch?v=Xj5LqH6k0U4">Agents League - Reasoning Agents on Microsoft Reactor</a></li>
+<li><a href="https://learn.microsoft.com/agent-framework/">Microsoft Agent Framework</a> and <a href="https://learn.microsoft.com/azure/ai-foundry/">Microsoft Foundry docs</a></li>
+</ul>

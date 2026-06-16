@@ -1,0 +1,111 @@
+<h1>From Game to Operations: Exporting a Foundry-Designed Workforce as a Portable Bundle</h1>
+<p><em>A practical guide for AI engineers who want a multi-agent system to produce something a real platform can use - turning the org an LLM designs in a game into a portable, human-approval-gated workforce bundle any digital-worker platform can provision.</em></p>
+<p>Part 5 of 5. Tags: <code>microsoft foundry</code> <code>ai agents</code> <code>agent framework</code> <code>org design</code> <code>interoperability</code></p>
+<hr />
+<p>Across this series the game has reasoned about a founder, designed a digital workforce for their venture, executed chapters through Microsoft Foundry agents, and gated every artifact behind a human. That is a complete loop - inside the game. This final post is about the seam where it leaves the game: how the <strong>Org Designer</strong>'s output becomes a portable artifact a real digital-worker platform can ingest and provision, without dragging a single proprietary dependency into the public repo.</p>
+<blockquote>
+<p>The most useful thing a reasoning agent can produce is not a paragraph. It is a structured plan another system can execute - behind its own human gate.</p>
+</blockquote>
+<h2>Why the Org Designer is the keystone worker</h2>
+<p>In Part 1 the pipeline's second stage was the Org Designer: given a venture, it designs the smallest org that can actually deliver it - one human operator plus the digital workers that form the execution layer. Every other system in the game hangs off that output. The World Designer decomposes the venture into chapters; <code>bind_world_to_org</code> stamps each chapter with its owning worker; the economy prices each worker's monthly burn. The org the model designs is the org that executes.</p>
+<p>You can see the artifact directly in play - a worker delivers a positioning brief and a rendered org chart, and it passes the gate:</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_08_worker_report_gate.png]</strong><br><em>A worker delivers a rendered org chart that passes the verification gate</em></p>
+<p>That org chart is not decoration. It is structured state - roles, kinds (human / digital_worker / hybrid), mandates, reporting lines, KPIs, tool wishes, and a model-class hint per worker. Which means it can be <em>exported</em>.</p>
+<h2>The bridge: export, don't import</h2>
+<p>The temptation, when you have a game and a real platform, is to wire them together - run the platform's workers inside the game. That is the wrong move for two reasons. First, the game's reasoning core must stay 100% Microsoft Foundry (the rubric rule, and the architectural spine of this series). Second, the repo must run after <code>git clone</code> with no proprietary dependencies. So the bridge is <strong>export, not import</strong>: the game emits a neutral bundle; any platform ingests it.</p>
+<p style="padding:12px;border:2px dashed #8a93b2;background:#f4f6fb"><strong>[DIAGRAM - render this mermaid to PNG and upload here]</strong></p>
+<!-- mermaid source:
+flowchart LR
+    A[Player pitch / profile URL] --&gt; B[Org Designer&lt;br/&gt;Foundry gpt-5 family]
+    B --&gt; C[OrgBlueprint&lt;br/&gt;in game state]
+    C --&gt; D[GET /api/org/export&lt;br/&gt;workforce_bundle.json]
+    D --&gt; E[Any digital-worker platform&lt;br/&gt;maps + reviews]
+    E --&gt; F[Human approval gate]
+    F --&gt; G[Provisioned workers,&lt;br/&gt;teams, KPIs, workflows]
+-->
+<p>No platform-specific code lives in the game repo. The converter is pure and offline - it turns the in-game <code>OrgBlueprint</code> into a platform-neutral <code>workforce_bundle</code> and ships a CLI that runs in simulation after a fresh clone.</p>
+<h2>The bundle: a contract, not a dump</h2>
+<p>The export is a single JSON document with a stable format tag (<code>dungeon.workforce_bundle</code>, versioned), designed so both a human approver and a downstream LLM can parse and act on it:</p>
+<pre><code class="language-json">{
+  &quot;format&quot;: &quot;dungeon.workforce_bundle&quot;,
+  &quot;version&quot;: 1,
+  &quot;company&quot;: { &quot;summary&quot;: &quot;...&quot;, &quot;operating_model&quot;: &quot;...&quot;, &quot;source&quot;: &quot;pitch&quot; },
+  &quot;economics&quot;: { &quot;headcount&quot;: 6, &quot;digital_worker_count&quot;: 5,
+                 &quot;human_count&quot;: 1, &quot;monthly_burn_usd&quot;: 23625, &quot;leverage_ratio&quot;: 5.0 },
+  &quot;team&quot;: { &quot;name&quot;: &quot;...&quot;, &quot;purpose&quot;: &quot;...&quot;, &quot;members&quot;: [&quot;...&quot;], &quot;owner&quot;: &quot;operator&quot; },
+  &quot;humans&quot;: [ { &quot;id&quot;: &quot;operator&quot;, &quot;title&quot;: &quot;Founder / Operator&quot;, &quot;mandate&quot;: &quot;...&quot;, &quot;kpis&quot;: [&quot;...&quot;] } ],
+  &quot;workers&quot;: [
+    {
+      &quot;worker_key&quot;: &quot;strategy_positioning_lead&quot;,
+      &quot;name&quot;: &quot;Strategy &amp; Positioning Lead&quot;,
+      &quot;role&quot;: &quot;strategist&quot;,
+      &quot;kind&quot;: &quot;digital_worker&quot;,
+      &quot;system_message&quot;: &quot;&lt;worker_identity&gt;...generated starter prompt...&lt;/worker_identity&gt;&quot;,
+      &quot;model_class&quot;: &quot;reasoning&quot;,
+      &quot;tools&quot;: [&quot;...&quot;], &quot;kpis&quot;: [&quot;...&quot;], &quot;reports_to&quot;: &quot;operator&quot;
+    }
+  ],
+  &quot;org_chart_mermaid&quot;: &quot;graph TD\n  ...&quot;,
+  &quot;provisioning&quot;: {
+    &quot;status&quot;: &quot;pending_human_approval&quot;,
+    &quot;note&quot;: &quot;Nothing in this bundle is provisioned. The receiving platform must
+             present it for explicit human approval before creating anything.&quot;
+  }
+}
+</code></pre>
+<p>Three design choices make it portable:</p>
+<ol>
+<li><strong>A generated <code>system_message</code> per worker, same shape for every role</strong> - so a receiving platform (or its own org-architect agent) can parse, refine, and version it instead of re-deriving prompts.</li>
+<li><strong>A <code>model_class</code> hint (<code>reasoning</code> / <code>fast</code> / <code>creative</code>)</strong>, not a hard model name - the receiver maps it onto its own fleet.</li>
+<li><strong>A <code>provisioning.status</code> of <code>pending_human_approval</code></strong> baked into the artifact itself. The bundle carries its own gate: the game's verification-gate pattern (Part 2), extended across the system boundary.</li>
+</ol>
+<h2>The export endpoint and the button</h2>
+<p>The bridge is one endpoint and one button. <code>GET /api/org/export</code> reads the chartered org from state, converts it, logs an <code>ORG_EXPORTED</code> event to the replay log (Part 4), and returns the bundle as a download. The Digital Workforce panel in the UI has an <strong>Export workforce bundle</strong> button that calls it - so "you played the game; now your org is a deployable workforce" is one click.</p>
+<pre><code class="language-python">@app.get(&quot;/api/org/export&quot;)
+def export_org():
+    state = store.load()
+    if not state.org or not state.org.roles:
+        raise HTTPException(status_code=404, detail=&quot;No chartered org to export.&quot;)
+    bundle = org_to_workforce_bundle(state.org.model_dump())
+    store.log_event(&quot;ORG_EXPORTED&quot;, &quot;org_designer&quot;,
+                    f&quot;Exported {len(bundle['workers'])} workers, pending approval.&quot;)
+    return JSONResponse(content=bundle,
+        headers={&quot;Content-Disposition&quot;: 'attachment; filename=&quot;workforce_bundle.json&quot;'})
+</code></pre>
+<p>Because the converter is dependency-free, it also runs from the command line with no server and no credentials:</p>
+<pre><code class="language-bash">python3 submission/tools/export_org_blueprint.py \
+  --pitch &quot;Low-cost 3D-printed solar cells for off-grid homes&quot;
+# -&gt; workforce_bundle.json : 5 digital workers + 1 human, pending approval
+</code></pre>
+<h2>Best practice: the receiver re-gates, the bundle is a draft</h2>
+<p>A portable bundle is an <em>input</em>, not an order. On the receiving side, the right pattern is an org-architect worker that treats the bundle as a <strong>draft blueprint</strong>: it maps each entry's <code>model_class</code> onto the platform's current model tiers, matches incoming worker mandates against existing templates (reuse before invent), re-renders the org chart in its own conventions, fills gaps the game did not model (departments, OKR cascades), and then presents the result for explicit human approval - exactly the CEO-gate pattern, one system later.</p>
+<p>That symmetry is the point. The game gates artifacts behind a human; the bundle declares itself pending; the receiver gates provisioning behind a human. The human-at-the-root law (Part 2) survives the trip across the boundary.</p>
+<h2>Why this matters beyond the game</h2>
+<p>A reasoning agent that only produces prose is a better chatbot. A reasoning agent that produces a <strong>structured, portable, gated plan another system can execute</strong> is the beginning of an operating loop. The game is a teaching tool and a playable argument; the bundle is the off-ramp where the argument becomes useful - the designed workforce stops being a screen and becomes something a platform can stand up, behind its own approval gate.</p>
+<h2>Responsible AI</h2>
+<p>The bundle is inert by construction. Its <code>provisioning.status</code> is <code>pending_human_approval</code> and its note says, in the artifact itself, that nothing is provisioned until a human signs off. Nothing in it is executable on import; it is a description, not a command. Combined with the receiver re-gating provisioning, that means no chain of automated steps can stand up a workforce without a person in the loop - the same reliability story this whole series is built on, carried one boundary further.</p>
+<h2>Try it</h2>
+<p>Charter an org in the game, then export it:</p>
+<p><strong><a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">Play the live app</a></strong> -&gt; design your workforce -&gt; <strong>Export workforce bundle</strong>.</p>
+<p>Or from the CLI, no credentials:</p>
+<pre><code class="language-bash">git clone https://github.com/princepspolycap/agentsleague-afterbuild
+cd agentsleague-afterbuild &amp;&amp; python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r submission/requirements.txt
+python3 submission/tools/export_org_blueprint.py --pitch &quot;Your idea here&quot;
+</code></pre>
+<h2>Key takeaways</h2>
+<ul>
+<li>The most useful agent output is a structured plan another system can execute, not prose.</li>
+<li>Bridge by export, not import: emit a neutral, versioned bundle; keep proprietary platforms out of the reasoning repo.</li>
+<li>Carry the human gate across the boundary - the bundle declares itself <code>pending_human_approval</code>, and the receiver re-gates provisioning.</li>
+<li>Use a <code>model_class</code> hint, not a hard model name, so the receiver maps onto its own fleet.</li>
+<li>One endpoint, one button: "you played the game; now your org is a deployable workforce."</li>
+</ul>
+<p>The dungeon is open, the workforce is designed, and now it is portable. A mission too big to command gets aligned one company at a time - and the org you charter in a browser game can walk out as a plan a real platform will run, with a human still holding the seal.</p>
+<hr />
+<p><em>Part 5 of 5. Start over at Part 1, or clone the repo and pitch your own company.</em></p>
+<ul>
+<li>Play it: <a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">worldforge-game...azurecontainerapps.io</a></li>
+<li>Code: <a href="https://github.com/princepspolycap/agentsleague-afterbuild">github.com/princepspolycap/agentsleague-afterbuild</a></li>
+<li>Live battle replay: <a href="https://www.youtube.com/watch?v=Xj5LqH6k0U4">Agents League - Reasoning Agents</a></li>
+</ul>

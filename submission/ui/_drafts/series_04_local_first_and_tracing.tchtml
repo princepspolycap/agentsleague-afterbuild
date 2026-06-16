@@ -1,0 +1,177 @@
+<h1>Local-First and Fully Traced: Routing Between Ollama, Foundry Local, and Microsoft Foundry</h1>
+<p><em>A practical guide for AI engineers who want their agent project to run after <code>git clone</code> - no credentials, no quota - while keeping Microsoft Foundry as the live reasoning core, and to trace every single action the system takes.</em></p>
+<p>Part 4 of 5. Tags: <code>microsoft foundry</code> <code>foundry local</code> <code>ai agents</code> <code>agent framework</code> <code>observability</code> <code>open source</code></p>
+<hr />
+<p>If you publish an agent project today, you are caught between two forces. The interesting behaviour lives in the cloud - Foundry models, Foundry IQ retrieval, the Agent Service memory store. But the audience that decides whether your project matters - judges, students, engineers skimming GitHub at midnight - will give it exactly one <code>git clone</code> and five minutes. If the first run dies on a missing credential, the project is dead to them.</p>
+<p>This is the same tension Lee Stott opens his <a href="https://techcommunity.microsoft.com/blog/educatordeveloperblog/hybrid-ai-agents-in-python-routing-between-foundry-local-and-microsoft-foundry/4522979">Hybrid AI Agents in Python</a> post with - privacy, latency, and frontier capability pulling in different directions - and his answer is the one we adopted: <strong>route between tiers behind one contract.</strong> Every cloud arrow gets a keyless fallback with the same schema and code path.</p>
+<p>This post covers both halves of making that real and credible: the <strong>routing</strong> that lets the game run on your own machine, and the <strong>trace</strong> that lets you see exactly which path served every request.</p>
+<blockquote>
+<p>Forkability is reliability, demoed on someone else's machine. Observability is what lets them believe what they just saw.</p>
+</blockquote>
+<h2>The contract: one result, many paths</h2>
+<p>The caller never knows which path served a request. <code>run_maf_agent</code> tries the Foundry path and degrades inside the same function; the caller can only tell the difference by reading a logged field, never by branching on an API.</p>
+<p style="padding:12px;border:2px dashed #8a93b2;background:#f4f6fb"><strong>[DIAGRAM - render this mermaid to PNG and upload here]</strong></p>
+<!-- mermaid source:
+flowchart LR
+    MAF[&quot;run_maf_agent()&quot;] ==&gt;|tier 1: live| PROJ[&quot;Microsoft Foundry&lt;br/&gt;FoundryChatClient, gpt-5 family&quot;]
+    MAF --&gt;|tier 2: local| OLL[&quot;Local model&lt;br/&gt;Ollama / Foundry Local, OpenAI-compatible /v1&quot;]
+    MAF -.-&gt;|tier 3: floor| SIM[&quot;Deterministic simulation&quot;]
+    RET[&quot;Recall tool&quot;] ==&gt;|live| IQ[&quot;Foundry IQ - cited&quot;]
+    RET -.-&gt;|no creds| KB[&quot;knowledge/*.md&quot;]
+    MEM[&quot;Memory&quot;] ==&gt;|live| MS[&quot;Agent Service store&quot;]
+    MEM -.-&gt;|no creds| JSON[&quot;state/memory.json&quot;]
+-->
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Tier 1 (cloud)</th>
+<th>Tier 2 (local)</th>
+<th>Tier 3 (floor)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reasoning</td>
+<td><code>FoundryChatClient</code>, gpt-5 family</td>
+<td>Ollama / Foundry Local, OpenAI-compatible</td>
+<td>Deterministic simulation</td>
+</tr>
+<tr>
+<td>Retrieval</td>
+<td>Foundry IQ, citations</td>
+<td>local markdown</td>
+<td>local markdown</td>
+</tr>
+<tr>
+<td>Memory</td>
+<td>Agent Service store</td>
+<td><code>state/memory.json</code></td>
+<td><code>state/memory.json</code></td>
+</tr>
+<tr>
+<td>Auth</td>
+<td><code>DefaultAzureCredential</code> (keyless)</td>
+<td>none</td>
+<td>none</td>
+</tr>
+</tbody>
+</table>
+<p>The last column is the design insight: the <em>truth layer</em> - validators, the rubric floor, the human gate (Part 2) - never lived in the cloud. It is local code in every tier. Fallbacks only have to cover creativity, never correctness.</p>
+<h2>The settings console: routing you can change at runtime</h2>
+<p>You do not have to edit <code>.env</code> and restart to change tiers. The game ships a settings console, reachable from any run, whose first tab is the local-model runtime.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_14_settings_local_llm.png]</strong><br><em>The Local LLM settings tab: base URL, model, a routing dropdown with four modes, and a per-role runtime map</em></p>
+<p>Four status pills tell you where you stand at a glance - <code>runtime</code>, <code>routing</code>, whether a <code>local</code> model is connected, and whether <code>foundry</code> is on standby. Below that:</p>
+<ul>
+<li><strong>OpenAI-compatible base URL</strong> - <code>http://localhost:11434/v1</code> for Ollama out of the box.</li>
+<li><strong>Model</strong> - whatever <code>ollama list</code> shows; we test with small local models.</li>
+<li><strong>Routing</strong> - a dropdown with all four modes: <code>local_first</code>, <code>cloud_first</code>, <code>local_only</code>, <code>cloud_only</code>.</li>
+<li><strong>Runtime map</strong> - each role (narrator, orgdesigner, antagonist, strategist, designer, marketer, ops, npc) bound to a model, "inherits default" until you override it.</li>
+<li><strong>Copy env / Copy test</strong> - generate the exact <code>.env</code> block and a one-line smoke-test command.</li>
+</ul>
+<p>The default posture is <strong>local-first</strong>: a local agent handles normal gameplay, cloud Foundry is the escalation layer for failed local turns, integration evidence, and demo-quality reasoning. That keeps the game cheap to play repeatedly while preserving the Foundry path the rubric requires.</p>
+<pre><code class="language-env"># Local play profile - normal gameplay on your own model
+DEMO_MODE=local
+AGENT_ROUTING=local_first
+LOCAL_AGENT_BASE_URL=http://localhost:11434/v1
+LOCAL_AGENT_API_KEY=ollama
+LOCAL_AGENT_MODEL=&lt;model shown by `ollama list`&gt;
+</code></pre>
+<p>Ollama is the lowest-friction local runtime because it is OpenAI-compatible. The app never gets an Ollama-specific branch; it points at <code>LOCAL_AGENT_BASE_URL</code>. That keeps <strong>Foundry Local</strong> and a llama.cpp server swappable as long as they expose an OpenAI-compatible <code>/v1</code> endpoint - the planned upgrade from a generic local model to a pinned Foundry Local deployment is one more entry in the routing table, not a rewrite.</p>
+<p>A gotcha we inherit straight from Lee Stott's post: gpt-5 and o-series deployments reject <code>max_tokens</code> and require <code>max_completion_tokens</code>, and reasoning-tuned local models wrap output in <code>&lt;think&gt;</code> blocks that break a naive JSON parser - so the lightweight local tier wants a non-reasoning model, and everything that must emit JSON goes through a tolerant extractor.</p>
+<h2>The replay log: every action is a traced event</h2>
+<p>Routing is only trustworthy if you can <em>see</em> which path ran. That is what the rest of the console is for. The <strong>Backend replay</strong> tab is the system's flight recorder: every action emits a typed, timestamped, actor-attributed event with an inspectable payload.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_15_settings_replay_log.png]</strong><br><em>The Backend replay tab: a scroll of typed events - CEO_DECISION, CONSEQUENCE_APPLIED, ANTAGONIST_MOVE, WORLD_ADAPTED, WORLD_COUNCIL, KNOWLEDGE_STRUCTURED - each with a payload you can open</em></p>
+<p>One CEO decision produces an entire causal chain you can read end to end:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Actor</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CEO_DECISION</code></td>
+<td>founder</td>
+<td>The human chose "Depth" at the NEED gate</td>
+</tr>
+<tr>
+<td><code>CONSEQUENCE_APPLIED</code></td>
+<td>system</td>
+<td>That choice deterministically changed company state</td>
+</tr>
+<tr>
+<td><code>MEMORY_WRITTEN</code></td>
+<td>memory</td>
+<td>The decision was stored as binding memory (Part 3)</td>
+</tr>
+<tr>
+<td><code>WORLD_ADAPTED</code></td>
+<td>world_designer</td>
+<td>The designer bent 6 pending stages to the choice</td>
+</tr>
+<tr>
+<td><code>ANTAGONIST_MOVE</code></td>
+<td>antagonist</td>
+<td>The rival reacted to the same signal</td>
+</tr>
+<tr>
+<td><code>WORLD_COUNCIL</code></td>
+<td>world_council</td>
+<td>The Game Masters ratified the next stage</td>
+</tr>
+<tr>
+<td><code>KNOWLEDGE_STRUCTURED</code></td>
+<td>iq_sync</td>
+<td>Search documents were re-structured after the choice</td>
+</tr>
+</tbody>
+</table>
+<p>Each row carries a payload - some hundreds of characters, some thousands - that you click to expand into the raw data. Nothing happens off-book. When someone asks "did the agents actually do anything?", the answer is this scroll, not a claim.</p>
+<h2>Three tabs, one per proof point</h2>
+<p>The four proof points from Part 2 each get a dedicated, auditable surface so you can isolate any single claim.</p>
+<p>The <strong>MAF &amp; tools</strong> tab lists every Microsoft Agent Framework worker invocation with its runtime label - <code>simulation · direct</code> here, <code>foundry · direct</code> when live - and a payload with the full call:</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_16_settings_maf_tools.png]</strong><br><em>The MAF and tools tab: each worker invocation logged with its runtime and an inspectable payload</em></p>
+<p>The <strong>Foundry IQ</strong> tab logs every retrieval call and, crucially, labels the fallback honestly - <code>2 IQ sources · local-knowledge (fallback)</code> when cloud IQ is absent:</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_17_settings_foundry_iq.png]</strong><br><em>The Foundry IQ tab: retrieval calls logged with their source count and a clear fallback label</em></p>
+<p>This honest labelling is the whole discipline. Lee Stott's hybrid post labels every fallback (<code>LOCAL_FALLBACK</code>, <code>CLOUD_FALLBACK</code>) and carries a correlation ID everywhere. Silent fallback is how you end up demoing simulation while believing you are demoing Foundry. Here, the runtime label is on every event and the proof points are emitted in every tier - so a fork running with zero credentials produces a study-able replay log that says exactly what it did.</p>
+<h2>Best practice: make degradation visible, never silent</h2>
+<ul>
+<li><strong>Label every path on the result, never branch the API.</strong> <code>run_maf_agent</code> returns the same shape whether it hit Foundry, a local model, or simulation; the path is a field you log, not a fork callers handle.</li>
+<li><strong>Emit identical proof points in every tier.</strong> <code>iq_hits</code>, <code>memory_injected</code>, <code>tools_called</code>, <code>inference_usage</code> - so a no-credentials fork is debuggable from its own logs.</li>
+<li><strong>Keep the truth layer local.</strong> Validators and the human gate run the same in every tier; only creativity degrades.</li>
+<li><strong>Give every dependency a same-schema fallback.</strong> IQ -&gt; local markdown, memory store -&gt; local JSON, cloud model -&gt; local model -&gt; simulation.</li>
+</ul>
+<h2>Responsible AI</h2>
+<p>Local-first is also a privacy posture: with <code>local_only</code> routing and the local memory fallback, a full game loop runs without a single byte leaving the machine - no endpoint, no key, no telemetry. And because every fallback is labelled in the replay log, a user always knows whether their data touched the cloud on a given run. Observability is not just for debugging; it is how you keep an honest promise about where computation happened.</p>
+<h2>Try it</h2>
+<p>Point the game at a local model and watch the routing pills flip to "local: connected":</p>
+<pre><code class="language-bash"># with Ollama running locally
+git clone https://github.com/princepspolycap/agentsleague-afterbuild
+cd agentsleague-afterbuild &amp;&amp; python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r submission/requirements.txt
+
+cat &gt; submission/.env &lt;&lt;'ENV'
+DEMO_MODE=local
+AGENT_ROUTING=local_first
+LOCAL_AGENT_BASE_URL=http://localhost:11434/v1
+LOCAL_AGENT_API_KEY=ollama
+LOCAL_AGENT_MODEL=&lt;your local model&gt;
+ENV
+
+python3 submission/tools/run_quest_simulation.py --pitch &quot;Your idea here&quot;
+</code></pre>
+<p>Then open <strong><a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">the live app</a></strong>, hit Settings, and read the Backend replay tab as you play.</p>
+<h2>Key takeaways</h2>
+<ul>
+<li>Give every cloud dependency a keyless fallback with the same schema and code path; the path is a label on the result, not a fork in the API.</li>
+<li>Ship a runtime settings console so routing (<code>local_first</code> / <code>cloud_first</code> / <code>local_only</code> / <code>cloud_only</code>) is a dropdown, not a redeploy.</li>
+<li>Keep Ollama / Foundry Local swappable behind one OpenAI-compatible base URL.</li>
+<li>Make the system fully traced: typed, timestamped, actor-attributed events with inspectable payloads, plus a dedicated tab per proof point.</li>
+<li>Label every fallback honestly - silent degradation is how you demo simulation while believing it is Foundry.</li>
+</ul>
+<p>Hybrid is not a compromise between local and cloud. It is the supervisor pattern applied to inference - and a forkable, fully-traced agent repo is the proof that your architecture was real.</p>
+<hr />
+<p><em>Part 4 of 5. Next: the Org Designer bridge - exporting the game's designed workforce as a portable bundle a real digital-worker platform can provision.</em></p>

@@ -1,0 +1,115 @@
+<h1>Agents That Remember the Boss: Closing the Loop with Foundry Agent Service Memory</h1>
+<p><em>A practical guide for AI engineers whose multi-agent systems forget every decision the user makes - and how we wired CEO approvals, rejections, and strategic forks into binding agent memory on Microsoft Foundry.</em></p>
+<p>Part 3 of 5. Tags: <code>microsoft foundry</code> <code>ai agents</code> <code>agent memory</code> <code>agent framework</code> <code>responsible ai</code></p>
+<hr />
+<p>Most multi-agent demos have a quiet secret: the human's decisions change nothing. You approve an artifact, reject another, pick a direction at a fork - and the next agent runs with the same prompt it would have run with anyway. The loop is open.</p>
+<p>In <a href="#">Part 2</a>, every artifact stops at a CEO gate. This post is about what happens <em>after</em> the gate: how the decision is written to the Foundry Agent Service memory store, recalled into the next worker's brief, and enforced as binding direction - so a choice in chapter 2 visibly changes the artifact in chapter 3.</p>
+<blockquote>
+<p>Memory is not a transcript. Memory is the set of decisions the agent is no longer allowed to ignore.</p>
+</blockquote>
+<h2>The memory loop in one diagram</h2>
+<p style="padding:12px;border:2px dashed #8a93b2;background:#f4f6fb"><strong>[DIAGRAM - render this mermaid to PNG and upload here]</strong></p>
+<!-- mermaid source:
+flowchart LR
+    GATE[&quot;CEO gate&lt;br/&gt;approve / reject / strategic fork&quot;] --&gt;|write| MEM[&quot;Foundry Agent Service&lt;br/&gt;memory store&quot;]
+    MEM --&gt;|recall| CP[&quot;CampaignMemory&lt;br/&gt;ContextProvider (MAF)&quot;]
+    CP --&gt;|&quot;extend_instructions:&lt;br/&gt;&#x27;binding direction&#x27;&quot;| WORKER[&quot;Next chapter&#x27;s worker&quot;]
+    WORKER --&gt; ART[&quot;Changed artifact&quot;] --&gt; GATE
+    MEM -.-&gt;|&quot;no creds:&lt;br/&gt;state/memory.json&quot;| CP
+-->
+<h2>The decision receipt: the closed loop, made visible</h2>
+<p>When you commit a choice at a fork, the game does not just continue - it shows you the loop closing, step by step. This single screen is the entire thesis of this post.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_13_decision_receipt.png]</strong><br><em>A decision receipt: 1 You decided, 2 Consequence applied with before-and-after deltas, 3 Workers learned, 4 the next brief carries the decision as binding direction</em></p>
+<p>Read it top to bottom:</p>
+<ol>
+<li><strong>You decided</strong> - "Depth: own one similar customer segment niche end to end," with the tradeoff you accepted spelled out.</li>
+<li><strong>Consequence applied</strong> - the company state changes deterministically: workers, monthly burn, leverage, proof, trust, velocity, autonomy - each shown as a before -&gt; after delta. The decision <em>moved real numbers</em>, not just narration.</li>
+<li><strong>Workers learned</strong> - a procedural memory is written (<code>local-memory</code> here, the Foundry store when configured): <em>"CEO chose 'Depth...' at the 'NEED' gate accepting tradeoff: stabilized loop, slower reach."</em></li>
+<li><strong>Next brief</strong> - the following stage names the worker that will execute it and the binding line: <em>"executes this with your decision as binding direction."</em></li>
+</ol>
+<p>Decision -&gt; consequence -&gt; memory -&gt; recall -&gt; changed next artifact. That loop <em>is</em> the game.</p>
+<h2>What we store, and why only three kinds</h2>
+<p>Decisions are written at exactly two moments - gate decisions (approve / reject / fork + reason) and chapter completion. Not every message; <em>decisions</em>. That keeps the store small and every entry load-bearing.</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Example</th>
+<th>Injected when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user_profile</code></td>
+<td>"CEO prefers premium positioning over volume pricing"</td>
+<td>Every worker brief</td>
+</tr>
+<tr>
+<td><code>procedural</code></td>
+<td>"Landing pages rejected twice for weak CTAs - lead with the CTA"</td>
+<td>Every worker brief</td>
+</tr>
+<tr>
+<td><code>chat_summary</code></td>
+<td>Chapter-completion summaries</td>
+<td>Narrator context</td>
+</tr>
+</tbody>
+</table>
+<p>These map directly to the three kinds in Microsoft's Agent Service memory preview. Knowledge and memory are deliberately different things: <strong>Foundry IQ</strong> is what the company <em>knows</em> (stable, cited playbooks); <strong>agent memory</strong> is what the agents <em>learn</em> about how this CEO operates. IQ grounds the work; memory personalizes it. The game gives each its own panel so the two are never confused.</p>
+<h2>Injection: a ContextProvider, not prompt soup</h2>
+<p>On the Agent Framework path, memory arrives through a <code>ContextProvider</code> that runs <em>before</em> the agent - the framework's first-class hook for exactly this, instead of string-concatenating into the system prompt:</p>
+<pre><code class="language-python"># agents/maf_runtime.py
+class CampaignMemory(ContextProvider):
+    async def before_run(self, *, agent, session, context, state) -&gt; None:
+        ...
+        context.extend_instructions(
+            &quot;campaign-memory&quot;,
+            &quot;Session memory (binding direction - the artifact must visibly follow &quot;
+            &quot;the most recent CEO decision):\n- &quot; + &quot;\n- &quot;.join(lines),
+        )
+</code></pre>
+<p>Note the wording: <em>binding direction</em>. We do not ask the model to "consider" the memory - the rubric evaluation at the next gate checks whether the artifact actually followed it.</p>
+<p>A trade-off to be transparent about: injecting memory into every brief costs tokens on every invocation. We cap injection at the three most recent memories per kind and truncate each to 300 characters. For direction-following, recency beats completeness.</p>
+<h2>Watch it bind: the live standup</h2>
+<p>Memory is not only a between-stages mechanism. Mid-run, the workforce holds a live group chat - a Microsoft Agent Framework sequential standup - where each worker reads the prior turns and the CEO's last decision as context. You can watch one worker carry the decision forward and hand off to the next.</p>
+<p style="padding:12px;border:2px dashed #3caea3;background:#eefaf8"><strong>[IMAGE - upload shot_11_maf_group_chat.png]</strong><br><em>The live group chat: three workers reason in sequence, each running a real tool and handing off, ending at the CEO&#x27;s turn</em></p>
+<p>In that standup the strategist runs <code>Web search</code>, the discovery analyst runs <code>Read memory</code> and literally says <em>"My next brief starts from strategist.depth, current proof 46..."</em>, and the ops worker runs <code>Watch burn</code> and refuses to back a plan that burns faster than it earns. Then it hands to <em>you</em>. The CEO's decision is not a fact in a database; it is the thing the agents are visibly reasoning from.</p>
+<h2>Best practice: make memory falsifiable</h2>
+<p>Memory the model is free to ignore is decoration. "Binding direction" only means something because two things check it:</p>
+<ol>
+<li><strong>The next gate's rubric checks compliance</strong> - did the artifact actually follow the decision?</li>
+<li><strong>Every invocation logs <code>memory_injected</code></strong> alongside <code>iq_hits</code>, <code>tools_called</code>, and <code>inference_usage</code> - in live mode <em>and</em> simulation (where the store falls back to a local <code>state/memory.json</code> using the identical schema).</li>
+</ol>
+<p>The story UI's evidence rail shows exactly which memories entered the brief, and the developer console (Part 4) has a tab that lists every memory write as a logged event. If you cannot point to the check that enforces a memory, the memory is not a control - it is a comment.</p>
+<h2>The strongest proof: run it twice</h2>
+<p>Because the loop is real, you can run the same quest twice with opposite picks and get visibly different companies. Choose Depth and the org narrows to dominate one segment; choose Breadth and it spreads across beachheads with thinner proof. Same starting pitch, same workers, different CEO - different outcome. In a live demo, that A/B is the most convincing thing you can show: the human's choices are load-bearing, and the system can prove it.</p>
+<h2>Operational lessons learned</h2>
+<ul>
+<li><strong>Write at decision points, not message points.</strong> A store full of chit-chat is a retrieval problem; a store of decisions is a steering wheel.</li>
+<li><strong>Same schema in the fallback.</strong> The local JSON fallback uses the identical shape as the Agent Service store, so simulation runs exercise the same code path - you are never testing a different program.</li>
+<li><strong>Verify compliance, do not assume it.</strong> If you cannot point to the gate check that enforces a memory, it is not a control.</li>
+<li><strong>Show the consequence as numbers.</strong> A decision receipt that moves real meters (burn, trust, leverage) teaches more than any paragraph of narration.</li>
+<li><strong>Scrub before you store.</strong> Gate reasons are free text from a human; run them through the same secret scrubber as the reasoning traces.</li>
+</ul>
+<h2>Responsible AI</h2>
+<p>This is user-direction memory, not surveillance. Only explicit decisions the user made at gates are stored; the snapshot is inspectable (there is a <code>/api/memory</code> endpoint and a console tab); and the local fallback keeps the data on the user's machine. The human's authority <em>compounds</em> over time instead of being re-litigated every chapter - and because the store holds decisions rather than raw conversation, there is far less sensitive data at rest to begin with.</p>
+<h2>Try it</h2>
+<p>Play the same opening pitch twice and choose the opposite fork each time:</p>
+<p><strong><a href="https://worldforge-game.mangowater-fa8b860a.eastus2.azurecontainerapps.io/">Play the live app</a></strong> or:</p>
+<pre><code class="language-bash">git clone https://github.com/princepspolycap/agentsleague-afterbuild
+cd agentsleague-afterbuild &amp;&amp; python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r submission/requirements.txt
+python3 submission/tools/run_quest_simulation.py --pitch &quot;Your idea here&quot;
+</code></pre>
+<h2>Key takeaways</h2>
+<ul>
+<li>An open loop - where decisions change nothing - is the most common multi-agent design flaw.</li>
+<li>Store decisions, not transcripts; three kinds - profile, procedural, summary.</li>
+<li>Inject via a <code>ContextProvider</code> as <em>binding</em> direction, and verify compliance at the next gate.</li>
+<li>Show the consequence as before/after numbers so the loop is legible.</li>
+<li>Log <code>memory_injected</code> on every run, and ship a same-schema local fallback so forks still close the loop.</li>
+</ul>
+<p>Agent memory is not a feature for the agent. It is a feature for the human - it is how their decisions stop being suggestions.</p>
+<hr />
+<p><em>Part 3 of 5. Next: local-first routing and the replay log - run the whole game on your own model, and trace every action that happens.</em></p>
