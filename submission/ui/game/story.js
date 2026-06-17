@@ -103,11 +103,20 @@ const ROLE_NAME = {
 // --- API helpers -----------------------------------------------------------
 async function api(path, body) {
     const started = Date.now();
+    // Bound every POST so a slow/hung upstream surfaces as a recoverable error
+    // instead of an infinite wait. The onboarding analyze + world-design hops
+    // can legitimately take a while in live mode, so they get a longer cap.
+    const slowPath = path === "/api/founder/analyze" || path === "/api/world/design"
+        || path === "/api/world/autoplay" || path === "/api/company/analyze";
+    const timeoutMs = slowPath ? 90000 : 30000;
+    const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
     try {
         const res = await fetch(path, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body || {}),
+            signal: controller ? controller.signal : undefined,
         });
         if (!res.ok) {
             const detail = await res.text().catch(() => "");
@@ -126,8 +135,15 @@ async function api(path, body) {
         diagLog("info", "api", `POST ${path} ok`, diagPayload);
         return payload;
     } catch (e) {
+        if (e && e.name === "AbortError") {
+            const te = new Error(`${path} timed out after ${Math.round(timeoutMs / 1000)}s`);
+            diagLogError("api", te, `POST ${path} timed out`);
+            throw te;
+        }
         diagLogError("api", e, `POST ${path} failed`);
         throw e;
+    } finally {
+        if (timer) clearTimeout(timer);
     }
 }
 

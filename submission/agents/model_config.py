@@ -74,6 +74,28 @@ FOUNDRY_API_KEY = os.getenv("FOUNDRY_API_KEY", "").strip()
 # exists on your endpoint and has quota headroom. Blank disables fallback.
 FOUNDRY_FALLBACK_MODEL = os.getenv("FOUNDRY_FALLBACK_MODEL", "").strip()
 
+# Bound every model call so a slow/hung upstream can't freeze a request for the
+# SDK default (600s + 2 retries). A blocked /api/founder/analyze is what leaves
+# the onboarding console stuck at "Reasoning" with no way to continue. These are
+# per-request caps on the OpenAI client; tune via env without code changes.
+def _env_float(name: str, default: float) -> float:
+    try:
+        v = float(os.getenv(name, "").strip())
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, "").strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+AGENT_REQUEST_TIMEOUT = _env_float("AGENT_REQUEST_TIMEOUT", 45.0)
+AGENT_MAX_RETRIES = _env_int("AGENT_MAX_RETRIES", 1)
+
 
 def _cloud_runtime_enabled() -> bool:
     return DEMO_MODE == "live" and bool(FOUNDRY_BASE_URL)
@@ -114,7 +136,14 @@ def _build_openai_client(base_url: str, api_key: str):
         from openai import OpenAI
     except ImportError:
         return None
-    return OpenAI(base_url=base_url, api_key=api_key)
+    # Bound timeout + retries so a slow upstream surfaces as a fast error the
+    # caller can recover from, instead of hanging the whole request.
+    return OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=AGENT_REQUEST_TIMEOUT,
+        max_retries=AGENT_MAX_RETRIES,
+    )
 
 
 def get_local_agent_client():
