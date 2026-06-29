@@ -1,198 +1,111 @@
-<div align="center">
+# Gamifying World Improvement
 
-# Agents League Contest
+**A card-and-graph based, multi-agent world-improvement simulator powered by Microsoft Foundry reasoning agents.**
 
-<img width="1200" height="400" alt="image" src="https://github.com/user-attachments/assets/d3e1f5a7-52d3-4e7b-a142-aa55496b4f82" />
-
-## Register now and start building!
-
-**Register 👉 [aka.ms/agentsleague/aisf/register](https://aka.ms/agentsleague/aisf/register)**
-
-</div>
+*Submitted for Microsoft Agents League · Battle #2 — Reasoning Agents.*
 
 ---
 
-**An AI developer challenge running between June 8 - 14, 2026 with live coding battles, community building, and competition.**
-
-Build innovative AI agents for Creative Apps, Reasoning Agents or Enterprise Agents categories. Compete for recognition, network with developers globally, and get feedback from Microsoft product teams. This time, all projects must integrate with at least one of the **Microsoft IQ** intelligence layer: Foundry IQ, Work IQ, or Fabric IQ.
-
-⚠️ **Important**: Before submitting, read our [Disclaimer](./DISCLAIMER.md) - do not upload confidential information.
-
-## What's Agents League?
-
-A **1-week developer competition** combining:
-
-- **📽️ Live coding battles** - Watch experts compete in real-time on Microsoft Reactor
-- **💻 Asynchronous challenges** - Build at your own pace
-- **💬 Community engagement** - Ask questions and get help on [Discord](https://aka.ms/agentsleague/discord)
-- **🏆 Recognition** - Winners earn amazing prizes
-
-**Open to everyone** - all skill levels welcome! Watch the battles for inspiration, then build one project or compete in all three tracks.
-
-Use AI assisted development with tools like [GitHub Copilot in VS Code](https://code.visualstudio.com/docs/copilot/overview), the [GitHub Copilot CLI](https://github.com/features/copilot/cli/), or the [GitHub Copilot CLI SDK](https://github.com/github/copilot-sdk).
-
-## Challenge Tracks
-
-Pick one or compete in all three!
-
-| Track | Tool | Challenge | Starter Kit |
-|-------|------|-----------|-------------|
-| 🎨 **Creative Apps** | GitHub Copilot | Build innovative creative applications using AI-assisted development | [View →](./starter-kits/1-creative-apps/) |
-| 🧠 **Reasoning Agents** | Microsoft Foundry | Create intelligent agents that solve complex problems through multi-step reasoning | [View →](./starter-kits/2-reasoning-agents/) |
-| 💼 **Enterprise Agents** | Microsoft 365 Copilot | Build business-ready agents for Microsoft 365 Copilot | [View →](./starter-kits/3-enterprise-agents/) |
-
-## How to Participate
-
-### 1. Register
-
-**Register 👉 [aka.ms/agentsleague/aisf/register](https://aka.ms/agentsleague/aisf/register)**
-
-Registration gives you:
-
-- ✅ Official participant status
-- ✅ Eligibility for prizes and recognition
-- ✅ Digital badge when you submit your project
-
-### 2. Choose Your Track
-
-- **Creative Apps** - Build with GitHub Copilot
-- **Reasoning Agents** - Build with Microsoft Foundry  
-- **Enterprise Agents** - Build agents for Microsoft 365 Copilot
-
-Browse [`starter-kits/`](./starter-kits/) for setup guides and examples
-
-### 3. Watch & Learn
-
-**Live Battles on [Microsoft Reactor](https://aka.ms/agentsleague/aisf/battles)**
-
-- **Tue June 9, 9 AM PT** - 🎨 Creative Apps
-- **Wed June 10, 9 AM PT** - 🧠 Reasoning Agents
-- **Thu June 11, 9 AM PT** - 💼 Enterprise Agents
-
-Have questions? Ask on [Discord](https://aka.ms/agentsleague/discord)!
-
-### 4. Build Your Project
-
-- Follow your starter kit instructions
-- Create something unique and functional
-- Make a demo video
-
-#### 🧠 Microsoft IQ — Required
-
-All submissions must integrate at least one **Microsoft IQ** intelligence layer:
-
-| IQ Layer | What It Does |
-|----------|-------------|
-| [**Foundry IQ**](https://learn.microsoft.com/azure/foundry/agents/concepts/what-is-foundry-iq) | Agentic knowledge retrieval for AI agents — connects multiple enterprise sources, enforces permissions, and delivers cited, grounded answers to reduce hallucination |
-| [**Work IQ**](https://learn.microsoft.com/microsoft-365/copilot/extensibility/workiq-overview) | The intelligence layer behind Microsoft 365 Copilot — builds memory from emails, meetings, chats, and documents to understand work context, people, and relationships |
-| [**Fabric IQ**](https://blog.fabric.microsoft.com/blog/introducing-fabric-iq) | Semantic intelligence layer for Microsoft Fabric — uses ontologies and knowledge graphs to give business meaning to enterprise data, enabling AI agents to reason over real business concepts |
-
-You can use **any** of the IQs in **any** track — pick whichever fits your project best.
-
-See each [starter kit](./starter-kits/) for track-specific IQ requirements.
-
-📖 **Learn more**: [Microsoft IQ Series](https://aka.ms/iq-series) — Deep-dive sessions on Foundry IQ, Work IQ, and Fabric IQ.
-
-### 5. Submit Your Project
-
-**Submission Deadline**: June 14, 2026
-
-Submit through the current Agents League registration/submission flow:
-[aka.ms/agentsleague/aisf/register](https://aka.ms/agentsleague/aisf/register).
-Check the live form for final upload fields, video requirements, and any
-track-specific submission prompts.
-
-⚠️ **Before submitting**:
-
-- Read the [Disclaimer](./DISCLAIMER.md) - No confidential information allowed
-- Review the [Code of Conduct](./CODE_OF_CONDUCT.md)
-- Ensure your repository is public and includes a README
-
-### 6. Join the Community
-
-Get help, share progress, vote for favorites
-
-[![Agents League Discord](https://img.shields.io/badge/Discord-Agents_League_Discord_Channel-yellow?style=for-the-badge&logo=github&color=00001&logoColor=fff)](https://aka.ms/agentsleague/discord)
-
-Community and Guidance
-
-[![Microsoft Foundry Discord](https://dcbadge.limes.pink/api/server/nTYy5BXMWG)](https://discord.gg/nTYy5BXMWG)
-
-If you have product feedback or errors while building visit:
-
-[![Microsoft Foundry Developer Forum](https://img.shields.io/badge/GitHub-Microsoft_Foundry_Developer_Forum-blue?style=for-the-badge&logo=github&color=000000&logoColor=fff)](https://aka.ms/foundry/forum)
-
-
-## Prizes & Recognition
-
-### 🎖️ For All Participants
-
-- **Digital Badge** - Everyone who registers and submits a project receives a digital badge
-
-### 🏆 Category Winners
-
-- See the official registration/submission page for current prize details.
-  - 🎨 Creative Apps
-  - 🧠 Reasoning Agents
-  - 💼 Enterprise Agents
-
-### ⭐ Special Recognition
-
-- See the official registration/submission page for current recognition details.
-
-## Judging
-
-Projects are evaluated by experts and product teams using this rubric:
-
-- **Accuracy & Relevance (20%)** — Meets challenge requirements
-- **Reasoning & Multi-step Thinking (20%)** — Clear problem-solving approach
-- **Reliability & Safety (20%)** — Solid patterns, avoids obvious pitfalls
-- **Creativity & Originality (15%)** — Novel ideas or unexpected execution
-- **User Experience & Presentation (15%)** — Clear, polished, demoable
-- **Community vote (10%)** — Discord poll at https://aka.ms/agentsleague/discord
-
-Battle-specific rubrics can differ by track; the Reasoning Agents live-battle
-rubric is mirrored in
-[`starter-kits/2-reasoning-agents/live_battle_challenge.md`](./starter-kits/2-reasoning-agents/live_battle_challenge.md).
-
-Official contest rules are the final authority for deadlines, eligibility,
-judging, and prize limits.
-
-## Resources
-
-### 📦 Starter Kits (with setup guides & examples)
-
-- [Creative Apps](./starter-kits/1-creative-apps/) - GitHub Copilot
-- [Reasoning Agents](./starter-kits/2-reasoning-agents/) - Microsoft Foundry  
-- [Enterprise Agents](./starter-kits/3-enterprise-agents/) - Microsoft 365 Copilot
-
-### 💬 Community & Support
-
-- **Discord**: [Join Agents League Arena](https://aka.ms/agentsleague/discord) - Get help, share progress, vote
-- **YouTube**: [Microsoft Reactor](https://aka.ms/reactor) - Watch live battles and replays
-- **Issues**: [Report bugs](https://github.com/microsoft/agentsleague/issues) - Found a problem? Let us know
-
-### 📋 Important Policies
-
-- **[Disclaimer](./DISCLAIMER.md)** - Security and confidential information protection
-- **[Code of Conduct](./CODE_OF_CONDUCT.md)** - Community standards and expectations
-- **[Contributing Guidelines](./CONTRIBUTING.md)** - How to contribute to the project
-- **[Security Policy](./SECURITY.md)** - How to report security issues
-
-<div align="center">
-
-## 📅 Key Dates
-
-| Date | Milestone |
-|------|-----------|
-| **May 15** | Registration Opens (Post-Build activation) |
-| **May 19** | Promo launches |
-| **June 8–12** | AISF Event Week |
-| **June 14** | Hackathon submissions close |
-| **June 30** | Winners Announced |
+## The Concept: You Decide. The Agents Execute. The Human Verifies.
+
+**Gamifying World Improvement** is a campaign-and-graph-based simulator where the player steps into the founder's chair. You pitch a world-improvement mission (e.g., solar microgrids, food-security logistics, clean water access) and guide an AI workforce through a roguelike deckbuilder experience to make it a reality.
+
+* **Decomposition & Graphs (Story Circle):** A Microsoft Foundry-powered Master Narrator decomposes your pitch into a campaign graph (Story Circle) of chapters (e.g., *Discovery, Go-To-Market, Operations*).
+* **Dynamic AI Workforce:** The Org Designer scans your pitch/profile and constructs a custom digital workforce of specialist worker cards (Strategist, Designer, Marketer, Ops) with specific mandates.
+* **Recall & Memory Loop:** Workers recall playbook knowledge from **Foundry IQ** and read personalized memory profiles (procedural, user_profile, chat_summary) from the **Foundry Agent Service memory store**.
+* **Actionable Tools:** Workers choose and invoke tools from an MCP-managed **Foundry Toolbox** to create real business artifacts.
+* **Deterministic Verification Gates:** Nothing advances on vibes. Every artifact (landing pages, emails, positioning reports) is validated by code interpreter checks and must receive your human seal of approval before XP is awarded.
 
 ---
 
-[📦 Browse Starter Kits](./starter-kits/) • [📝 Register Now](https://aka.ms/agentsleague/aisf/register)
+## Live Demo & How to Run
 
-</div>
+You can play the simulator immediately on your local machine. The project is designed to degrade gracefully: if no Azure credentials are provided, it falls back to a **local simulation mode** using mock agent outputs, allowing the game to remain fully playable and forkable.
+
+### 1. Setup the Environment
+```bash
+# Clone the repository
+git clone https://github.com/princepspolycap/agentsleague-afterbuild.git
+cd agentsleague-afterbuild
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r submission/requirements.txt
+```
+
+### 2. Run the Command-Line Quest Simulator (No Azure/Keys Required)
+Run the end-to-end simulation of a campaign from the command line:
+```bash
+python3 submission/tools/run_quest_simulation.py --pitch "Green energy grids"
+```
+
+### 3. Run the Story-View UI Server
+To play with the full graphical narration, audio cues, and the interactive verification gate:
+```bash
+# Start the FastAPI server
+python3 submission/tools/server.py
+```
+Open your browser and navigate to `http://localhost:8070`.
+
+### 4. Enable Live Microsoft Foundry Mode
+1. Copy the example configuration:
+   ```bash
+   cp submission/.env.example submission/.env
+   ```
+2. Open `submission/.env` and fill in your Azure AI Foundry credentials, project endpoints, search indices, and deployment names.
+3. Restart `server.py` to run live reasoning agents, real Foundry IQ lookups, and Azure neural voice synthesis.
+
+---
+
+## Core Architecture: How It All Connects
+
+```mermaid
+graph TD
+    Pitch["Player Pitch / URL"] --> OrgDesign["Org Designer Agent"]
+    Pitch --> WorldDesign["World Designer Agent (Story Circle DAG)"]
+    OrgDesign --> Workforce["Digital Workforce (Strategist, Designer, Marketer, Ops)"]
+    WorldDesign --> Chapters["Chapter Execution Loop"]
+    Workforce --> Chapters
+    
+    FoundryIQ["Foundry IQ Playbooks"] -.-> |Recall| Chapters
+    MemoryStore["Foundry Memory Store"] <--> |Read/Write| Chapters
+    Toolbox["Foundry MCP Toolbox"] <--> |Call Tools| Chapters
+    
+    Chapters --> Artifact["Generate Artifact (Landing Page, Email, etc.)"]
+    Artifact --> CodeValidator["Deterministic Code Validator"]
+    CodeValidator --> Gate["Verification Gate (Player Approves / Choice)"]
+    Gate --> |Update Memory & XP| Chapters
+```
+
+* Read the detailed technical narrative in [how_it_all_connects.md](submission/docs/how_it_all_connects.md)
+* Read the game mechanics documentation in [game_design.md](submission/docs/game_design.md)
+
+---
+
+## Microsoft Agents League Rubric Alignment
+
+| Rubric Dimension | Weight | Submission Proof Points |
+|---|---:|---|
+| **Accuracy & Relevance** | 20% | Maps the spec's Game Master and character agent pattern onto a multi-agent campaign loop. Runs live on the Microsoft Agent Framework (MAF). |
+| **Reasoning & Multi-Step** | 20% | Real-time chapter decomposition, tool choosing, and reasoning token counts displayed on-screen. |
+| **Reliability & Safety** | 20% | Human-in-the-loop verification gates, deterministic validator scoring, and full offline simulation fallback. |
+| **Creativity & Originality** | 15% | The world-improvement campaign premise, model-designed teams, and agent memory as an active game mechanic. |
+| **UX & Presentation** | 15% | Narrated story view, visual card layouts, live reasoning theater, and audio narration. |
+
+See the complete evaluation checklist in [rubric_mapping.md](submission/docs/rubric_mapping.md).
+
+---
+
+## Repository Structure
+
+* [submission/](submission/) — Core implementation folder:
+  * [agents/](submission/agents/) — Foundry and local agent definitions.
+  * [tools/](submission/tools/) — Server, quest simulator, and validators.
+  * [state/](submission/state/) — Replay log, memory store, and state management.
+  * [ui/](submission/ui/) — HTML/JS game assets and layout.
+  * [docs/](submission/docs/) — Technical specification documents.
+* [starter-kits/](starter-kits/) — Upstream Microsoft reference materials (untouched).
+* [DISCLAIMER.md](DISCLAIMER.md) / [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Official event policies.
