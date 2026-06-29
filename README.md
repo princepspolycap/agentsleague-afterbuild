@@ -112,29 +112,44 @@ See the complete evaluation checklist in [rubric_mapping.md](submission/docs/rub
 
 ---
 
-## ✍️ Microsoft Educator Developer Blog Series
+## Microsoft Educator Developer Blog Series
 
-This project's development and architecture are documented in a 5-part deep dive on the [Microsoft Tech Community Educator Developer Blog](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog):
+This project's development and architecture are documented in a deep-dive series on the [Microsoft Tech Community Educator Developer Blog](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog):
 
-1. **[Part 1: Gamifying World Improvement: Shipping a Reasoning-Agent RPG on Microsoft Foundry](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog)** — A map of the game, the four-agent pipeline behind it, and the concept of human-in-the-loop approval.
-2. **[Part 2: The Gate Is the Product: Human-Verified Artifacts in a Foundry Multi-Agent Game](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog)** — How to design a trustworthy system where deterministic scoring bounds model outputs and human gates determine progress.
-3. **[Part 3: Agents That Remember the Boss: Closing the Loop with Foundry Agent Service Memory](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog)** — Wiring human gate choices, approvals, and rejections into persistent user_profile, procedural, and chat_summary memory models.
-4. **[Part 4: Local-First and Fully Traced: Routing Between Ollama, Foundry Local, and Microsoft Foundry](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog)** — Implementing local fallback (Ollama/Foundry Local) and structured action tracing for reliable offline execution.
-5. **[Part 5: From Game to Operations: Exporting a Foundry-Designed Workforce as a Portable Bundle](https://techcommunity.microsoft.com/category/educationsector/blog/educatordeveloperblog)** — Turning a game-level digital workforce designed by an LLM into a portable operations bundle ready for production.
+1. **[Gamifying World Improvement: Shipping a Reasoning-Agent RPG on Microsoft Foundry](https://techcommunity.microsoft.com/blog/educatordeveloperblog/gamifying-world-improvement-shipping-a-reasoning-agent-rpg-on-microsoft-foundry/4527648)** — The map: what the game is, the four-agent pipeline, and the law that makes it safe to demo.
+2. **[The Gate Is the Product: Human-Verified Artifacts in a Foundry Multi-Agent Game](https://techcommunity.microsoft.com/blog/educatordeveloperblog/the-gate-is-the-product-human-verified-artifacts-in-a-foundry-multi-agent-game/4529682)** — Deterministic scoring floors and human gates as the core reliability mechanic.
+3. **[Agents That Remember the Boss: Closing the Loop with Foundry Agent Service Memory](https://techcommunity.microsoft.com/blog/educatordeveloperblog/agents-that-remember-the-boss-closing-the-loop-with-foundry-agent-service-memory/4529688)** — Wiring CEO gate decisions into persistent agent memory so choices chain across chapters.
+4. **[Local-First and Fully Traced: Routing Between Ollama, Foundry Local, and Microsoft Foundry](https://techcommunity.microsoft.com/blog/educatordeveloperblog/local-first-and-fully-traced-routing-between-ollama-foundry-local-and-microsoft-/4529694)** — Local fallback routing and structured action tracing for offline-first reliability.
+
+*Part 5 (From Game to Operations) is currently under review.*
 
 ---
 
-## 📅 Official Microsoft Agents League Contest Context & Resources
+## Official Microsoft Agents League Contest
 
 This project was built for the **Microsoft Agents League · Battle #2 (Reasoning Agents)**.
 
-### Community & Key Links
-* **[Agents League Discord](https://aka.ms/agentsleague/discord)** — Main hub for community discussions, support, and announcements.
-* **[Microsoft Foundry Discord](https://discord.gg/nTYy5BXMWG)** — Technical forums and developer discussions for Microsoft Foundry and the Agent Framework.
-* **[Microsoft Reactor Battles](https://aka.ms/agentsleague/aisf/battles)** — Replay of live coding battles on Reactor.
-* **[Microsoft Foundry Developer Forum](https://aka.ms/foundry/forum)** — GitHub forum for bug reporting and feedback.
+### Community
+
+[![Agents League Discord](https://img.shields.io/badge/Discord-Agents_League_Discord_Channel-yellow?style=for-the-badge&logo=github&color=00001&logoColor=fff)](https://aka.ms/agentsleague/discord)
+
+[![Microsoft Foundry Discord](https://dcbadge.limes.pink/api/server/nTYy5BXMWG)](https://discord.gg/nTYy5BXMWG)
+
+[![Microsoft Foundry Developer Forum](https://img.shields.io/badge/GitHub-Microsoft_Foundry_Developer_Forum-blue?style=for-the-badge&logo=github&color=000000&logoColor=fff)](https://aka.ms/foundry/forum)
 
 ### Key Dates
-* **June 8-12, 2026**: AISF Event Week & Live Coding Battles (Reasoning Agents Battle on June 10, 2026)
-* **June 14, 2026**: Hackathon submissions close
-* **June 30, 2026**: Winner announcements
+
+| Date | Milestone |
+|------|-----------|
+| **June 8-12** | AISF Event Week & Live Coding Battles |
+| **June 10** | Reasoning Agents Live Battle on [Microsoft Reactor](https://aka.ms/agentsleague/aisf/battles) |
+| **June 14** | Hackathon submissions close |
+| **June 30** | Winners announced |
+
+### Important Policies
+
+- **[Disclaimer](./DISCLAIMER.md)** — Security and confidential information protection
+- **[Code of Conduct](./CODE_OF_CONDUCT.md)** — Community standards and expectations
+- **[Contributing Guidelines](./CONTRIBUTING.md)** — How to contribute
+- **[Security Policy](./SECURITY.md)** — How to report security issues
+
